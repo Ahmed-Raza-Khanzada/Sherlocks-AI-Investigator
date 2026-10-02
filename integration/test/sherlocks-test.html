@@ -1,0 +1,264 @@
+<!doctype html>
+<!--
+  Sherlocks embedded in a host portal - a working template for the Laravel tab.
+
+  Generated from src/sherlocks/web/index.html. In Blade:
+    1. Copy the web/ folder (app.js, app.css, vendor/) into public/sherlocks/,
+       or load them straight from the Sherlocks server as below.
+    2. Put the markup between the SHERLOCKS MARKUP comments in the tab's view.
+    3. Fill SHERLOCKS_CONFIG from the server: apiBase, and a token signed with the
+       shared secret (see docs/INTEGRATION.md for the PHP).
+    4. Save graphs in onRunComplete; reopen one with savedRun or Sherlocks.loadGraph().
+-->
+
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sherlocks · Link Graph</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='9' cy='9' r='5' fill='%23fbbf24'/%3E%3Ccircle cx='24' cy='12' r='4' fill='%2338bdf8'/%3E%3Ccircle cx='14' cy='25' r='4' fill='%23f43f5e'/%3E%3Cpath d='M9 9L24 12M9 9L14 25' stroke='%23e5e7eb' stroke-width='2'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="http://192.168.200.239:7401/sindhpolice-sherlocks/portal/app.css">
+</head>
+<body>
+  <!-- SHERLOCKS MARKUP -->
+  <section id="loginScreen" class="login" hidden>
+    <form id="loginForm" class="logincard" autocomplete="on">
+      <div class="brand">
+        <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="9" cy="9" r="5" fill="#fbbf24"/><circle cx="24" cy="12" r="4" fill="#38bdf8"/><circle cx="14" cy="25" r="4" fill="#f43f5e"/><path d="M9 9L24 12M9 9L14 25" stroke="#e5e7eb" stroke-width="2"/></svg>
+        <span><b>Sherlocks</b> Link Graph</span>
+      </div>
+      <p class="muted small">Restricted system. Sign in to continue.</p>
+      <label class="lbl" for="loginUser">Username</label>
+      <input id="loginUser" name="username" autocomplete="username" spellcheck="false" required>
+      <label class="lbl" for="loginPass">Password</label>
+      <input id="loginPass" name="password" type="password" autocomplete="current-password" required>
+      <div id="loginError" class="loginerror" role="alert"></div>
+      <button type="submit" id="loginBtn" class="primary">Sign in</button>
+    </form>
+  </section>
+
+  <div id="appShell" hidden>
+  <header class="top">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="9" cy="9" r="5" fill="#fbbf24"/><circle cx="24" cy="12" r="4" fill="#38bdf8"/><circle cx="14" cy="25" r="4" fill="#f43f5e"/><path d="M9 9L24 12M9 9L14 25" stroke="#e5e7eb" stroke-width="2"/></svg>
+      <span><b>Sherlocks</b> Link Graph</span>
+    </div>
+    <span id="backendBadge" class="badge">…</span>
+    <div class="spacer"></div>
+    <button id="historyBtn" class="ghost" title="Previous graphs">History</button>
+    <button id="keyBtn" class="ghost" title="API key">Key</button>
+    <span id="whoami" class="whoami"></span>
+    <button id="signOutBtn" class="ghost" title="Sign out" hidden>Sign out</button>
+  </header>
+
+  <main class="layout">
+    <aside class="left">
+      <form id="searchForm" class="card" autocomplete="off">
+        <div id="modeTabs" class="seg tabs" role="tablist">
+          <button type="button" id="modeSingle" class="on" data-mode="single">One person</button>
+          <button type="button" id="modeMulti" data-mode="multi">Multiple people</button>
+        </div>
+
+        <div id="singlePane">
+          <label class="lbl" for="identifier">CNIC, mobile number or email</label>
+          <input id="identifier" placeholder="42101-1234567-1  ·  0300-1234567  ·  name@mail.com" spellcheck="false">
+          <div id="idChips" class="chips small"></div>
+          <p class="hint">Give several, separated by a space, to search them as one person. An email is also searched online.</p>
+        </div>
+
+        <div id="multiPane" hidden>
+          <label class="lbl" for="identifiers">CNIC / mobile of each person — one per line</label>
+          <textarea id="identifiers" rows="5" spellcheck="false"
+            placeholder="42101-1234567-1&#10;0300-1234567&#10;someone@gmail.com"></textarea>
+          <div id="multiChips" class="chips small"></div>
+          <p class="hint">Each line is one person. Sherlocks searches them all, then finds how every pair connects.</p>
+          <label class="tog"><input type="checkbox" id="optConnect"> Stop as soon as they are connected (fewer live queries)</label>
+        </div>
+
+        <div class="row">
+          <div>
+            <span class="lbl">Depth</span>
+            <div id="depth" class="seg" role="radiogroup"></div>
+          </div>
+          <div>
+            <label class="lbl" for="maxPersons">Max people searched</label>
+            <input id="maxPersons" type="number" min="1" max="100" value="25">
+          </div>
+        </div>
+        <p class="hint" id="depthHint"></p>
+
+        <details id="systemsBox">
+          <summary><span>Systems</span> <span id="systemsCount" class="muted"></span></summary>
+          <div class="sysactions"><a href="#" id="sysAll">all</a> · <a href="#" id="sysNone">none</a></div>
+          <div id="systemsList" class="syslist"></div>
+        </details>
+
+        <div class="toggles">
+          <label><input type="checkbox" id="optFir" checked> Open FIR reports (co-accused, witnesses)</label>
+          <label><input type="checkbox" id="optAi" checked> <span id="aiLabel">AI similarity review &amp; address matching</span></label>
+          <label id="callerRow" hidden><input type="checkbox" id="optCaller"> Caller ID name tags</label>
+          <label id="osintRow"><input type="checkbox" id="optOsint"> OSINT / social media search</label>
+          <select id="osintScope" class="osintscope" title="Who gets an online name search">
+            <option value="subject">Target person only (full OSINT tools)</option>
+            <option value="everyone">Target + everyone found (name search, max 8)</option>
+          </select>
+        </div>
+
+        <div class="row" id="backendRow">
+          <div>
+            <label class="lbl" for="backendSel">Data source</label>
+            <select id="backendSel">
+              <option value="ems">All systems (live)</option>
+              <option value="demo">Demo data (synthetic)</option>
+            </select>
+          </div>
+        </div>
+
+        <button type="submit" id="goBtn" class="primary">Build link graph</button>
+        <div id="seeds" class="seeds"></div>
+      </form>
+
+      <section class="card" id="runCard" hidden>
+        <div class="runhead">
+          <b id="runTitle">Run</b>
+          <span id="statusPill" class="pill">…</span>
+        </div>
+        <div class="progress"><div id="progressBar"></div></div>
+        <p id="runMsg" class="muted small"></p>
+        <button id="cancelBtn" class="stopbtn" hidden>■ Stop run</button>
+        <div id="stats" class="stats"></div>
+        <div id="failedSystems" hidden>
+          <div class="failhead">⚠ Failed systems — fix these APIs</div>
+          <ul id="failedList" class="faillist"></ul>
+        </div>
+      </section>
+
+      <section class="card" id="relationsCard" hidden>
+        <div class="runhead"><b>Relations between the people</b>
+          <button id="relAiBtn" class="ghost small" type="button">Explain with AI</button></div>
+        <div id="relationsBody"></div>
+      </section>
+
+      <section class="card" id="investCard" hidden>
+        <div class="runhead"><b>AI investigator</b>
+          <button id="leadsBtn" class="ghost small" type="button">Refresh leads</button></div>
+        <form id="investForm" class="chatform">
+          <input id="investInput" placeholder="e.g. who connects Asif Ali to the FIR accused?" autocomplete="off">
+          <button class="ghost small" type="submit">Investigate</button>
+        </form>
+        <ol id="investSteps" class="investsteps"></ol>
+        <div id="investOut"></div>
+        <div id="leadsBody"></div>
+      </section>
+
+      <section class="card" id="chatCard" hidden>
+        <div class="runhead"><b>Ask about this graph</b><span class="muted small" id="chatModel"></span></div>
+        <div id="chatLog" class="chatlog"></div>
+        <form id="chatForm" class="chatform">
+          <input id="chatInput" placeholder="e.g. how is Bilal Khan linked to the subject?" autocomplete="off">
+          <button class="ghost small" type="submit">Ask</button>
+        </form>
+      </section>
+
+      <section class="card logcard">
+        <div class="runhead">
+          <b>Activity</b>
+          <div class="logtools">
+            <span id="logCount" class="muted small"></span>
+            <button id="copyLogBtn" class="ghost small" title="Copy the activity log">Copy</button>
+          </div>
+        </div>
+        <ol id="log" class="log"></ol>
+      </section>
+    </aside>
+
+    <section class="stage">
+      <div id="cy"></div>
+      <div id="pickBanner" class="pickbanner" hidden></div>
+      <div class="toolbar">
+        <input id="filter" placeholder="Find in graph…" spellcheck="false">
+        <button id="fitBtn" title="Fit to screen">Fit</button>
+        <button id="layoutBtn" title="Tidy the graph now">Tidy</button>
+        <label class="tog" title="How the graph is arranged">Layout
+          <select id="layoutSel">
+            <option value="fcose">Organic</option>
+            <option value="concentric">Rings by depth</option>
+            <option value="breadthfirst">Hierarchy from subject</option>
+          </select>
+        </label>
+        <label class="tog" title="Record nodes: one per system that holds a record about a person">Records
+          <select id="recordsMode">
+            <option value="all">all</option>
+            <option value="linking">linking only</option>
+            <option value="none">hidden (person → person)</option>
+          </select>
+        </label>
+        <label class="tog"><input type="checkbox" id="showWeak" checked> Weak links</label>
+        <label class="tog range">min <input type="range" id="minWeak" min="0" max="100" value="35"><span id="minWeakVal">0.35</span></label>
+        <button id="pngBtn" title="Save picture">PNG</button>
+        <button id="jsonBtn" title="Save data">JSON</button>
+      </div>
+      <div class="legendwrap">
+        <button id="legendBtn" class="legendbtn" type="button">Legend ▾</button>
+        <div class="legend" id="legend"></div>
+      </div>
+      <div id="empty" class="empty">
+        <h2>Enter a CNIC, mobile number or email</h2>
+        <p>Sherlocks searches every connected system for that person, draws a <b>record node</b> for each system that knows them, and a <b>person node</b> for everyone those records name. It then searches those people too, until the depth you set.</p>
+        <p><span class="sw strong"></span> <b>Strong link</b> — a system states the relationship (landlord, co-accused, SIM owner…)</p>
+        <p><span class="sw weak"></span> <b>Weak link</b> — inferred: similar address, same father's name, overlapping hotel stay, OSINT. A lead, not evidence.</p>
+      </div>
+    </section>
+
+    <aside class="right" id="details" hidden>
+      <button class="close" id="closeDetails" title="Close">×</button>
+      <div id="detailsBody"></div>
+    </aside>
+  </main>
+
+  <dialog id="historyDlg">
+    <form method="dialog" class="dlghead"><b>Previous graphs</b><button class="ghost">Close</button></form>
+    <div id="historyList" class="history"></div>
+  </dialog>
+
+  <dialog id="keyDlg">
+    <form method="dialog" id="keyForm">
+      <b>API key</b>
+      <p class="muted small">This deployment requires the Sherlocks API key. It is kept for this browser tab only.</p>
+      <input id="keyInput" type="password" placeholder="X-API-Key">
+      <div class="dlgbtns"><button value="cancel" class="ghost">Cancel</button><button value="ok" class="primary">Save</button></div>
+    </form>
+  </dialog>
+
+  </div>
+
+  <!-- /SHERLOCKS MARKUP -->
+
+  <script src="http://192.168.200.239:7401/sindhpolice-sherlocks/portal/vendor/cytoscape.min.js"></script>
+  <script src="http://192.168.200.239:7401/sindhpolice-sherlocks/portal/vendor/layout-base.js"></script>
+  <script src="http://192.168.200.239:7401/sindhpolice-sherlocks/portal/vendor/cose-base.js"></script>
+  <script src="http://192.168.200.239:7401/sindhpolice-sherlocks/portal/vendor/cytoscape-fcose.js"></script>
+    <script>
+    window.SHERLOCKS_CONFIG = {
+      embedded: true,
+      backend: 'demo',   // test with synthetic data; the real tab uses 'ems'
+      apiBase: 'http://192.168.200.239:7401/sindhpolice-sherlocks',   // {{ config('sherlocks.api_base') }}
+      token: 'PASTE-A-TOKEN-FROM-make-token.php',                                      // {{ $sherlocksToken }}
+      savedRun: null,                                              // {!! $savedRun ?? 'null' !!}
+      onRunStarted(runId) { console.log('Sherlocks run started', runId); },
+      // The finished run (graph, params, stats, log). POST it to Laravel to save it.
+      onRunComplete(run) {
+        console.log('Sherlocks run complete', run.id, run.graph.nodes.length, 'nodes');
+        // fetch('/sherlocks/graphs', { method: 'POST', headers: {'Content-Type': 'application/json',
+        //   'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content}, body: JSON.stringify(run) });
+      },
+      // Token expired (they are short-lived): fetch a fresh one from Laravel, or null.
+      async onTokenExpired() {
+        // const r = await fetch('/sherlocks/token'); return r.ok ? (await r.json()).token : null;
+        return null;
+      },
+    };
+  </script>
+  <script src="http://192.168.200.239:7401/sindhpolice-sherlocks/portal/app.js"></script>
+</body>
+</html>

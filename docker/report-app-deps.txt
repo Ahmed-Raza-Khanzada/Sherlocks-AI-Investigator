@@ -1,0 +1,10 @@
+# Runtime libraries cdr_report_app imports that are not in Sherlocks' own dependency
+# set. Sherlocks reuses its provider adapters (bs4), phone/CNIC helpers (pandas) and
+# its Excel/PDF renderers. Kept apart from pyproject so it is obvious these belong to
+# the reused library, not to Sherlocks.
+pandas>=2.2
+numpy>=1.26
+beautifulsoup4>=4.12
+lxml>=5.2
+openpyxl>=3.1
+XlsxWriter>=3.2

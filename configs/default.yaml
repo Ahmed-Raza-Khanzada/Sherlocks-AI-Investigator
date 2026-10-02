@@ -1,0 +1,102 @@
+app:
+  name: "Sherlocks"
+  environment: "development"
+  output_dir: "output"
+  log_dir: "logs"
+  log_level: "INFO"
+  # cdr_report_app (PDF engine, Demo data source) is kept in vendor/report_app/src in
+  # this project; set report_app_src only to use a different copy.
+
+database:
+  # Sherlocks owns the "sherlocks" schema inside this database rather than a database
+  # of its own, so it deploys without CREATEDB rights and stays namespaced away from
+  # cdr_report_app's report_jobs table.
+  url: "postgresql://cdr_user:cdr_pass@localhost:5432/cdr_jobs"
+  schema_name: "sherlocks"
+  pool_size: 5
+  max_overflow: 10
+  echo: false
+
+ollama:
+  enabled: true
+  base_url: "http://localhost:11434"
+  reasoning_model: "qwen3.5:4b"
+  bulk_model: "qwen3.5:4b"
+  timeout_seconds: 180
+  max_attempts: 3
+  temperature: 0.0
+  num_ctx: 8192
+
+llm:
+  # The model the AI steps use (address splitting, pair review, OSINT planning).
+  # openai = OpenAI-compatible server on the LAN (vLLM Qwen 27B); ollama = the block above.
+  provider: "openai"
+  base_url: "http://localhost:1234/v1"  # real host: SHERLOCKS_LLM_BASE_URL in .env
+  model: "Qwen/Qwen3.8-27B"
+  api_key: "EMPTY"
+  timeout_seconds: 60
+  max_attempts: 2
+  temperature: 0.0
+  max_tokens: 800
+  enabled: true
+
+osint:
+  # Reaching the public internet on behalf of an investigation is a policy decision.
+  # Enabled here so the portal's OSINT toggle is usable; set false to lock it off, or
+  # override per-deployment with SHERLOCKS_OSINT_ENABLED.
+  enabled: true
+  allowed_tools:
+    - search_phone
+    - search_username
+    - search_email
+    - search_github        # username/email -> GitHub profile (free; GITHUB_TOKEN optional)
+    - search_paste         # username/email -> Pastebin leaks (free)
+    - search_breach        # email -> breach appearances (paid HIBP key)
+    - search_social        # username -> profiles across many sites (Social-Analyzer, free)
+    - search_apify         # username/url -> Instagram/FB/TikTok/X scraper (paid Apify token)
+    - search_socialcrawl   # username -> profiles on 6 platforms (paid SocialCrawl key)
+    - search_pipl          # phone -> person, identifiers, profiles, relatives (paid Pipl key)
+    - search_pipl_email    # email -> same (paid Pipl key)
+    - search_fullcontact   # email -> name, employer, social profiles (paid FullContact key)
+    - search_fullcontact_phone  # phone -> same (paid FullContact key)
+    - search_hunter        # email -> verified? seen on which public pages (paid Hunter key)
+    - search_enformion     # phone -> US public records only (paid EnformionGO profile + key)
+    - search_footprint
+    - search_dorks_live
+    - generate_dorks
+    - scrape_url
+  per_tool_timeout_seconds: 120
+  delay_between_calls_seconds: 1.0
+  max_tools_per_run: 12
+
+linkgraph:
+  # demo = cdr_report_app's real adapters over a synthetic dataset; nothing leaves the
+  # machine. live = the real police/government systems configured in Report_App's .env.
+  # Every searched person in live mode is ~20 queries that are logged upstream.
+  backend: "demo"
+  allow_backend_override: true
+  # Report_App .env with provider URLs/keys. null = Report_App's own discovery.
+  report_app_env: null
+  default_depth: 2
+  max_depth: 4
+  default_max_persons: 25
+  hard_max_persons: 100
+  parallel_systems: 6
+  parallel_persons: 2
+  # Each person's SIMs are ALL searched through the phone-driven systems (licence/hotel/
+  # different owner can sit on any number). Cap per person; raise for thoroughness.
+  max_numbers_per_person: 8
+  include_fir_rosters: true
+  max_firs_per_person: 6
+  cache_ttl_hours: 24
+  weak_min_score: 0.35
+  ai_address_calls_per_run: 40
+  ai_pair_calls_per_run: 30
+  image_dir: "output/images"
+
+api:
+  host: "127.0.0.1"
+  port: 7401
+  prefix: "/sindhpolice-sherlocks"
+  cors_origins: "*"
+  max_concurrent_jobs: 4

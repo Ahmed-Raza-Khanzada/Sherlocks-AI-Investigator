@@ -1,0 +1,82 @@
+# Sherlocks — person link graph.
+#
+#   cp .env.example .env      # then edit: sign-in (SHERLOCKS_AUTH_*) and EMS_* keys
+#   docker compose up --build
+#   open http://localhost:7401/
+#
+# Ships its own Postgres. Sherlocks lives in the "sherlocks" schema, so this database
+# can equally be pointed at the existing cdr_jobs instance (set SHERLOCKS_DATABASE_URL).
+#
+# The link graph is demo-only until you set SHERLOCKS_LINKGRAPH_BACKEND=live AND mount
+# Report_App's .env (wired below, commented, under the app service).
+
+services:
+  db:
+    image: postgres:16
+    container_name: sherlocks_db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sherlocks}
+      POSTGRES_USER: ${POSTGRES_USER:-sherlocks}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sherlocks}
+    volumes:
+      - sherlocks_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sherlocks} -d ${POSTGRES_DB:-sherlocks}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Named so a prebuilt image (docker load) is reused on a server with no internet,
+    # instead of rebuilding. Build once where there IS internet, save, load, `up -d`.
+    image: sherlocks-app:latest
+    pull_policy: never
+    container_name: sherlocks_app
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${SHERLOCKS_PORT:-7401}:7401"
+    environment:
+      SHERLOCKS_DATABASE_URL: >-
+        postgresql://${POSTGRES_USER:-sherlocks}:${POSTGRES_PASSWORD:-sherlocks}@db:5432/${POSTGRES_DB:-sherlocks}
+      SHERLOCKS_API_HOST: 0.0.0.0
+      SHERLOCKS_API_PORT: "7401"
+      # Container paths. These win over .env, whose values are host paths for running
+      # outside docker and do not exist in here.
+      SHERLOCKS_REPORT_APP_SRC: /app/vendor/report_app/src
+      # Everything else (API key, LLM URL/model, link-graph backend, OSINT keys) comes
+      # from .env. Copy .env.example to .env and edit before the first run.
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - sherlocks_output:/app/output
+      - sherlocks_logs:/app/logs
+      # cdr_report_app ships inside the image (vendor/report_app in this project), so no
+      # Report_App folder is needed on the server.
+      # ---- Shield-gateway backend (optional, not the default) --------------------
+      # Only for SHERLOCKS_LINKGRAPH_BACKEND=live. The EMS backend reads EMS_* from .env.
+      # - ../CDR-Analysis/Report_App/.env:/opt/report_app/.env:ro
+      # - ../CDR-Analysis/Report_App/tac_full.db:/opt/report_app/tac_full.db:ro
+    # The AI backend (SHERLOCKS_LLM_BASE_URL) is an OpenAI-compatible server on the LAN;
+    # reached over the host network via the default bridge. If it runs on the docker host
+    # itself, use http://host.docker.internal:PORT/v1 and add the mapping below.
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7401/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    restart: unless-stopped
+
+volumes:
+  sherlocks_pg:
+  sherlocks_output:
+  sherlocks_logs:

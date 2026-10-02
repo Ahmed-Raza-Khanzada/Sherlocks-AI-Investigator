@@ -1,0 +1,98 @@
+app:
+  name: "CDR Report App"
+  environment: "development"
+  output_dir: "output"
+  request_timeout_seconds: 30
+
+report:
+  title: "Single CDR Analysis Report"
+  language: "roman_urdu"
+  top_contacts_count: 5
+  top_locations_count: 5
+  top_short_codes_count: 5
+  late_night_start: 23
+  late_night_end: 5
+  short_call_threshold: 10
+  burst_window_minutes: 30
+  burst_threshold: 5
+  new_number_lookback_days: 7
+  multi_timeline_events_per_pair: null
+
+\sections:
+  cdr_maloomat: true
+  jurm_ki_maloomat: true
+  rozana_ki_sargarmi: true
+  zyada_waqt_guzarne_wali_jagahein: true
+  lambe_qayam_ki_jaga: true
+  heatmap: true
+  jurm_ke_din_movement_path: true
+  map: true
+  burst_activity: true
+  short_codes: true
+  imei_imsi: true
+  top_contacts: true
+  db_verification: true
+  top_contacts_history: true
+
+attachments:
+  embed_cro_pdf: true
+  embed_fir_reports: true
+  preserve_external_pdf_pages: true
+  prefer_rendered_fir_pdf: true
+  include_custom_fir_summary: false
+
+crime:
+  fir_no: null
+  police_station: null
+  sections_of_law: null
+  crime_date: "2026-02-26"
+  crime_time: null
+  crime_place: null
+  crime_lat: null
+  crime_lng: null
+
+providers:
+  simsdb:
+    enabled: true
+  subscriber:
+    enabled: true
+  prvs:
+    enabled: true
+  cro:
+    enabled: true
+  psrms:
+    enabled: true
+  watchlist:
+    enabled: true
+  nearest_ps:
+    enabled: true
+  nadra:
+    enabled: false
+  cfms:
+    enabled: true
+  hotel_eye:
+    enabled: true
+  sbvs:
+    enabled: true
+  pfc:
+    enabled: true
+  hrmis:
+    enabled: true
+  igp_cms:
+    enabled: true
+  imei:
+    enabled: true
+  evs:
+    enabled: true
+  hope:
+    enabled: true
+  dls:
+    enabled: true
+  tracs:
+    enabled: true
+  old_tenant:
+    enabled: true
+  trust:
+    enabled: true
+  milap:
+    enabled: true

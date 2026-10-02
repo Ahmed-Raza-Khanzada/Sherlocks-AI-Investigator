@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sherlocks"
+version = "0.1.0"
+description = "Person intelligence and link analysis platform for Sindh Police"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "python-multipart>=0.0.9",
+    "pydantic>=2.9",
+    "SQLAlchemy>=2.0.30",
+    "psycopg2-binary>=2.9.9",
+    "alembic>=1.13",
+    "PyYAML>=6.0",
+    "python-dotenv>=1.0",
+    "requests>=2.32",
+    "httpx>=0.27",
+    "fpdf2>=2.8",
+    "pypdf>=5.0",
+    "matplotlib>=3.9",
+    "networkx>=3.3",
+    "rapidfuzz>=3.9",
+    "arabic-reshaper>=3.0",
+    "python-bidi>=0.6",
+]
+
+[project.optional-dependencies]
+osint = ["openosint>=2.27.0"]
+# The binaries OpenOSINT shells out to that are pip-installable. phoneinfoga is a Go
+# binary and must be installed separately - see README.
+osint-tools = ["holehe>=1.61", "sherlock-project>=0.15", "social-analyzer>=0.45"]
+dev = ["pytest>=8.1", "pytest-cov>=5.0", "ruff>=0.6"]
+
+[project.scripts]
+sherlocks = "sherlocks.cli:main"
+sherlocks-api = "sherlocks.api.main:run"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    # cdr_report_app's PDF builder predates fpdf2's new_x/new_y API. Sherlocks does not
+    # own that file, so its deprecation notices are noise here.
+    "ignore:The parameter \"ln\" is deprecated:DeprecationWarning",
+]

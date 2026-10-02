@@ -1,0 +1,81 @@
+# ============================================================================
+# Sherlocks - keep secrets, personal data and local state out of git
+# ============================================================================
+
+# --- Secrets ----------------------------------------------------------------
+# Every credential, API key, internal host and the portal login live here.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.jks
+*.keystore
+id_rsa*
+id_ed25519*
+secrets/
+credentials*.json
+service-account*.json
+*.secret
+.envrc
+.netrc
+
+# Internal API registers: real endpoints, hosts and keys for police systems.
+reference/
+PROVIDER_APIS.md
+
+# --- Personal data produced by searches ------------------------------------
+# Logs hold every request and response (names, CNICs, numbers, photos).
+logs/
+*.log
+# Downloaded photos, OSINT scratch files, rendered reports, exports.
+output/
+exports/
+*.pdf
+linkgraph_*.json
+linkgraph_*.png
+# Uploaded CDR / BTS dumps and spreadsheet exports (phone records, locations).
+uploads/
+data/
+*.csv
+*.xls
+*.xlsx
+*.parquet
+# sherlock / holehe write <username>.txt into the directory they run from
+/*.txt
+
+# --- Databases / dumps ------------------------------------------------------
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+*.sql.gz
+pgdata/
+
+# --- Python -----------------------------------------------------------------
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# --- Editors / OS / tooling -------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+.claude/
+CLAUDE.md
+*.swp
+*~
+
