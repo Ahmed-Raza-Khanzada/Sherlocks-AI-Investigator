@@ -133,6 +133,14 @@
         </div>
       </section>
 
+      <section class="card" id="evidenceCard" hidden>
+        <div class="runhead"><b>Case evidence</b>
+          <button id="reportBtn2" class="ghost small" type="button" disabled title="Available when the graph finishes or is stopped">📑 Case report</button></div>
+        <div id="evidenceCounts" class="evcounts"></div>
+        <div id="reportStatus" class="muted small"></div>
+        <ul id="evidenceList" class="evlist"></ul>
+      </section>
+
       <section class="card" id="relationsCard" hidden>
         <div class="runhead"><b>Relations between the people</b>
           <button id="relAiBtn" class="ghost small" type="button">Explain with AI</button></div>
@@ -195,6 +203,7 @@
         </label>
         <label class="tog"><input type="checkbox" id="showWeak" checked> Weak links</label>
         <label class="tog range">min <input type="range" id="minWeak" min="0" max="100" value="35"><span id="minWeakVal">0.35</span></label>
+        <button id="reportBtn" class="reportbtn" title="Download the case report (PDF) - available when the graph finishes or is stopped" disabled>📑 Case report</button>
         <button id="pngBtn" title="Save picture">PNG</button>
         <button id="jsonBtn" title="Save data">JSON</button>
       </div>
@@ -210,6 +219,29 @@
       </div>
     </section>
 
+    <button id="sherlockFab" class="fab" type="button" title="Chat with Sherlock about this case">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M6 14c0-5 4.5-8 10-8s10 3 10 8H6z" fill="#fbbf24"/><rect x="4" y="13" width="24" height="3" rx="1.5" fill="#d97706"/><circle cx="16" cy="21" r="5.5" fill="none" stroke="#e6ebf5" stroke-width="2.2"/><path d="M20 25l5 5" stroke="#e6ebf5" stroke-width="2.6" stroke-linecap="round"/></svg>
+      <span id="fabBadge" class="fabbadge" hidden></span>
+    </button>
+    <section id="sherlockPanel" class="sherlock" hidden aria-label="Sherlock case chat">
+      <header class="shhead">
+        <div><b>Sherlock</b> <span class="muted small">case investigator</span></div>
+        <div class="shctx" id="sherlockCtx"></div>
+        <button id="sherlockClose" class="ghost small" type="button" title="Close">×</button>
+      </header>
+      <div id="sherlockLog" class="shlog"></div>
+      <div id="sherlockQuick" class="shquick">
+        <button type="button" data-q="Summarise this case: who are the targets, what connects them, and what do the documents establish?">Summarise the case</button>
+        <button type="button" data-q="How are the targets connected? Give every route with its source.">How are they connected?</button>
+        <button type="button" data-q="Who keeps reappearing across records and documents (witness, guarantor, co-accused, hotel, SIM owner)?">Who keeps reappearing?</button>
+        <button type="button" data-q="What do the FIR files, case diaries and lab reports say about the targets?">What do the documents say?</button>
+      </div>
+      <form id="sherlockForm" class="shform">
+        <textarea id="sherlockInput" rows="2" placeholder="Ask Sherlock… e.g. fetch the lab reports for FIR 45/2023" autocomplete="off"></textarea>
+        <button class="primary" type="submit" id="sherlockSend">Ask</button>
+      </form>
+    </section>
+
     <aside class="right" id="details" hidden>
       <button class="close" id="closeDetails" title="Close">×</button>
       <div id="detailsBody"></div>
@@ -219,6 +251,11 @@
   <dialog id="historyDlg">
     <form method="dialog" class="dlghead"><b>Previous graphs</b><button class="ghost">Close</button></form>
     <div id="historyList" class="history"></div>
+  </dialog>
+
+  <dialog id="docDlg" class="docdlg">
+    <form method="dialog" class="dlghead"><b id="docTitle">Document</b><button class="ghost">Close</button></form>
+    <div id="docBody" class="docbody"></div>
   </dialog>
 
   <dialog id="keyDlg">

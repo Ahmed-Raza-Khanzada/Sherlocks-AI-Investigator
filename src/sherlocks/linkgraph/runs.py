@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from sherlocks.evidence.case_file import CaseFile
 from sherlocks.linkgraph.backends import LookupBackend, build_backend
 from sherlocks.linkgraph.cache import MemoryProviderCache, PostgresProviderCache, ProviderCache
 from sherlocks.linkgraph.engine import Cancelled, Expansion
@@ -64,6 +65,10 @@ class RunHandle:
         self.finished_at: datetime | None = None
         self.cancel_event = threading.Event()
         self._lock = threading.Lock()
+        # The case file (documents, quoted facts, evidence links, the case report) and
+        # the team filling it while the run builds.
+        self.case = CaseFile()
+        self.agents: Any = None
         ids = [s.cnic or s.phone or s.email for s in params.seeds if (s.cnic or s.phone or s.email)]
         self.seed_label = (f"{len(ids)} people: " + ", ".join(ids)) if ids else (params.cnic or params.phone or params.email or "?")
 
@@ -76,7 +81,7 @@ class RunHandle:
 
     def to_dict(self, *, graph: bool = True) -> dict[str, Any]:
         seed = next((n for n in self.builder.persons() if n.data.get("seed")), None)
-        if seed and seed.data.get("name"):
+        if seed and seed.data.get("name") and not self.params.seeds:
             self.seed_label = f"{seed.data['name']} ({self.params.cnic or self.params.phone or self.params.email})"
         out = {
             "id": self.id, "seed_label": self.seed_label, "backend": self.backend,
@@ -85,12 +90,17 @@ class RunHandle:
             "stats": {**self.builder.stats(), **self.stats}, "created_by": self.created_by,
             "created_at": self.created_at.isoformat(), "updated_at": self.updated_at.isoformat(),
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
+            "evidence": {**self.case.counts(), "report_status": self.case.report_status},
         }
         if graph:
             with self._lock:
                 out["events"] = list(self.events)
-            out["graph"] = self.builder.snapshot()
+            out["graph"] = self.graph()
         return out
+
+    def graph(self) -> dict[str, Any]:
+        """The graph with its case file - what is saved, exported and analysed."""
+        return {**self.builder.snapshot(), "case": self.case.to_dict()}
 
     def events_since(self, seq: int) -> tuple[list[dict[str, Any]], int]:
         """Events emitted after event number ``seq``, and the current number."""
@@ -292,13 +302,19 @@ class RunManager:
             progress(2, "Connecting to systems")
             try:
                 backend = self.backend(handle.backend)
+                handle.agents = self._agents(handle.case, backend, handle=handle)
                 expansion = Expansion(
                     backend=backend, cache=self.cache, images=self.images, settings=self.settings,
                     params=handle.params, builder=handle.builder, emit=handle.emit, progress=progress,
                     checkpoint=checkpoint, cancelled=handle.cancel_event.is_set,
                     llm=self._llm() if handle.params.ai_address_matching else None,
+                    evidence=handle.agents,
                 )
                 handle.stats = expansion.run()
+                if handle.agents.enabled and handle.case.counts()["pending"] + len(handle.case.documents):
+                    progress(97, "Reading case documents")
+                    handle.emit("info", "Graph complete - finishing the case documents being read")
+                    self._drain(handle)
                 handle.status = "completed"
                 stats = handle.builder.stats()
                 progress(100, f"Done · {stats['persons']} people · {stats['records']} records · "
@@ -306,8 +322,10 @@ class RunManager:
                 handle.stats = {**handle.stats}
             except Cancelled:
                 handle.status = "cancelled"
-                handle.emit("warn", "Cancelled by user")
-                progress(handle.progress, "Cancelled")
+                handle.emit("warn", "Stopped by user - the case report is written from what was found")
+                progress(handle.progress, "Stopped")
+                if handle.agents is not None:
+                    handle.agents.stop()
             except Exception as exc:
                 logger.exception("Graph run %s failed", handle.id)
                 handle.status = "failed"
@@ -316,6 +334,83 @@ class RunManager:
             finally:
                 handle.finished_at = _now()
                 checkpoint(force=True)
+        if handle.status in ("completed", "cancelled") and self.settings.evidence.auto_report:
+            self.build_report(handle)
+            checkpoint(force=True)
+
+    # -- evidence and the case report -------------------------------------------------
+
+    def _agents(self, case: CaseFile, backend: LookupBackend, *, handle: RunHandle | None = None,
+                graph: dict[str, Any] | None = None) -> Any:
+        from sherlocks.evidence.collector import CaseAgents
+        from sherlocks.evidence.sources import evidence_source
+
+        try:
+            source = evidence_source(backend) if self.settings.evidence.enabled else None
+        except Exception:
+            logger.exception("No evidence source for backend %s", getattr(backend, "name", "?"))
+            source = None
+        return CaseAgents(
+            case, source, settings=self.settings, cache=self.cache, images=self.images,
+            builder=handle.builder if handle else None,
+            graph=handle.builder.snapshot if handle else (lambda: graph or {"nodes": [], "edges": []}),
+            llm=self._llm, emit=handle.emit if handle else None,
+            cancelled=handle.cancel_event.is_set if handle else None, backend_name=getattr(backend, "name", "ems"))
+
+    def _drain(self, handle: RunHandle) -> None:
+        """Let the evidence team finish, unless the officer stops the run."""
+        deadline = time.monotonic() + 900
+        while time.monotonic() < deadline and not handle.cancel_event.is_set():
+            handle.agents.drain(timeout=2.0)
+            if not any(not f.done() for f in handle.agents._futures):
+                return
+        if handle.cancel_event.is_set():
+            handle.agents.stop()
+
+    def build_report(self, handle: RunHandle) -> dict[str, Any] | None:
+        """Write the case report for a finished (or stopped) run."""
+        from sherlocks.evidence.case_report import assemble
+
+        handle.case.set_report(handle.case.report, "building")
+        handle.emit("info", "🕵 Sherlock is writing the case report")
+        try:
+            report = assemble(handle.builder.snapshot(), handle.case, llm=self._llm(), run=handle.to_dict(graph=False))
+        except Exception as exc:
+            logger.exception("Case report for %s failed", handle.id)
+            handle.case.set_report(None, "failed")
+            handle.emit("error", f"Case report failed: {type(exc).__name__}: {exc}")
+            return None
+        handle.case.set_report(report, "ready")
+        handle.emit("hit", f"📑 Case report ready: {len(report['assessments'])} assessment(s), "
+                           f"{len(report['cited'])} reference(s) - download it from the toolbar")
+        return report
+
+    def case_of(self, graph: dict[str, Any], run_id: str | None = None) -> CaseFile:
+        handle = self._runs.get(run_id) if run_id else None
+        return handle.case if handle is not None else CaseFile.from_dict(graph.get("case"))
+
+    def document(self, run_id: str, doc_id: str) -> dict[str, Any] | None:
+        graph = self.graph_for(run_id)
+        if graph is None:
+            return None
+        return self.case_of(graph, run_id).document(doc_id)
+
+    def report_pdf(self, graph: dict[str, Any], run_id: str | None = None, *, rebuild: bool = False) -> bytes:
+        """The case report PDF: the report written at the end of the run, or written now
+        (a graph posted back by the host, or ``rebuild``)."""
+        from sherlocks.evidence.case_report import assemble
+        from sherlocks.evidence.report_pdf import render
+
+        case = self.case_of(graph, run_id)
+        report = None if rebuild else case.report
+        if report is None:
+            run = self.get(run_id) if run_id else None
+            report = assemble(graph, case, llm=self._llm(), run=run)
+            case.set_report(report, "ready")
+            if run_id and run_id not in self._runs and run is not None:
+                run.setdefault("graph", graph)["case"] = case.to_dict()
+                self.store.save(run)
+        return render(report, case, graph, self.images)
 
     def live(self, run_id: str) -> RunHandle | None:
         """The in-memory handle of a run this process holds, for streaming it."""
@@ -349,7 +444,7 @@ class RunManager:
     def graph_for(self, run_id: str) -> dict[str, Any] | None:
         handle = self._runs.get(run_id)
         if handle is not None:
-            return handle.builder.snapshot()
+            return handle.graph()
         run = self.store.load(run_id)
         return run.get("graph") if run else None
 
@@ -452,12 +547,35 @@ class RunManager:
         pa, pb = net.resolve(a), net.resolve(b)
         return {"a": pa, "b": pb, "routes": net.paths(pa, pb, k=k) if pa and pb else []}
 
-    def investigate(self, graph: dict[str, Any], question: str,
-                    history: list[dict] | None = None) -> Any:
-        """The AI investigator's events for one question (an iterator)."""
+    def investigate(self, graph: dict[str, Any], question: str, history: list[dict] | None = None,
+                    run_id: str | None = None) -> Any:
+        """The AI investigator's events for one question (an iterator). It reads the
+        case file and may fetch documents or run a lookup itself; what it fetches joins
+        the case file (saved with the run, or returned as ``case`` on the final event
+        for a graph posted back by the host)."""
         from sherlocks.linkgraph.investigator import investigate
 
-        return investigate(graph, question, llm=self._llm(), history=history)
+        handle = self._runs.get(run_id) if run_id else None
+        case = self.case_of(graph, run_id)
+        kind = handle.backend if handle else self.backend_kind((self.get(run_id) or {}).get("backend") if run_id else None)
+        backend = self.backend(kind)
+        agents = handle.agents if handle is not None and handle.agents is not None else None
+        if agents is None or not agents.enabled:
+            agents = self._agents(case, backend, graph=graph)
+        before = case.version
+
+        def events() -> Any:
+            for event in investigate(graph, question, llm=self._llm(), history=history, case=case, agents=agents,
+                                     backend=backend, live_calls=self.settings.evidence.chat_live_calls):
+                if event.get("type") == "final" and case.version != before and handle is None:
+                    event["case"] = case.to_dict()
+                    run = self.store.load(run_id) if run_id else None
+                    if run is not None:
+                        run.setdefault("graph", graph)["case"] = case.to_dict()
+                        self.store.save(run)
+                yield event
+
+        return events()
 
     def cancel(self, run_id: str) -> bool:
         handle = self._runs.get(run_id)

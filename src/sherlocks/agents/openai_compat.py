@@ -80,12 +80,12 @@ class OpenAICompatClient:
 
     # -- generation ---------------------------------------------------------------
 
-    def _chat(self, messages: list[dict[str, str]], json_schema: dict[str, Any]) -> str:
+    def _chat(self, messages: list[dict[str, str]], json_schema: dict[str, Any], max_tokens: int | None = None) -> str:
         payload: dict[str, Any] = {
             "model": self.settings.model,
             "messages": messages,
             "temperature": self.settings.temperature,
-            "max_tokens": self.settings.max_tokens,
+            "max_tokens": max_tokens or self.settings.max_tokens,
         }
         if self._schema_ok:
             payload["response_format"] = {"type": "json_schema", "json_schema": {"name": "result", "schema": json_schema}}
@@ -106,7 +106,7 @@ class OpenAICompatClient:
             else:
                 self._schema_ok = False
             logger.info("LLM server rejected an optional field; retrying without it")
-            return self._chat(messages, json_schema)
+            return self._chat(messages, json_schema, max_tokens)
         if not response.ok:
             raise LlmUnavailable(f"LLM server returned HTTP {response.status_code}: {response.text[:300]}")
         try:
@@ -124,6 +124,7 @@ class OpenAICompatClient:
         model: str | None = None,  # accepted for OllamaClient parity; the server serves one model
         cache_kind: str | None = None,
         prompt_version: str = "v1",
+        max_tokens: int | None = None,  # a longer answer than the default (document reading)
     ) -> tuple[T, LlmResult]:
         if not self.settings.ready:
             raise LlmUnavailable("LLM is disabled or not configured")
@@ -150,7 +151,7 @@ class OpenAICompatClient:
                 "Return ONLY a JSON object matching the schema."
             )
             messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": user}]
-            raw = self._chat(messages, json_schema)
+            raw = self._chat(messages, json_schema, max_tokens)
             try:
                 validated = schema.model_validate(_extract_json(raw))
             except (ValueError, ValidationError) as exc:
@@ -170,6 +171,35 @@ class OpenAICompatClient:
             f"{name} produced no output matching {schema.__name__} in {self.settings.max_attempts} attempts. "
             f"Last error: {errors[-1] if errors else 'unknown'}"
         )
+
+    def read_image(self, image: bytes, prompt: str, *, mime: str = "image/png") -> str:
+        """Plain-text answer about one image (a scanned report page). Needs a vision
+        model on the server (``llm.vision``); a text-only server answers HTTP 400."""
+        import base64
+
+        if not (self.settings.ready and self.settings.vision):
+            raise LlmUnavailable("Vision is not enabled for this model (SHERLOCKS_LLM_VISION)")
+        payload: dict[str, Any] = {
+            "model": self.settings.model, "temperature": 0.0, "max_tokens": max(self.settings.max_tokens, 2000),
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{base64.b64encode(image).decode()}"}},
+            ]}],
+        }
+        if self._template_kwargs_ok:
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
+        try:
+            response = self._session.post(self._url("chat/completions"), json=payload, headers=self._headers(),
+                                          timeout=max(self.settings.timeout_seconds, 120))
+        except requests.RequestException as exc:
+            raise LlmUnavailable(f"Vision request failed: {exc}") from exc
+        if not response.ok:
+            raise LlmUnavailable(f"Vision request returned HTTP {response.status_code}: {response.text[:200]}")
+        try:
+            content = response.json()["choices"][0]["message"]["content"] or ""
+        except (KeyError, IndexError, ValueError) as exc:
+            raise LlmUnavailable(f"Unexpected vision response: {response.text[:200]}") from exc
+        return _THINK_RE.sub("", content).strip()
 
     def close(self) -> None:
         self._session.close()

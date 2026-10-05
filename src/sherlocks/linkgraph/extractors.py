@@ -380,6 +380,8 @@ def _psrms(ctx: _Ctx, data: dict, raw: Any) -> None:
             relation = f"Complainant against the subject in FIR {label}"
         elif mine == "Complainant" and role == "Accused":
             relation = f"Accused by the subject in FIR {label}"
+        elif role == "Witness" and mine == "Witness":
+            relation = f"Co-witness in FIR {label}"   # becomes a weak link (graph.link_related)
         elif role == "Witness":
             relation = f"Witness in FIR {label}"
         else:
@@ -451,13 +453,19 @@ def _prvs_profiles(ctx: _Ctx, profiles: list[dict]) -> None:
             ctx.rec.add_field(f"Case {case.get('case_id')}", " · ".join(str(x) for x in (
                 roles, case.get("purpose_name"), case.get("status_name"), str(case.get("request_date") or "")[:10],
                 case.get("zone_name") or case.get("district_name")) if x))
-        # Witnesses vouched for the subject's verification: a stated, sourced relation.
+        # Witnesses of the subject's own verification vouched for the subject: a stated
+        # relation. In a case where the subject is only a witness, the other witnesses
+        # vouched for the applicant, not for the subject: a weak co-witness link.
         for w in prof.get("witnesses") or []:
             case = cases.get(w.get("case_id")) or {}
             wref = _ref(w.get("name"), w.get("father_name"), w.get("cnic"), [w.get("mobile")], [w.get("address")])
             detail = " · ".join(str(x) for x in (f"case {w.get('case_id')}", case.get("purpose_name"),
                                                   case.get("zone_name")) if x)
-            ctx.relate(wref, "Verification witness (PRVS)", detail)
+            subject_roles = [str(r).lower() for r in case.get("roles") or []]
+            if subject_roles and not any("applicant" in r for r in subject_roles):
+                ctx.relate(wref, f"Co-witness in PRVS case {w.get('case_id')}", detail)
+            else:
+                ctx.relate(wref, "Verification witness (PRVS)", detail)
         # CRO records PRVS itself matched to this person.
         for link in prof.get("criminal_links") or []:
             if link.get("cro_no"):
@@ -515,10 +523,17 @@ def _prvs(ctx: _Ctx, data: dict, raw: Any) -> None:
         ref = mkref(r)
         if r not in subject_rows and not ctx.is_subject(ref):
             ctx.relate(ref, "Same number on a PRVS tenancy record", r.get("district_or_zone"))
-        # A tenancy row may also name the property owner / landlord.
+        # A tenancy row may also name the property owner / landlord. Only the subject's
+        # own row makes that person the subject's landlord; on someone else's row (same
+        # number) the landlord is that other person's, kept as a detail.
         owner = _ref(r.get("owner_name"), cnic=r.get("owner_cnic"), phones=[r.get("owner_mobile")])
         if not owner.is_empty and not ctx.is_subject(owner):
-            ctx.relate(owner, "Landlord (PRVS)", r.get("tenant_address") or r.get("address"))
+            someone_else = bool(ref.cnic or ref.phones) and r not in subject_rows and not ctx.is_subject(ref)
+            if not someone_else:
+                ctx.relate(owner, "Landlord (PRVS)", r.get("tenant_address") or r.get("address"))
+            else:
+                ctx.rec.add_field("Landlord on a record sharing this number",
+                                  " · ".join(x for x in (owner.name, owner.cnic) if x) or "-")
     ctx.rec.add_field("PRVS records", len(rows))
 
 
@@ -554,6 +569,28 @@ def _old_tenant(ctx: _Ctx, data: dict, raw: Any) -> None:
                      cnic=inner.get("owner_cnic") or row.get("owner_cnic"),
                      phones=[inner.get("owner_mobile_number"), row.get("owner_mobile_number")])
         where = f"property: {address}" if address else None
+        witnesses = []
+        for i in (1, 2, 3):
+            wname = inner.get(f"tenant_witness_name_{i}") or row.get(f"tenant_witness_name_{i}")
+            wcnic = inner.get(f"tenant_witness_cnic_{i}") or row.get(f"tenant_witness_cnic_{i}")
+            wphone = inner.get(f"tenant_witness_mobile_{i}") or row.get(f"tenant_witness_mobile_{i}")
+            if wname or wcnic:
+                witnesses.append(_ref(wname, cnic=wcnic, phones=[wphone]))
+        if not (ctx.is_subject(tenant) or ctx.is_subject(owner)) and any(ctx.is_subject(w) for w in witnesses):
+            # The subject only witnessed this tenancy: they vouched for the tenant. The
+            # landlord is the tenant's relation, not theirs (kept as a detail), and the
+            # other witnesses witnessed for the tenant too - co-witnesses, a weak link.
+            ctx.absorb(next(w for w in witnesses if ctx.is_subject(w)))
+            ctx.relate(tenant, "Tenancy witnessed by the subject", where)
+            for w in witnesses:
+                if not ctx.is_subject(w):
+                    ctx.relate(w, "Co-witness on a tenancy", where)
+            if not owner.is_empty:
+                ctx.rec.add_field("Landlord of the tenancy witnessed", " · ".join(
+                    x for x in (owner.name, owner.cnic, (owner.phones or [None])[0]) if x))
+            ctx.rec.add_field(f"Tenancy #{row.get('tenant_id') or len(ctx.rec.fields) + 1}",
+                              f"witnessed by the subject · {address or '-'}")
+            continue
         if ctx.is_subject(tenant):
             ctx.absorb(tenant)
             ctx.relate(owner, "Landlord", where)
@@ -563,12 +600,11 @@ def _old_tenant(ctx: _Ctx, data: dict, raw: Any) -> None:
         else:
             ctx.relate(owner, "Landlord (tenancy record)", where)
             ctx.relate(tenant, "Tenant (tenancy record)", where)
-        # Witnesses named on the tenancy (tenant_witness_name_1 / _cnic_1, _2 …).
-        for i in (1, 2, 3):
-            wname = inner.get(f"tenant_witness_name_{i}")
-            wcnic = inner.get(f"tenant_witness_cnic_{i}")
-            if wname or wcnic:
-                ctx.relate(_ref(wname, cnic=wcnic), "Tenancy witness", where)
+        # Witnesses named on the tenancy vouched for the tenant. Only when the subject IS
+        # the tenant are they the subject's witnesses; otherwise they are not linked here.
+        if ctx.is_subject(tenant):
+            for w in witnesses:
+                ctx.relate(w, "Tenancy witness", where)
         ctx.rec.add_field(f"Tenancy #{row.get('tenant_id') or len(ctx.rec.fields) + 1}", address or "-")
 
 
@@ -907,8 +943,51 @@ def _roster_person(cells: dict[str, str]) -> PersonRef | None:
     return None if ref.is_empty else ref
 
 
+_DOC_ROLES = {
+    "complainant": "Complainant", "nominated_suspects": "Accused", "arrested_suspects": "Accused",
+    "witnesses": "Witness", "guarantors": "Guarantor", "investigating_officers": "Investigating officer",
+}
+
+
+def _fir_document(ctx: _Ctx, doc: dict) -> None:
+    """A FIR file report read by sherlocks.evidence.fir_document: people by role."""
+    label = f"{doc.get('fir_no')}/{doc.get('fir_year')}"
+    mine = next((_DOC_ROLES.get(key) for key, people in (doc.get("roster") or {}).items() for p in people
+                 if ctx.is_subject(_ref(p.get("name"), p.get("father"), p.get("cnic"), [p.get("phone")]))), None)
+    for key, people in (doc.get("roster") or {}).items():
+        role = _DOC_ROLES.get(key, "Named")
+        if role in ("Witness", "Guarantor") and mine in ("Witness", "Guarantor"):
+            role = "Co-witness"   # witnesses of the same case: a weak link, not a statement
+        for p in people:
+            ref = _ref(p.get("name"), p.get("father"), p.get("cnic"), [p.get("phone")], [p.get("address")])
+            if ref.is_empty:
+                continue
+            if ctx.is_subject(ref):
+                ctx.absorb(ref)
+                continue
+            detail = " · ".join(x for x in (
+                "nominated" if key == "nominated_suspects" else "", p.get("rank") or "",
+                p.get("occupation") or "", p.get("date") or "") if x)
+            ctx.relate(ref, f"{role} in FIR {label}", detail or None)
+    ctx.rec.add_field("FIR", f"{label} · PS {doc.get('police_station') or doc.get('ps_id')}")
+    for field_label, key in (("Sections", "sections"), ("Offence", "offence"), ("Occurred", "occurred"),
+                             ("Place", "place"), ("Result", "investigation_result")):
+        if doc.get(key):
+            ctx.rec.add_field(field_label, doc[key])
+    if doc.get("case_positions"):
+        last = doc["case_positions"][-1]
+        ctx.rec.add_field("Case position", " · ".join(x for x in (last.get("position"), last.get("date")) if x))
+    if doc.get("narrative"):
+        ctx.rec.add_field("Narrative", str(doc["narrative"])[:300])
+    ctx.rec.add_field("Case diaries", len(doc.get("case_diaries") or []))
+    ctx.rec.add_field("People named", len(ctx.rec.related))
+
+
 def _fir_roster(ctx: _Ctx, data: dict, raw: Any) -> None:
     if not isinstance(raw, dict):
+        return
+    if "roster" in raw:
+        _fir_document(ctx, raw)
         return
     fir_label = raw.get("fir_label") or "FIR"
     for table, relation in _ROSTER_TABLES.items():

@@ -45,6 +45,12 @@ def _edge_id(kind: str, source: str, target: str, label: str) -> str:
     return f"e:{kind}:{source}>{target}:{digest}"
 
 
+def witness_role(role: str | None) -> bool:
+    """A role that is about someone else's case: witness, verification witness, guarantor."""
+    text = (role or "").lower()
+    return "witness" in text or "guarantor" in text
+
+
 class GraphBuilder:
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -286,6 +292,8 @@ class GraphBuilder:
             for fir in rec.firs:
                 item = {"key": fir.key, "label": f"{fir.fir_no}/{fir.fir_year}", "ps": fir.police_station,
                         "role": fir.role, "system": rec.system, "offence": fir.offence}
+                if fir.ps_id:
+                    item["ps_id"] = fir.ps_id
                 if item not in data["firs"]:
                     data["firs"].append(item)
             for stay in rec.stays:
@@ -317,6 +325,16 @@ class GraphBuilder:
                 "system": system, "relation": rel.relation, "from": self.canonical(from_pid)})
             if pid == self.canonical(from_pid):
                 return pid, False
+            if rel.relation.lower().startswith(("co-witness", "co-witness on a tenancy")):
+                # Both are witnesses of someone else's case: they share the case, they do not
+                # vouch for each other. An inferred link between them, not a stated one.
+                a, b = sorted((self.canonical(from_pid), pid))
+                fir = rel.relation.split(" in ", 1)[-1] if " in " in rel.relation else "the same tenancy"
+                self._add_edge(GraphEdge(id=_edge_id("weak", a, b, "co_witness"), source=a, target=b, kind="weak",
+                                         label=f"Both witnesses in {fir}", score=0.5, system=system,
+                                         reasons=[f"Both are witnesses in {fir} ({system_label(system)})"]))
+                self.version += 1
+                return pid, created
             already_in = any(e.kind == "found_in" and e.source == pid and e.target == sid for e in self.edges.values())
             if not already_in:
                 self._add_edge(GraphEdge(id=_edge_id("strong", sid, pid, rel.relation), source=sid, target=pid,
@@ -345,6 +363,34 @@ class GraphBuilder:
                                      label=label, reasons=reasons, system=system))
             self.version += 1
 
+    def link_mention(self, sid: str, pid: str, *, label: str, reason: str) -> bool:
+        """A case document (a FIR file the record node stands for) names a person of the
+        graph by identifier: a stated link from that record to them, unless they are
+        already joined to it."""
+        with self._lock:
+            pid = self.canonical(pid)
+            if sid not in self.nodes or pid not in self.nodes:
+                return False
+            if any({e.source, e.target} == {sid, pid} for e in self.edges.values()):
+                return False
+            self._add_edge(GraphEdge(id=_edge_id("strong", sid, pid, label), source=sid, target=pid, kind="strong",
+                                     label=label, reasons=[reason], system=self.nodes[sid].data.get("system")))
+            self.version += 1
+            return True
+
+    def add_images(self, pid: str, image_ids: list[str], source: str) -> None:
+        """Pictures of a person found in a document (CRO dossier poses)."""
+        with self._lock:
+            pid = self.canonical(pid)
+            if pid not in self.nodes:
+                return
+            data = self.nodes[pid].data
+            for image_id in image_ids:
+                if image_id not in data["images"]:
+                    data["images"].append(image_id)
+                    data.setdefault("image_sources", {})[image_id] = source
+            self.version += 1
+
     def connected_directly(self, a: str, b: str) -> bool:
         """Are ``a`` and ``b`` already joined by a strong path of length <= 2 (via one record)?"""
         a, b = self.canonical(a), self.canonical(b)
@@ -370,9 +416,17 @@ class GraphBuilder:
                     continue
                 firs_x = {f["key"]: f for f in x.data["firs"]}
                 shared = [firs_x[f["key"]] for f in y.data["firs"] if f["key"] in firs_x]
+                roles_y = {f["key"]: f.get("role") for f in y.data["firs"]}
                 for fir in shared[:3]:
-                    self.add_direct_strong(x.id, y.id, label=f"Same FIR {fir['label']}", system=fir["system"],
-                                           reasons=[f"FIR {fir['label']} at {fir['ps']} appears in both people's {system_label(fir['system'])} records"])
+                    if witness_role(fir.get("role")) and witness_role(roles_y.get(fir["key"])):
+                        # Two witnesses of the same case are witnesses of a third person, not
+                        # of each other: they only share the case - an inferred link.
+                        self.add_weak(x.id, y.id, score=0.5, label=f"Both witnesses in FIR {fir['label']}",
+                                      reasons=[f"Both are witnesses in FIR {fir['label']} at {fir['ps']}; "
+                                               "neither is a witness about the other"], source="shared_fir")
+                    else:
+                        self.add_direct_strong(x.id, y.id, label=f"Same FIR {fir['label']}", system=fir["system"],
+                                               reasons=[f"FIR {fir['label']} at {fir['ps']} appears in both people's {system_label(fir['system'])} records"])
                     added += 1
                 for plate in sorted(set(x.data["vehicles"]) & set(y.data["vehicles"])):
                     self.add_direct_strong(x.id, y.id, label=f"Same vehicle {plate}", system="tracs",

@@ -10,12 +10,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Fonts back the reused bilingual (Urdu/English) PDF engine; curl is for the healthcheck.
+# Fonts back the bilingual (Urdu/English) PDFs; curl is for the healthcheck.
+# poppler-utils renders a scanned PDF page for the vision model (which does the reading).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     fonts-dejavu-core \
     fonts-liberation \
     fonts-noto-core \
+    poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Dependencies first, for layer caching. Sherlocks' own deps come from pyproject;
@@ -29,7 +31,7 @@ RUN pip install --upgrade pip \
        "pydantic>=2.9" "SQLAlchemy>=2.0.30" "psycopg2-binary>=2.9.9" "alembic>=1.13" \
        "PyYAML>=6.0" "python-dotenv>=1.0" "requests>=2.32" "httpx>=0.27" "fpdf2>=2.8" \
        "pypdf>=5.0" "matplotlib>=3.9" "networkx>=3.3" "rapidfuzz>=3.9" \
-       "arabic-reshaper>=3.0" "python-bidi>=0.6" "Pillow>=10.0"
+       "arabic-reshaper>=3.0" "python-bidi>=0.6" "Pillow>=10.0" "uharfbuzz>=0.40" "beautifulsoup4>=4.12"
 
 # OSINT: the OpenOSINT tool library and the pip-installable binaries it shells out to
 # (username search across sites, email-registration checks). phoneinfoga is a Go binary

@@ -68,6 +68,9 @@ _RULES: list[tuple[re.Pattern[str], str, str, bool]] = [
     (re.compile(rf"^same identifier in {_FIR}(?: \((?P<role>[^)]+)\))?", re.IGNORECASE),
      "appears in FIR {fir} on the same phone/CNIC as", "named", False),
     (re.compile(rf"^same fir {_FIR}", re.IGNORECASE), "is named in the same FIR {fir} as", "named", True),
+    (re.compile(rf"^mentioned in the file of {_FIR}", re.IGNORECASE), "is mentioned in the file of FIR {fir} involving",
+     "named", False),
+    (re.compile(rf"^guarantor in {_FIR}", re.IGNORECASE), "is a guarantor in FIR {fir} involving", "named", False),
     (re.compile(r"^complainant \(vehicle case\)", re.IGNORECASE), "is complainant in a vehicle case involving", "named", False),
     (re.compile(r"^complainant", re.IGNORECASE), "is complainant in a case involving", "named", False),
     (re.compile(r"^(?:accused|suspect)", re.IGNORECASE), "is accused in a case alongside", "named", True),
@@ -79,6 +82,8 @@ _RULES: list[tuple[re.Pattern[str], str, str, bool]] = [
      "is landlord on a tenancy record found on the phone/CNIC of", "named", False),
     (re.compile(r"^tenant \(tenancy record\)", re.IGNORECASE),
      "is tenant on a tenancy record found on the phone/CNIC of", "named", False),
+    # The subject witnessed the named tenant's tenancy: the arrow runs subject -> tenant.
+    (re.compile(r"^tenancy witnessed by the subject", re.IGNORECASE), "was witness to the tenancy of", "owner", False),
     (re.compile(r"^tenancy witness", re.IGNORECASE), "was witness to the tenancy of", "named", False),
     (re.compile(r"^verification witness", re.IGNORECASE), "vouched as a PRVS witness for", "named", False),
     (re.compile(r"^prvs profile found by this number", re.IGNORECASE), "was found in PRVS by the phone number of", "named", False),

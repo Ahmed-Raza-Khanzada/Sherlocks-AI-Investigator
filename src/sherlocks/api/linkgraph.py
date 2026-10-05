@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 
 from sherlocks.agents.llm import llm_label
 from sherlocks.api.auth import AuthError, SessionAuth
+from sherlocks.evidence.case_file import CaseFile
 from sherlocks.linkgraph.demo_data import DEMO_SEEDS
 from sherlocks.linkgraph.images import _MAGIC
 from sherlocks.linkgraph.models import GraphRunParams
@@ -48,7 +49,7 @@ _STREAM_TICK_SECONDS = 0.5
 _STREAM_KEEPALIVE_SECONDS = 15.0
 _TERMINAL = {"completed", "failed", "cancelled"}
 _STATUS_KEYS = ("id", "seed_label", "backend", "params", "status", "progress_pct", "message", "stats",
-                "created_by", "created_at", "finished_at")
+                "created_by", "created_at", "finished_at", "evidence")
 
 
 class ChatTurn(BaseModel):
@@ -196,6 +197,9 @@ def build_router(settings: Settings, manager: Callable[[], RunManager],
         ``status`` - the run's summary (``id, seed_label, backend, params, status,
                      progress_pct, message, stats``…) whenever any of it changes.
         ``log``    - ``{events: [{at, level, message}]}``, new log lines.
+        ``case``   - the case file's index whenever it changes: ``{counts, documents,
+                     facts, links, attempts, report_status}`` (document texts are fetched
+                     with ``/runs/{id}/documents/{doc}``).
         ``done``   - ``{status}``; the stream then ends. Close the EventSource here, or
                      the browser reconnects. Fetch ``/runs/{id}/export`` to save it.
         """
@@ -213,11 +217,13 @@ def build_router(settings: Settings, manager: Callable[[], RunManager],
                     return
                 graph = run.get("graph") or {"nodes": [], "edges": [], "version": 0}
                 yield _sse("graph", {**GraphDiffer().diff(graph)})
+                yield _sse("case", CaseFile.from_dict(graph.get("case")).index())
                 yield _sse("status", {k: run.get(k) for k in _STATUS_KEYS})
                 yield _sse("log", {"events": run.get("events") or []})
                 yield _sse("done", {"status": run.get("status")})
                 return
             differ, version, seq, last_status, last_sent = GraphDiffer(), -1, 0, None, time.monotonic()
+            case_version = -1
             while True:
                 if await request.is_disconnected():
                     return
@@ -228,6 +234,9 @@ def build_router(settings: Settings, manager: Callable[[], RunManager],
                     delta = differ.diff(await asyncio.to_thread(handle.builder.snapshot))
                     if delta is not None:
                         chunks.append(_sse("graph", delta))
+                if handle.case.version != case_version or finished:
+                    case_version = handle.case.version
+                    chunks.append(_sse("case", handle.case.index()))
                 summary = handle.to_dict(graph=False)
                 current = {k: summary.get(k) for k in _STATUS_KEYS}
                 if current != last_status:
@@ -324,7 +333,7 @@ def build_router(settings: Settings, manager: Callable[[], RunManager],
             need("a", "b")
             result = mgr.paths(graph, body.a, body.b, k=body.k)
         elif action == "investigate":
-            events = list(mgr.investigate(graph, body.question or "", history=_history(body.history)))
+            events = list(mgr.investigate(graph, body.question or "", history=_history(body.history), run_id=scope))
             result = {**events[-1], "steps": [e for e in events if e["type"] == "step"]}
         else:
             need("a", "b")
@@ -339,8 +348,8 @@ def build_router(settings: Settings, manager: Callable[[], RunManager],
         and a stream reader - EventSource cannot POST). Events: ``start``, one ``step`` per
         tool call {tool, args, thought, summary}, then ``final`` {answer, hypotheses,
         key_people, next_steps, suggestions, findings}. Body as for /analyze."""
-        graph, _scope = _source(body)
-        events = manager().investigate(graph, body.question or "", history=_history(body.history))
+        graph, scope = _source(body)
+        events = manager().investigate(graph, body.question or "", history=_history(body.history), run_id=scope)
 
         def stream() -> Any:
             for event in events:
@@ -350,6 +359,49 @@ def build_router(settings: Settings, manager: Callable[[], RunManager],
 
         return StreamingResponse(stream(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    # -- case file and case report ------------------------------------------------------
+
+    @router.get("/runs/{run_id}/documents/{doc_id}")
+    def document(run_id: str, doc_id: str, _: None = Depends(auth)) -> dict:
+        """One case document in full: text, quoted facts, people found, pictures (as
+        image ids for ``/images/{id}``)."""
+        doc = manager().document(run_id, doc_id.upper())
+        if doc is None:
+            raise HTTPException(status_code=404, detail="Run or document not found")
+        return doc
+
+    def _pdf_response(pdf: bytes, name: str) -> Response:
+        return Response(pdf, media_type="application/pdf",
+                        headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
+
+    @router.get("/runs/{run_id}/report.pdf")
+    def report_pdf(run_id: str, rebuild: bool = False, _: None = Depends(auth)) -> Response:
+        """The case report as a PDF: written when the run finished or was stopped (or now,
+        with ``rebuild=true`` - e.g. after the chat fetched more documents). A link the
+        browser can open directly: pass the token as ``?token=``."""
+        mgr = manager()
+        graph = mgr.graph_for(run_id)
+        if graph is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        try:
+            pdf = mgr.report_pdf(graph, run_id, rebuild=rebuild)
+        except Exception as exc:
+            logger.exception("Case report PDF for %s failed", run_id)
+            raise HTTPException(status_code=500, detail=f"Case report failed: {exc}") from exc
+        return _pdf_response(pdf, f"sherlocks_case_report_{run_id[:8]}.pdf")
+
+    @router.post("/report")
+    def report_from_graph(body: AnalyzeRequest, _: None = Depends(auth)) -> Response:
+        """The case report PDF for a graph the host saved (``graph`` with its ``case``),
+        or for a run held here (``run_id``)."""
+        graph, scope = _source(body)
+        try:
+            pdf = manager().report_pdf(graph, scope, rebuild=body.explain)
+        except Exception as exc:
+            logger.exception("Case report PDF failed")
+            raise HTTPException(status_code=500, detail=f"Case report failed: {exc}") from exc
+        return _pdf_response(pdf, "sherlocks_case_report.pdf")
 
     # The per-run forms below predate /analyze and are kept for existing callers.
 

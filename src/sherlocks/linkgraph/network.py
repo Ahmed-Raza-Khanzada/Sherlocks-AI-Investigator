@@ -33,6 +33,7 @@ import networkx as nx
 from rapidfuzz import fuzz, process
 
 from sherlocks.linkgraph.dossier import criminal_flags
+from sherlocks.linkgraph.graph import witness_role
 from sherlocks.linkgraph.normalize import name_key
 from sherlocks.linkgraph.systems import system_label
 
@@ -86,11 +87,15 @@ class PersonNetwork:
         for pid, n in self.people.items():
             self.G.add_node(pid, name=n["label"], data=n["data"])
         members: dict[str, list[str]] = {}
+        roles: dict[tuple[str, str], str] = {}   # (record, person) -> their role on it
         for e in self.graph.get("edges", []):
             src, dst = e["source"], e["target"]
             if e["kind"] == "found_in":
                 members.setdefault(dst, []).append(src)
+                roles[(dst, src)] = e.get("label") or ""
                 continue
+            if e["kind"] == "strong" and str(src).startswith("s:"):
+                roles.setdefault((src, dst), e.get("label") or "")
             if e["kind"] == "strong" and str(src).startswith("s:"):
                 owner = (nodes.get(src) or {}).get("data", {}).get("owner")
                 if owner:
@@ -109,6 +114,11 @@ class PersonNetwork:
                 self.hub_records.append({"record": rid, "label": record.get("label"), "people": len(pids)})
                 continue
             for a, b in itertools.combinations(pids, 2):
+                if witness_role(roles.get((rid, a))) and witness_role(roles.get((rid, b))):
+                    # Witnesses of the same case are not witnesses of each other.
+                    self._add(a, b, Link("weak", f"Both witnesses on {record.get('label') or rid}",
+                                         record.get("data", {}).get("system"), None, rid, score=0.5))
+                    continue
                 self._add(a, b, Link("shared", f"Both on {record.get('label') or rid}",
                                      record.get("data", {}).get("system"), None, rid))
         # Hop cost: the best link's cost, plus a toll for each end that is a hub.

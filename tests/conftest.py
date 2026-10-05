@@ -68,6 +68,9 @@ def _fake_ems_endpoints(monkeypatch):
         "excise_url": f"{host}/GetVehicleInquiry/getVehicleInfo",
         "tracs_url": f"{host}/api/v1/sindh-police/challans",
         "avlc_url": f"{host}/api/icop",
+        "psrms_fir_url": f"{host}/restapi/Criminal_api/firfilereport",
+        "labs_url": f"{host}/api/v1/show-reports",
+        "safe_cro_url": f"{host}/api/cro-report-pdf",
     }
     for key in ems.CONF:
         monkeypatch.setitem(ems.CONF, key, fake.get(key, f"test-{key}"))

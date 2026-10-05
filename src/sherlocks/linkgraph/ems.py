@@ -82,6 +82,14 @@ CONF = {
     "psrms_url": _env("EMS_PSRMS_URL"),
     "psrms_key": _env("EMS_PSRMS_KEY"),
     "psrms_check_url": _env("EMS_PSRMS_CHECK_URL"),
+    # Case evidence (sherlocks.evidence): the FIR file report (same PSRMS key), forensic
+    # lab reports per FIR, and the CRO dossier PDF per CRO number.
+    "psrms_fir_url": _env("EMS_PSRMS_FIR_URL"),
+    "psrms_fir_cookie": _env("EMS_PSRMS_FIR_COOKIE"),
+    "labs_url": _env("EMS_LABS_URL"),
+    "labs_token": _env("EMS_LABS_TOKEN"),
+    "safe_cro_url": _env("EMS_SAFE_CRO_URL"),
+    "safe_key": _env("EMS_SAFE_KEY"),
     "cfms_url": _env("EMS_CFMS_URL"),
     "watchlist_url": _env("EMS_WATCHLIST_URL"),
     "watchlist_key": _env("EMS_WATCHLIST_KEY"),
@@ -279,7 +287,7 @@ class Req:
     timeout: int | None = None   # override the client default for a slow endpoint
 
 
-_SECRET_HEADERS = {"autokenn", "secrt", "api_key", "secret_key", "x-api-key", "api-key",
+_SECRET_HEADERS = {"autokenn", "secrt", "api_key", "secret_key", "x-api-key", "api-key", "api-token",
                    "authorization", "psrms-api-key", "i_key", "j_key", "api_token", "x-key", "cookie"}
 _SECRET_FIELDS = {"appkey", "psrms-api-key", "password", "api_key", "secret_key", "token"}
 
@@ -352,6 +360,29 @@ class EmsHttp:
             raise
         finally:
             self._log(req, status, text, error, (_time.time() - started) * 1000)
+
+    def fetch_bytes(self, url: str, *, timeout: int | None = None, max_bytes: int = 40_000_000) -> bytes:
+        """A binary download (a report PDF), audited like any call. Raises on HTTP errors."""
+        import time as _time
+
+        started = _time.time()
+        status, error, size = 0, None, 0
+        try:
+            resp = self.session.get(url, timeout=timeout or max(self.timeout, 60), stream=True)
+            status = resp.status_code
+            resp.raise_for_status()
+            chunks, size = [], 0
+            for chunk in resp.iter_content(65536):
+                size += len(chunk)
+                if size > max_bytes:
+                    raise requests.HTTPError(f"Download larger than {max_bytes // 1_000_000} MB")
+                chunks.append(chunk)
+            return b"".join(chunks)
+        except requests.RequestException as exc:
+            error = repr(exc)
+            raise
+        finally:
+            self._log(Req("GET", url), status, f"<{size} bytes>", error, (_time.time() - started) * 1000)
 
     def _log(self, req: Req, status: int, response_text: str, error: str | None, ms: float) -> None:
         """Write the full outbound call (system, input, URL, body, response) to the audit
@@ -466,8 +497,27 @@ class EmsBackend:
         return out
 
     def fir_roster(self, fir_no: str, fir_year: str, ps_id: str) -> dict[str, Any]:
-        # EMS personsearch does not return the ps id needed to fetch a FIR file report.
-        return _result("fir_roster", "no_record", "FIR roster not available on the EMS backend")
+        """The FIR file report: everyone the FIR names, and the whole document (the
+        case file keeps it as evidence)."""
+        from sherlocks.evidence.sources import EmsEvidence
+
+        if not (fir_no and fir_year and ps_id):
+            return _result("fir_roster", "invalid_input", "FIR number, year and police station id required")
+        ctx = getattr(self.http, "set_context", None)
+        if callable(ctx):
+            ctx("fir_roster", f"{fir_no}/{fir_year} ps {ps_id}")
+        try:
+            found = EmsEvidence(self.http).fir_document(fir_no, fir_year, ps_id)
+        except requests.RequestException as exc:
+            return _err("fir_roster", f"FIR report request failed: {exc}")
+        if found["status"] == "error":
+            return _err("fir_roster", found.get("message") or "FIR report request failed")
+        if found["status"] != "hit":
+            return _result("fir_roster", "no_record", found.get("message") or "FIR report not found")
+        doc = found["doc"]
+        names = sum(len(v) for v in doc.get("roster", {}).values())
+        return _result("fir_roster", "success", f"FIR {fir_no}/{fir_year} report read ({names} people named)",
+                       hit=True, raw=doc)
 
     def caller_id(self, phone: str) -> dict[str, Any]:
         return _result("caller_id", "error", "Caller ID excluded from the EMS backend")
@@ -645,7 +695,10 @@ class EmsBackend:
         firs = [{"person_type": r.get("person_type"), "person_name": r.get("person_name"),
                  "person_father": r.get("person_father"), "person_cnic": cnic13(r.get("person_cnic")),
                  "person_phone": mobile11(r.get("person_phone")), "person_address": r.get("person_address"),
-                 "fir_no": r.get("fir_no"), "fir_year": r.get("fir_year"), "ps_id": "",
+                 "fir_no": r.get("fir_no"), "fir_year": r.get("fir_year"),
+                 # personsearch names the station's table id ps_tbl_id; the FIR file
+                 # report wants it as ps_id.
+                 "ps_id": str(r.get("ps_tbl_id") or r.get("ps_id") or ""),
                  "fir_status": r.get("fir_status"),
                  # charges, under whichever name this PSRMS build uses for them
                  "offence": next((r.get(k) for k in ("offence", "fir_offence", "sections", "section",

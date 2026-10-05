@@ -78,7 +78,10 @@ Copy `SherlocksToken.php`, `SherlocksController.php` and `tab.blade.php` into pl
 add the routes from `laravel/routes/sherlocks.php` inside your authenticated route group.
 Then open `/sherlocks`: the search form appears, and a search builds the graph live.
 
-In `SherlocksController` fill the two **TODOs** with your own storage:
+In `SherlocksController` fill the two **TODOs** with your own storage. A finished graph
+carries its case file (document texts), so it can be a few MB: use a `longText` column
+and allow at least 16 MB request bodies on `sherlocks.graphs.store` (PHP
+`post_max_size`/`upload_max_filesize`, nginx `client_max_body_size`).
 
 - `store()` receives every finished search as JSON (`id`, `seed_label`, `params`,
   `stats`, `graph` {nodes, edges}, `events`). Save it however you like, e.g. one row per
@@ -115,6 +118,9 @@ Your own "saved graphs" list simply links to `route('sherlocks.graph', $id)` for
 - **Search by** CNIC, mobile, email, or several people at once ("Multiple people").
 - **Live EMS only.** The page is pinned with `backend: 'ems'`, so the data-source choice is hidden. It asks for confirmation before each live search.
 - **Chat** about the graph, **person briefs**, **compare two people**, **leads** (linkage patterns), and the **AI investigator**, which streams its steps.
+- **Case evidence** read while the graph builds: the FIR file of every FIR found (complainant, accused, witnesses, case diaries), the forensic/medical lab reports of that FIR (DNA, chemical, FSL, MLO; PDFs read, scanned pages read by the AI vision model), and the CRO dossier of every criminal (poses, fingerprints). Listed in the "Case evidence" card; each opens with its quoted facts and pictures.
+- **Sherlock chat bubble** (bottom right), usable from the moment the graph starts building: it reads the evidence, can fetch a document or check one system itself, and cites every answer (`F3` opens the quote).
+- **Case report (PDF)** for senior officers: written automatically when the graph finishes or is stopped; the "📑 Case report" button downloads it. Every assessment cites its evidence.
 - **Token renewal:** when the token expires, the page calls `/sherlocks/token` and carries on.
 - `onRunComplete(run)` fires once per finished search → POST to `store()`.
 

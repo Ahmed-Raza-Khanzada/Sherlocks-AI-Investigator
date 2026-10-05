@@ -1,0 +1,302 @@
+<title>Sherlocks Agent Architecture</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&display=swap">
+<style>
+/* Layout: a case-board — one big flow diagram, then a file of agent cards grouped by stage, then the run's order of events. */
+:root {
+  --bg: #f3f5f8; --surface: #ffffff; --ink: #121a2b; --muted: #5a6478; --line: #d6dce6;
+  --navy: #12305a; --gold: #b8860b; --red: #b4232f; --teal: #0f7a6c; --blue: #2459a8; --violet: #6a3fa0;
+  --chip: #eef2f8;
+  --display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0b1120; --surface: #121a2e; --ink: #e7ecf5; --muted: #95a2bb; --line: #26324c;
+  --navy: #8fb3ec; --gold: #f2c14e; --red: #f07079; --teal: #4fd1bd; --blue: #7fb0ff; --violet: #c3a3f0;
+  --chip: #1a2540; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #0b1120; --surface: #121a2e; --ink: #e7ecf5; --muted: #95a2bb; --line: #26324c;
+  --navy: #8fb3ec; --gold: #f2c14e; --red: #f07079; --teal: #4fd1bd; --blue: #7fb0ff; --violet: #c3a3f0;
+  --chip: #1a2540; color-scheme: dark }
+
+body { background: var(--bg); color: var(--ink); font: 15px/1.55 var(--body); padding-inline: 20px; padding-block: 28px 56px; }
+.wrap { max-width: 1180px; margin: 0 auto; display: flex; flex-direction: column; gap: 34px; }
+.eyebrow { font: 600 11px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--gold); }
+h1 { font: 800 clamp(30px, 5vw, 50px)/1.02 var(--display); margin: 8px 0 10px; text-wrap: balance; color: var(--ink); }
+h2 { font: 600 22px/1.2 var(--display); margin: 0 0 4px; text-wrap: balance; }
+.lede { max-width: 68ch; color: var(--muted); margin: 0; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 20px; min-width: 0; }
+.diagram { overflow-x: auto; }
+.diagram pre.mermaid { margin: 0; min-width: 900px; background: transparent; text-align: center; }
+.sub { color: var(--muted); margin: 0 0 16px; max-width: 70ch; }
+
+.stage { display: grid; grid-template-columns: 180px 1fr; gap: 18px; padding-block: 18px; border-top: 1px solid var(--line); }
+.stage:first-of-type { border-top: 0; }
+.stage-name { font: 600 13px/1.3 var(--mono); color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+.stage-name b { display: block; font: 700 17px/1.2 var(--display); color: var(--ink); text-transform: none; letter-spacing: 0; margin-top: 4px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; min-width: 0; }
+.card { border: 1px solid var(--line); border-left: 4px solid var(--c, var(--navy)); border-radius: 10px; padding: 12px 14px; background: var(--bg); min-width: 0; }
+.card h3 { margin: 0 0 2px; font: 600 15.5px/1.3 var(--body); }
+.card .code { font: 500 11.5px/1.4 var(--mono); color: var(--muted); word-break: break-all; }
+.card ul { margin: 8px 0 0; padding-left: 18px; font-size: 13.5px; }
+.card li { margin: 3px 0; }
+.tag { display: inline-block; font: 600 10.5px/1 var(--mono); letter-spacing: .06em; padding: 4px 7px; border-radius: 99px; background: var(--chip); color: var(--c, var(--navy)); margin-top: 8px; margin-right: 4px; }
+
+.cites { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+.cite { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.cite code { font: 600 18px/1 var(--mono); color: var(--gold); }
+.cite p { margin: 6px 0 0; font-size: 13.5px; color: var(--muted); }
+
+ol.run { margin: 0; padding: 0; list-style: none; counter-reset: s; display: grid; gap: 10px; }
+ol.run li { counter-increment: s; display: grid; grid-template-columns: 36px 1fr; gap: 10px; align-items: start; }
+ol.run li::before { content: counter(s); font: 700 14px/34px var(--mono); text-align: center; width: 34px; height: 34px; border-radius: 50%; background: var(--chip); color: var(--navy); }
+ol.run li div { min-width: 0; padding-top: 6px; }
+.rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.rules div { border-top: 3px solid var(--red); padding-top: 10px; font-size: 14px; }
+.rules b { display: block; font-family: var(--display); font-size: 16px; margin-bottom: 4px; }
+@media (max-width: 720px) { .stage { grid-template-columns: 1fr; gap: 10px; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Sindh Police · Sherlocks</div>
+    <h1>How the Sherlocks agents investigate</h1>
+    <p class="lede">From the CNICs and numbers you give as targets to the case report on a senior officer's desk: which agent does what, what they share, and where every claim gets its source.</p>
+  </header>
+
+  <section class="panel">
+    <h2>The flow</h2>
+    <p class="sub">Solid arrows carry data. The graph and the case file are the shared memory every agent reads and writes; the portal watches both live.</p>
+    <div class="diagram">
+<pre class="mermaid">
+flowchart LR
+  classDef src fill:#e8eef8,stroke:#12305a,color:#12305a
+  classDef agent fill:#12305a,stroke:#12305a,color:#ffffff
+  classDef ev fill:#0f7a6c,stroke:#0f7a6c,color:#ffffff
+  classDef mem fill:#fff4d6,stroke:#b8860b,color:#3a2a00,stroke-width:2px
+  classDef ana fill:#6a3fa0,stroke:#6a3fa0,color:#ffffff
+  classDef out fill:#b4232f,stroke:#b4232f,color:#ffffff
+  classDef ui fill:#ffffff,stroke:#5a6478,color:#121a2b
+
+  T(["Targets<br/>CNIC · mobile · email"]):::ui
+
+  subgraph SYS["Police and government systems"]
+    direction TB
+    S1["NADRA · Subscriber/SIMs · CRO · PSRMS<br/>PRVS · Hotel Eye · DLS · TRACS · Arms<br/>Watchlist · Old Tenant · HRMIS · …"]:::src
+    S2["PSRMS FIR file report"]:::src
+    S3["Labs: DNA · Chemical · FSL · MLO"]:::src
+    S4["SAFE CRO dossier PDF"]:::src
+    S5["OSINT tools (optional)"]:::src
+  end
+
+  subgraph BUILD["1 · Graph building"]
+    direction TB
+    A1["Search agent<br/>expansion engine"]:::agent
+    A2["Weak-link analyst<br/>rules + AI address/name match"]:::agent
+  end
+
+  subgraph EVID["2 · Evidence team"]
+    direction TB
+    E1["Collector"]:::ev
+    E2["Reader<br/>rules + vision AI, quote-checked"]:::ev
+    E3["Linker"]:::ev
+  end
+
+  G[("Link graph<br/>people · records · links")]:::mem
+  C[("Case file<br/>D# documents · F# facts · L# links")]:::mem
+
+  subgraph ANALYSE["3 · Analysis"]
+    direction TB
+    N1["Network analyst<br/>routes · clusters · brokers"]:::ana
+    N2["Scenario detector<br/>tiered linkage patterns"]:::ana
+  end
+
+  subgraph OUTP["4 · Investigation"]
+    direction TB
+    O1["Sherlock<br/>chat investigator"]:::out
+    O2["Report writer<br/>Sherlock's assessment"]:::out
+  end
+
+  P["Portal tab<br/>live graph · evidence · chat bubble"]:::ui
+  R["Case report PDF"]:::ui
+
+  T --> A1
+  S1 --> A1
+  S5 --> A1
+  A1 --> G
+  A2 --> G
+  G --> A2
+  A1 -- "FIR found / CRO no. found" --> E1
+  S2 --> E1
+  S3 --> E1
+  S4 --> E1
+  E1 --> E2 --> C
+  E2 --> E3
+  E3 -- "number found in a FIR file" --> G
+  E3 --> C
+  G --> N1
+  G --> N2
+  N1 --> O1
+  N2 --> O1
+  C --> O1
+  N1 --> O2
+  N2 --> O2
+  C --> O2
+  O1 -- "live fetch / one lookup" --> E1
+  O1 --> P
+  G -- "SSE: graph · status · log" --> P
+  C -- "SSE: case" --> P
+  O2 --> R
+</pre>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Who does what</h2>
+    <p class="sub">Each agent is ordinary code with one job. Where an AI model is involved it chooses and phrases; facts come from the systems and the documents.</p>
+
+    <div class="stage">
+      <div class="stage-name">Stage 1<b>Graph building</b></div>
+      <div class="cards">
+        <article class="card" style="--c: var(--navy)">
+          <h3>Search agent</h3>
+          <div class="code">linkgraph/engine.py · Expansion</div>
+          <ul>
+            <li>Searches each target in every police system, in parallel; a phone resolves to a CNIC first.</li>
+            <li>Follows everyone the records name, to the depth and people budget you set; most promising people first.</li>
+            <li>Opens the FIR file of every PSRMS FIR to add complainant, accused, witnesses, IO.</li>
+            <li>With several targets, can stop as soon as they are connected.</li>
+          </ul>
+          <span class="tag">~20 logged queries per person</span>
+        </article>
+        <article class="card" style="--c: var(--navy)">
+          <h3>Weak-link analyst</h3>
+          <div class="code">weak_links.py · rarity.py</div>
+          <ul>
+            <li>Infers links the systems don't state: same address, same father's name, overlapping hotel stays, shared employer.</li>
+            <li>Discounts common names and crowded addresses; the AI reviews ambiguous addresses.</li>
+            <li>Inferred links are dashed: leads, never facts.</li>
+          </ul>
+          <span class="tag">AI optional</span>
+        </article>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-name">Stage 2<b>Evidence team</b></div>
+      <div class="cards">
+        <article class="card" style="--c: var(--teal)">
+          <h3>Collector</h3>
+          <div class="code">evidence/collector.py · sources.py</div>
+          <ul>
+            <li>For each FIR: the FIR file report, then its DNA, chemical, FSL and MLO lab reports (PDFs downloaded).</li>
+            <li>For each CRO number: the SAFE dossier PDF with poses and fingerprints.</li>
+            <li>Works in the background; one fetch per document per run, cached; failed APIs are reported, not hidden.</li>
+          </ul>
+          <span class="tag">max 40 documents per run</span>
+        </article>
+        <article class="card" style="--c: var(--teal)">
+          <h3>Reader</h3>
+          <div class="code">evidence/readers.py · fir_document.py · pdf_reader.py</div>
+          <ul>
+            <li>Reads Urdu FIR pages by label and the text layer of PDFs; scanned pages go to the vision model (the same Qwen model), which reads Urdu and English. No separate OCR.</li>
+            <li>Rule facts first (sections, complainant, accused, witnesses, case position).</li>
+            <li>The AI reads narratives, case diaries and lab findings. Every fact must quote the document word for word; an unquoted claim is discarded.</li>
+          </ul>
+          <span class="tag">quote-checked</span>
+        </article>
+        <article class="card" style="--c: var(--teal)">
+          <h3>Linker</h3>
+          <div class="code">readers.link_people</div>
+          <ul>
+            <li>Finds the graph's people inside every document by CNIC, phone, vehicle or name.</li>
+            <li>A number found in a FIR file becomes a stated link on the graph, e.g. a witness's phone in a case diary.</li>
+          </ul>
+          <span class="tag">hidden links</span>
+        </article>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-name">Stage 3<b>Analysis</b></div>
+      <div class="cards">
+        <article class="card" style="--c: var(--violet)">
+          <h3>Network analyst</h3>
+          <div class="code">linkgraph/network.py</div>
+          <ul>
+            <li>Best routes between targets, stated links before inferred, around hub numbers.</li>
+            <li>Clusters, brokers who join them, hidden associates, nearest person with a criminal record.</li>
+            <li>Ranks unsearched people worth the next queries.</li>
+          </ul>
+        </article>
+        <article class="card" style="--c: var(--violet)">
+          <h3>Scenario detector</h3>
+          <div class="code">linkgraph/scenarios.py</div>
+          <ul>
+            <li>Repeat co-offenders, owner not the driver, possible safe house, SIM fronts, recurring guarantor or witness, insiders.</li>
+            <li>Every finding is tiered: stated, corroborated, inferred or speculative.</li>
+          </ul>
+        </article>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-name">Stage 4<b>Investigation</b></div>
+      <div class="cards">
+        <article class="card" style="--c: var(--red)">
+          <h3>Sherlock, the chat investigator</h3>
+          <div class="code">linkgraph/investigator.py</div>
+          <ul>
+            <li>The chat bubble; usable while the graph is still building.</li>
+            <li>Picks tools step by step: routes, findings, person facts, documents, text search, timelines.</li>
+            <li>Can fetch a FIR file, lab reports or a CRO dossier, or check one person in one system; at most 4 live calls per question.</li>
+            <li>Cites every answer; what it fetches joins the case file.</li>
+          </ul>
+          <span class="tag">tool loop</span><span class="tag">live tools</span>
+        </article>
+        <article class="card" style="--c: var(--red)">
+          <h3>Report writer</h3>
+          <div class="code">evidence/case_report.py · report_pdf.py</div>
+          <ul>
+            <li>Runs when the graph finishes or you stop it.</li>
+            <li>Writes the summary, assessments, open questions and recommendations; an assessment citing no real evidence is dropped.</li>
+            <li>Renders the PDF: target photos, routes, network diagram, findings, timeline, quoted evidence, pictures, references.</li>
+          </ul>
+          <span class="tag">PDF for upper management</span>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>How every claim is sourced</h2>
+    <p class="sub">The chat and the report cite these ids. Clicking one opens the document at the quoted line.</p>
+    <div class="cites">
+      <div class="cite"><code>G#</code><p>Graph evidence: a route, a FIR role, a hotel stay or a finding, with the systems that state it.</p></div>
+      <div class="cite"><code>D#</code><p>A document: FIR file, lab report or CRO dossier, with source and time read.</p></div>
+      <div class="cite"><code>F#</code><p>A fact from a document, with the verbatim quote it rests on.</p></div>
+      <div class="cite"><code>L#</code><p>A person of the graph found in a document, and the line that shows it.</p></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>One investigation, in order</h2>
+    <ol class="run">
+      <li><div><b>Targets entered.</b> The portal starts a run; the graph streams to the screen as each system answers.</div></li>
+      <li><div><b>Search agent expands.</b> Each person is searched; the people their records name are searched next, to the chosen depth.</div></li>
+      <li><div><b>Evidence team reads alongside.</b> FIR files, lab reports and CRO dossiers are fetched, read into quoted facts, and linked to the graph's people.</div></li>
+      <li><div><b>You ask Sherlock at any time.</b> It answers from the graph and the case file so far, fetching a document when the answer needs one.</div></li>
+      <li><div><b>Graph finishes or you stop it.</b> The evidence still being read is finished first, unless you stopped the run.</div></li>
+      <li><div><b>Report writer drafts the case report.</b> The "Case report" button downloads the PDF; the portal saves the graph with its case file.</div></li>
+    </ol>
+  </section>
+
+  <section class="panel">
+    <h2>Rules every agent follows</h2>
+    <div class="rules">
+      <div><b>No invented evidence</b>Facts come from systems and documents. A fact without a real quote, or an assessment without real evidence, is dropped.</div>
+      <div><b>Leads are marked as leads</b>Inferred and name-only links are shown dashed and called inferred, in the chat and in the report.</div>
+      <div><b>Live queries are budgeted</b>Each search, document and chat lookup is a logged police-system query, so each one is capped per run or per question.</div>
+    </div>
+  </section>
+</div>

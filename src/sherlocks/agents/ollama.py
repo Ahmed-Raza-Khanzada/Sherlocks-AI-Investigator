@@ -184,6 +184,7 @@ class OllamaClient:
         model: str | None = None,
         cache_kind: str | None = None,
         prompt_version: str = "v1",
+        max_tokens: int | None = None,  # accepted for OpenAICompatClient parity
     ) -> tuple[T, LlmResult]:
         """Generate output conforming to ``schema``.
 

@@ -307,3 +307,79 @@ dialog::backdrop { background: rgba(3, 6, 14, .7); }
 .osintbox .ok { color: var(--ok); font-weight: 700; }
 .osintbox .warnc { color: var(--warn); font-weight: 700; }
 .otools summary { cursor: pointer; font-size: 11.5px; color: var(--muted); margin-top: 8px; }
+
+/* case evidence */
+.evcounts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 8px 0 6px; }
+.evcounts .stat { background: #0b1224; border: 1px solid var(--line); border-radius: 8px; padding: 6px; text-align: center; }
+.evcounts .stat b { display: block; font-size: 16px; }
+.evcounts .stat span { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+.evpending { grid-column: 1 / -1; }
+.evlist { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow-y: auto; }
+.evlist li { display: flex; gap: 8px; align-items: flex-start; padding: 6px; border: 1px solid var(--line); border-radius: 8px; background: #0b1224; cursor: pointer; font-size: 12px; }
+.evlist li:hover { border-color: var(--accent); }
+.evlist li.evmiss { cursor: default; background: transparent; border-style: dashed; }
+.evicon { font-size: 15px; line-height: 1.2; }
+.evmain { flex: 1; min-width: 0; }
+.evmain .muted { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.evfacts { font-size: 10px; color: var(--muted); border: 1px solid var(--line); border-radius: 99px; padding: 0 6px; }
+.reportbtn:not(:disabled) { border-color: var(--accent) !important; color: var(--accent); font-weight: 600; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+
+/* Sherlock chat bubble */
+.fab { position: fixed; right: 22px; bottom: 22px; width: 58px; height: 58px; border-radius: 50%; border: 2px solid var(--accent);
+  background: radial-gradient(circle at 30% 30%, #1d2a4a, #0a0f1c); box-shadow: 0 8px 28px rgba(0,0,0,.55), 0 0 0 4px rgba(251,191,36,.12);
+  display: grid; place-items: center; z-index: 60; transition: transform .15s; }
+.fab:hover { transform: scale(1.06); }
+.fab.open { box-shadow: 0 8px 28px rgba(0,0,0,.55), 0 0 0 6px rgba(251,191,36,.25); }
+.fab svg { width: 32px; height: 32px; }
+.fabbadge { position: absolute; top: -4px; right: -4px; min-width: 20px; height: 20px; border-radius: 99px; background: var(--danger);
+  color: #fff; font-size: 11px; font-weight: 700; display: grid; place-items: center; padding: 0 5px; }
+.sherlock { position: fixed; right: 22px; bottom: 92px; width: min(440px, calc(100vw - 32px)); height: min(640px, calc(100vh - 130px));
+  background: var(--panel); border: 1px solid #2b3d63; border-radius: 16px; box-shadow: 0 18px 48px rgba(0,0,0,.6); z-index: 61;
+  display: flex; flex-direction: column; overflow: hidden; }
+.shhead { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line);
+  background: linear-gradient(90deg, #142247, #0f1629); }
+.shhead b { color: var(--accent); font-size: 14px; }
+.shctx { flex: 1; text-align: right; font-size: 11px; color: var(--muted); }
+.shlog { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.shmsg { border-radius: 12px; padding: 8px 10px; font-size: 12.5px; line-height: 1.5; border: 1px solid var(--line); }
+.shmsg > b { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin-bottom: 3px; }
+.shmsg.you { background: #13213f; align-self: flex-end; max-width: 88%; border-color: #2b4677; }
+.shmsg.bot { background: var(--panel-2); border-color: #3a3216; }
+.shmsg.bot > b { color: var(--accent); }
+.shans.unsure { color: #fde68a; }
+.shsteps { margin: 0 0 6px; padding-left: 18px; font-size: 11px; color: var(--muted); }
+.shsteps li { margin: 2px 0; }
+.shsteps li b { color: var(--text); }
+.shsteps .sum { display: block; color: #9fb0cf; }
+.shlist { margin: 4px 0; padding-left: 18px; }
+.shlist li { margin: 3px 0; }
+.shquick { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 8px; }
+.shquick button { background: #0b1224; border: 1px solid var(--line); border-radius: 99px; padding: 3px 10px; font-size: 11px; color: var(--muted); }
+.shquick button:hover { color: var(--accent); border-color: var(--accent); }
+.shform { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); background: #0c1324; }
+.shform textarea { flex: 1; resize: none; background: #0b1224; border: 1px solid var(--line); border-radius: 10px; padding: 7px 9px; color: var(--text); font: inherit; }
+.cite { display: inline-block; padding: 0 5px; margin: 0 1px; border-radius: 6px; background: rgba(56,189,248,.14); color: var(--info);
+  font-size: 11px; font-weight: 700; text-decoration: none; cursor: pointer; }
+.cite:hover { background: rgba(56,189,248,.3); }
+.livetag, .aitag { display: inline-block; font-size: 9px; font-weight: 800; letter-spacing: .5px; border-radius: 4px; padding: 0 4px; margin-right: 4px; }
+.livetag { background: var(--danger); color: #fff; }
+.aitag { background: rgba(251,191,36,.18); color: var(--accent); margin-left: 4px; }
+
+/* document viewer */
+.docdlg { width: min(980px, 94vw); }
+.docbody { max-height: 74vh; overflow-y: auto; }
+.docsum { background: #0b1224; border-left: 3px solid var(--accent); padding: 8px 10px; border-radius: 6px; }
+table.facts { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.facts td { border-top: 1px solid var(--line); padding: 6px; vertical-align: top; }
+table.facts td:first-child { width: 52px; white-space: nowrap; }
+table.facts td.quote { color: #c7d2e8; font-style: italic; width: 45%; }
+table.facts tr.hl td, .docbody li.hl { background: rgba(251,191,36,.12); }
+.pics { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+.pics figure { margin: 0; background: #0b1224; border: 1px solid var(--line); border-radius: 8px; padding: 6px; }
+.pics img { width: 100%; height: 150px; object-fit: contain; background: #fff; border-radius: 4px; }
+.pics figcaption { font-size: 10.5px; color: var(--muted); margin-top: 4px; text-align: center; }
+.doctext { white-space: pre-wrap; font: 12px/1.6 "Noto Naskh Arabic", "Segoe UI", system-ui, sans-serif; background: #0b1224;
+  border: 1px solid var(--line); border-radius: 8px; padding: 10px; max-height: 420px; overflow-y: auto; }
+.shform .primary { width: auto; flex: 0 0 auto; padding: 0 18px; margin: 0; }
+.shform textarea { min-width: 0; min-height: 44px; }
