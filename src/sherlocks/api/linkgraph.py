@@ -23,7 +23,18 @@ from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -84,6 +95,21 @@ class PairAskRequest(BaseModel):
 class AskRequest(BaseModel):
     question: str = ""
     history: list[ChatTurn] = Field(default_factory=list)
+
+
+class IncidentBody(BaseModel):
+    lat: float | None = Field(default=None, ge=-90, le=90)
+    lon: float | None = Field(default=None, ge=-180, le=180)
+    place: str | None = None
+    date: str | None = Field(default=None, description="YYYY-MM-DD")
+    time: str | None = Field(default=None, description="HH:MM")
+    fir: str | None = None
+    police_station: str | None = None
+
+
+class AnswerBody(BaseModel):
+    answer: str = ""
+    pid: str | None = None
 
 
 def _sse(event: str, data: Any) -> str:
@@ -156,6 +182,8 @@ def build_router(settings: Settings, manager: Callable[[], RunManager],
             "demo_seeds": DEMO_SEEDS,
             "systems": _systems_for(backend or lg.backend),
             "categories": sorted({info.category for info in SYSTEMS.values()}),
+            "uploads": {"accept": ".jpg,.jpeg,.png,.pdf,.docx,.xlsx", "max_mb": settings.evidence.max_upload_mb},
+            "map_tiles": settings.evidence.map_tiles,
         }
 
     @router.get("/systems")
@@ -402,6 +430,59 @@ def build_router(settings: Settings, manager: Callable[[], RunManager],
             logger.exception("Case report PDF failed")
             raise HTTPException(status_code=500, detail=f"Case report failed: {exc}") from exc
         return _pdf_response(pdf, "sherlocks_case_report.pdf")
+
+    # -- the case board: uploads, the incident, the Questioner's questions ------------------
+
+    @router.post("/runs/{run_id}/uploads", status_code=202)
+    async def upload(run_id: str, file: UploadFile = File(...), note: str = Form(default=""),
+                     owner: str | None = Form(default=None), _: None = Depends(auth)) -> dict:
+        """Upload a file for the agents to read: image (JPG, PNG), PDF, Word (.docx) or
+        Excel (.xlsx) only. It is read in the background; the document appears in the
+        case file (``case`` events / ``GET /runs/{id}/case``)."""
+        from sherlocks.evidence.uploads import UploadError
+
+        limit = settings.evidence.max_upload_mb * 1_000_000
+        content = await file.read(limit + 1)
+        try:
+            return manager().upload(run_id, file.filename or "upload", content, note=note, owner=owner or None)
+        except UploadError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.get("/runs/{run_id}/uploads/{doc_id}/file")
+    def upload_file(run_id: str, doc_id: str, _: None = Depends(auth)) -> Response:
+        found = manager().upload_file(run_id, doc_id.upper())
+        if found is None:
+            raise HTTPException(status_code=404, detail="Upload not found")
+        content, name, mime = found
+        return Response(content, media_type=mime, headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+    @router.post("/runs/{run_id}/incident")
+    def incident(run_id: str, body: IncidentBody, _: None = Depends(auth)) -> dict:
+        """Where and when the incident happened (pinned on the map). The agents then find
+        the nearest police station and read every uploaded CDR against the point."""
+        try:
+            return {"incident": manager().set_incident(run_id, body.model_dump())}
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.post("/runs/{run_id}/questions/{qid}")
+    def answer(run_id: str, qid: str, body: AnswerBody, _: None = Depends(auth)) -> dict:
+        """Answer one of the Questioner's questions (a person picked, or text)."""
+        try:
+            return manager().answer_question(run_id, qid.upper(), body.answer, body.pid)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.get("/runs/{run_id}/case")
+    def case_index(run_id: str, _: None = Depends(auth)) -> dict:
+        """The case board now (documents, facts, incident, roles, open questions) - for
+        polling while uploads are read after the run's stream has ended."""
+        index = manager().case_index(run_id)
+        if index is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return index
 
     # The per-run forms below predate /analyze and are kept for existing callers.
 

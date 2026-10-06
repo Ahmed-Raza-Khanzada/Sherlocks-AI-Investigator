@@ -113,7 +113,7 @@ class CaseAgents:
                     try:
                         client = self._llm_factory()
                         self._vision = client if hasattr(client, "read_image") else None
-                    except Exception:  # noqa: BLE001
+                    except Exception:
                         logger.exception("Evidence reader: no vision model")
             return self._vision
 
@@ -134,7 +134,7 @@ class CaseAgents:
             self._claims.keys = []
             try:
                 fn(*args)
-            except Exception:  # noqa: BLE001 - one bad document never stops the team
+            except Exception:
                 logger.exception("Evidence task %s failed", getattr(fn, "__name__", fn))
                 for key in self._claims.keys:
                     if key in self.case.pending:  # nothing may stay "being read" forever
@@ -158,6 +158,12 @@ class CaseAgents:
             if left <= 0:
                 return
             wait(pending, timeout=left)
+
+    def graph(self) -> dict[str, Any]:
+        try:
+            return self._graph()
+        except Exception:  # noqa: BLE001
+            return {"nodes": [], "edges": []}
 
     def stop(self) -> None:
         self._pool.shutdown(wait=False, cancel_futures=True)

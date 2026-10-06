@@ -295,6 +295,22 @@ def render(report: dict[str, Any], case: CaseFile, graph: dict[str, Any], images
     if report.get("model"):
         pdf.para(f"Written by Sherlock ({report['model']}) from the evidence below; ids in [brackets] are listed "
                  "under References.", size=7.5, colour=GREY, style="I")
+    inc = report.get("incident") or {}
+    if inc or report.get("roles"):
+        n += 1
+        pdf.section(n, "The incident, as the officer gave it")
+        where = inc.get("place") or ""
+        if inc.get("lat") is not None:
+            where += f" ({float(inc['lat']):.5f}, {float(inc['lon']):.5f})"
+        pdf.label_value("Place", where.strip() or None, 34)
+        pdf.label_value("Date and time", " ".join(x for x in (inc.get("date"), inc.get("time")) if x) or None, 34)
+        pdf.label_value("FIR", inc.get("fir"), 34)
+        pdf.label_value("Nearest police station", inc.get("nearest_ps"), 34)
+        pdf.label_value("Roles stated", "; ".join(f"{k}: {v}" for k, v in (report.get("roles") or {}).items()) or None, 34)
+        if inc.get("lat") is not None:
+            pdf.para(f"Map: https://www.openstreetmap.org/?mlat={inc['lat']}&mlon={inc['lon']}#map=16/{inc['lat']}/{inc['lon']}",
+                     size=7.5, colour=GREY)
+        pdf.ln(2)
     n += 1
     pdf.section(n, "Targets")
     for t in report.get("targets") or []:
@@ -431,6 +447,7 @@ def _target_card(pdf: _Pdf, t: dict[str, Any], images: Any) -> None:
         x += pdf.badge(flag.replace("_", " ").upper(), GREY, x=x) + 2
     pdf.set_xy(55, pdf.get_y() + 6)
     pdf.set_left_margin(55)
+    pdf.label_value("Role", (t.get("role") or "").title() or None)
     pdf.label_value("Father", t.get("father"))
     pdf.label_value("CNIC", dashed_cnic(t["cnic"]) if t.get("cnic") else None)
     pdf.label_value("Phones", ", ".join(t.get("phones") or []))

@@ -333,18 +333,18 @@ def test_cnic_found_elsewhere_is_fed_back_to_nadra():
     nadra_cnics: list[str] = []
 
     def subscriber(req):  # SIMs, but no CNIC on them
-        return 200, {"0": {"number": "3337315136", "name": "MUHAMMAD MAQBUL", "cnic": "", "address": "KHI"}}
+        return 200, {"0": {"number": "3330000991", "name": "MUHAMMAD TESTER", "cnic": "", "address": "KHI"}}
 
     def prvs(req):  # PRVS by mobile returns the person's CNIC
         if "by-mobile" in req.url:
-            return 200, {"success": True, "data": [{"case_id": 1, "name": "MUHAMMAD MAQBUL",
-                                                    "cnic": "42000-5372356-1", "mobile": "03337315136"}]}
+            return 200, {"success": True, "data": [{"case_id": 1, "name": "MUHAMMAD TESTER",
+                                                    "cnic": "42101-0000099-1", "mobile": "03330000991"}]}
         return 404, {"success": False, "message": "No record found"}
 
     def nadra(req):
         nadra_cnics.append((req.data or {}).get("cnic", ""))
         return 200, {"status": True, "message": "CNIC verified",
-                     "data": {"citizen_number": "4200053723561", "name": "MUHAMMAD MAQBUL",
+                     "data": {"citizen_number": "4210100000991", "name": "MUHAMMAD TESTER",
                               "father_husband_name": "X", "present_address": "KHI"}}
 
     backend = EmsBackend(http=FakeEmsHttp({"number_check.php": subscriber, "cases/": prvs, "admin/": nadra}))
@@ -352,11 +352,11 @@ def test_cnic_found_elsewhere_is_fed_back_to_nadra():
     s.ollama.enabled = False
     s.llm.enabled = False
     mgr = memory_manager(s, backends={"ems": backend})
-    run = mgr.get(mgr.start(GraphRunParams(phone="0333-7315136", depth=1, max_persons=1, backend="ems"), wait=True).id)
+    run = mgr.get(mgr.start(GraphRunParams(phone="0333-0000991", depth=1, max_persons=1, backend="ems"), wait=True).id)
     assert run["status"] == "completed"
-    assert "4200053723561" in nadra_cnics                       # NADRA queried with the found CNIC
+    assert "4210100000991" in nadra_cnics                       # NADRA queried with the found CNIC
     seed = next(n for n in run["graph"]["nodes"] if n["kind"] == "person" and n["data"].get("seed"))
-    assert seed["data"]["cnic"] == "4200053723561"
+    assert seed["data"]["cnic"] == "4210100000991"
     assert seed["data"]["lookups"]["nadra"]["status"] == "success"
 
 

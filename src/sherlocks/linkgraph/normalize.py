@@ -173,6 +173,67 @@ def split_relation(name: str | None) -> tuple[str | None, str | None]:
     return clean_name(name), None
 
 
+# -- names by sound, across scripts -------------------------------------------------------
+#
+# "Altaf" and "الطاف" are the same name. Both reduce to the consonants a listener hears,
+# merged where Urdu has several letters for one sound and English spellings differ
+# (ط/ت/ٹ -> T, س/ص/ث/ش -> S, ز/ذ/ض/ظ -> Z, ق/ک/خ -> K). Vowels, alef, ain, h-sounds,
+# waw and ye are dropped - they are spelt too many ways in both scripts. The same rules
+# are in the portal (app.js ``soundKey``) so "Find in graph" and Sherlock agree.
+
+_URDU_SOUND = {
+    "ب": "B", "پ": "P", "ت": "T", "ٹ": "T", "ط": "T", "ث": "S", "س": "S", "ص": "S", "ش": "S", "ج": "J",
+    "چ": "C", "خ": "K", "ق": "K", "ک": "K", "ك": "K", "د": "D", "ڈ": "D", "ذ": "Z", "ز": "Z", "ض": "Z",
+    "ظ": "Z", "ژ": "Z", "ر": "R", "ڑ": "R", "غ": "G", "گ": "G", "ف": "F", "ل": "L", "م": "M", "ن": "N", "ں": "N",
+}
+_EN_DIGRAPHS = (("kh", "k"), ("gh", "g"), ("sh", "s"), ("ch", "c"), ("th", "t"), ("dh", "d"), ("ph", "f"),
+                ("zh", "z"), ("ck", "k"), ("q", "k"), ("x", "ks"), ("v", "w"))
+
+
+def sound_key(word: str) -> str:
+    """The consonant skeleton of one word, the same for its English and Urdu spelling."""
+    w = str(word or "").lower()
+    if re.search(r"[\u0600-\u06FF]", w):
+        out = "".join(_URDU_SOUND.get(c, "") for c in w)
+    else:
+        w = re.sub(r"[^a-z]", "", w)
+        for a, b in _EN_DIGRAPHS:
+            w = w.replace(a, b)
+        w = re.sub(r"c(?=[eiy])", "s", w).replace("c", "k")
+        out = re.sub(r"[aeiouyhw]", "", w).upper()
+    return re.sub(r"(.)\1+", r"\1", out)
+
+
+def sound_shape(word: str) -> str:
+    """Where the vowels fall, in either script: "altaf" and "الطاف" are both VCCVC, "latif" is
+    CVCVC and "لطیف" CCVC - it tells sound-alike names apart."""
+    w = str(word or "").lower()
+    if re.search(r"[\u0600-\u06FF]", w):
+        return "".join("V" if c in "اآوےیىيئؤأإ" else "C" for c in w if c in _URDU_SOUND or c in "اآوےیىيئؤأإ")
+    return "".join("V" if c in "aeiouy" else "C" for c in re.sub(r"[^a-z]", "", w))
+
+
+def sound_keys(name: str) -> list[str]:
+    return [k for k in (sound_key(t) for t in re.findall(r"[A-Za-z]+|[\u0600-\u06FF]+", str(name or ""))) if k]
+
+
+def sounds_like(query: str, name: str) -> bool:
+    """Does ``query`` (any script, one or more words) sound like ``name`` - each query
+    word, in order, starting at a word of the name? "altaf" ~ "محمد الطاف"."""
+    q = "".join(sound_keys(query))
+    keys = sound_keys(name)
+    if not q or not keys:
+        return False
+    if len(q) == 1:
+        return q in keys
+    joined = "".join(keys)
+    starts, pos = [], 0
+    for k in keys:
+        starts.append(pos)
+        pos += len(k)
+    return any(joined.startswith(q, i) for i in starts)
+
+
 def name_key(value: object) -> str:
     """Comparison form of a name: lowercase, honorifics dropped, spellings unified."""
     text = unicodedata.normalize("NFKD", str(value or "")).lower()

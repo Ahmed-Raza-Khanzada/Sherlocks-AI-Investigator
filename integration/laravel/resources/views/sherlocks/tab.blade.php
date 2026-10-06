@@ -21,7 +21,6 @@
 </head>
 <body>
 @verbatim
-
   <section id="loginScreen" class="login" hidden>
     <form id="loginForm" class="logincard" autocomplete="on">
       <div class="brand">
@@ -204,6 +203,7 @@
         </label>
         <label class="tog"><input type="checkbox" id="showWeak" checked> Weak links</label>
         <label class="tog range">min <input type="range" id="minWeak" min="0" max="100" value="35"><span id="minWeakVal">0.35</span></label>
+        <div class="connfilter"><button id="connBtn" type="button" title="Choose which kinds of connection are drawn">Connections ▾</button><div id="connPanel" class="connpanel" hidden></div></div>
         <button id="reportBtn" class="reportbtn" title="Download the case report (PDF) - available when the graph finishes or is stopped" disabled>📑 Case report</button>
         <button id="pngBtn" title="Save picture">PNG</button>
         <button id="jsonBtn" title="Save data">JSON</button>
@@ -226,9 +226,12 @@
     </button>
     <section id="sherlockPanel" class="sherlock" hidden aria-label="Sherlock case chat">
       <header class="shhead">
-        <div><b>Sherlock</b> <span class="muted small">case investigator</span></div>
-        <div class="shctx" id="sherlockCtx"></div>
-        <button id="sherlockClose" class="ghost small" type="button" title="Close">×</button>
+        <span class="shavatar big" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M6 14c0-5 4.5-8 10-8s10 3 10 8H6z" fill="#fbbf24"/><rect x="4" y="13" width="24" height="3" rx="1.5" fill="#d97706"/><circle cx="16" cy="21" r="5.5" fill="none" stroke="#e6ebf5" stroke-width="2.2"/><path d="M20 25l5 5" stroke="#e6ebf5" stroke-width="2.6" stroke-linecap="round"/></svg></span>
+        <div class="shwho">
+          <b>Sherlock</b>
+          <span class="shstatus"><i class="dot"></i><span id="sherlockStatus">online</span> · <span id="sherlockCtx"></span></span>
+        </div>
+        <button id="sherlockClose" class="shclose" type="button" title="Close" aria-label="Close">×</button>
       </header>
       <div id="sherlockLog" class="shlog"></div>
       <div id="sherlockQuick" class="shquick">
@@ -238,8 +241,13 @@
         <button type="button" data-q="What do the FIR files, case diaries and lab reports say about the targets?">What do the documents say?</button>
       </div>
       <form id="sherlockForm" class="shform">
-        <textarea id="sherlockInput" rows="2" placeholder="Ask Sherlock… e.g. fetch the lab reports for FIR 45/2023" autocomplete="off"></textarea>
-        <button class="primary" type="submit" id="sherlockSend">Ask</button>
+        <button type="button" id="sherlockAttach" class="shattach" title="Upload a file for the agents to read: image (JPG, PNG), PDF, Word (.docx) or Excel (.xlsx) - CDRs, tower dumps, documents, photos">📎</button>
+        <button type="button" id="sherlockPin" class="shattach" title="Pin the incident location on the map">📍</button>
+        <input type="file" id="sherlockFile" accept=".jpg,.jpeg,.png,.pdf,.docx,.xlsx" multiple hidden>
+        <div class="shinput">
+          <textarea id="sherlockInput" rows="1" placeholder="Message Sherlock - English, اردو or Roman Urdu" dir="auto" autocomplete="off"></textarea>
+        </div>
+        <button class="shsend" type="submit" id="sherlockSend" title="Send" aria-label="Send"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.4 20.4 21 12 3.4 3.6 3.4 10l12.6 2-12.6 2z" fill="currentColor"/></svg></button>
       </form>
     </section>
 
@@ -259,6 +267,21 @@
     <div id="docBody" class="docbody"></div>
   </dialog>
 
+  <dialog id="mapDlg" class="mapdlg">
+    <form method="dialog" class="dlghead"><b>Pin the incident location</b><button class="ghost" value="cancel">Close</button></form>
+    <p class="muted small">Click the map where the incident happened (or type the coordinates), add the date and time, and save. The agents then check whose phones were near the point and find the nearest police station.</p>
+    <div id="incidentMap" class="incidentmap"></div>
+    <div class="maprow">
+      <label>Latitude <input id="incLat" inputmode="decimal" placeholder="24.8607"></label>
+      <label>Longitude <input id="incLon" inputmode="decimal" placeholder="67.0011"></label>
+      <label class="wide">Place <input id="incPlace" placeholder="e.g. University Road, Block 5, Gulshan-e-Iqbal"></label>
+      <label>Date <input id="incDate" type="date"></label>
+      <label>Time <input id="incTime" type="time"></label>
+      <label>FIR <input id="incFir" placeholder="604/2025"></label>
+    </div>
+    <div class="dlgbtns"><span id="mapMsg" class="muted small"></span><button type="button" id="incSave" class="primary">Save incident</button></div>
+  </dialog>
+
   <dialog id="keyDlg">
     <form method="dialog" id="keyForm">
       <b>API key</b>
@@ -272,6 +295,17 @@
 @endverbatim
 
   <script>
+    function saveRun(run) {
+      const saveUrl = @json($saveUrl ?? null);
+      if (!saveUrl) return;
+      fetch(saveUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json',
+                   'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content },
+        body: JSON.stringify(run),
+      }).catch((err) => console.error('Saving the Sherlocks graph failed', err));
+    }
+
     window.SHERLOCKS_CONFIG = {
       embedded: true,                 // no Sherlocks sign-in / history / key buttons - the portal owns those
       backend: 'ems',                 // live police systems only (no Demo option in the portal)
@@ -279,18 +313,15 @@
       token: @json($sherlocksToken),
       savedRun: @json($savedRun ?? null),   // a graph the portal saved earlier, or null for a new search
 
-      // A search finished: `run` is the whole graph (nodes, edges, params, stats, log).
+      // A search finished: `run` is the whole graph (nodes, edges, params, stats, log, and
+      // graph.case - the case file: documents, facts, uploads, incident, questions, report).
       // Saving it is the portal's job - here it is POSTed to $saveUrl if one is given.
-      onRunComplete(run) {
-        const saveUrl = @json($saveUrl ?? null);
-        if (!saveUrl) return;
-        fetch(saveUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json',
-                     'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]').content },
-          body: JSON.stringify(run),
-        }).catch((err) => console.error('Saving the Sherlocks graph failed', err));
-      },
+      onRunComplete(run) { saveRun(run); },
+
+      // The case of a finished search changed: an uploaded file was read, the incident was
+      // pinned on the map, a question was answered, the chat fetched a document. Save again
+      // (same run id: the controller updates the saved row).
+      onCaseUpdated(run) { saveRun(run); },
 
       onRunStarted(runId) { /* optional: e.g. show "searching..." in the portal */ },
 

@@ -162,9 +162,9 @@ def test_a_run_reads_the_fir_file_its_lab_reports_and_the_cro_dossier(ems_run):
     assert kinds["cro"]["images"], "the dossier's pictures are kept"
     subject = next(n for n in handle.builder.persons() if n.data.get("seed"))
     assert {p["id"] for p in kinds["cro"]["images"]} <= set(subject.data["images"])
-    # The FIR file named the complainant: on the graph, linked through the FIR.
+    # The FIR file named the complainant: on the graph, as the one who filed it against the subject.
     edges = handle.builder.snapshot()["edges"]
-    assert any(e["label"] == "Complainant in FIR 321/25" for e in edges)
+    assert any(e["label"] == "Complainant against the subject in FIR 321/25" for e in edges)
     # A lab report found the subject by CNIC.
     assert any(link["pid"] == subject.id and link["doc"] == kinds["lab"]["id"] for link in handle.case.links.values())
     assert handle.case.report_status == "ready" and handle.case.report["targets"][0]["id"] == subject.id

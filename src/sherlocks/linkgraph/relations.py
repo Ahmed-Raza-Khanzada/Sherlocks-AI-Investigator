@@ -58,6 +58,8 @@ _RULES: list[tuple[re.Pattern[str], str, str, bool]] = [
     # -- criminal / FIR -------------------------------------------------------------
     (re.compile(rf"^complainant against the subject in {_FIR}", re.IGNORECASE), "filed FIR {fir} against", "named", False),
     (re.compile(rf"^accused by the subject in {_FIR}", re.IGNORECASE), "filed FIR {fir} against", "owner", False),
+    (re.compile(rf"^accused of harming the subject in {_FIR}", re.IGNORECASE), "is accused in FIR {fir} of harming",
+     "named", False),
     (re.compile(rf"^co-accused(?: \(nominated\))? in {_FIR}", re.IGNORECASE), "is co-accused with", "named", True),
     (re.compile(r"^co-accused", re.IGNORECASE), "is co-accused with", "named", True),
     (re.compile(rf"^complainant in {_FIR}", re.IGNORECASE), "is complainant in FIR {fir} involving", "named", False),
@@ -90,6 +92,8 @@ _RULES: list[tuple[re.Pattern[str], str, str, bool]] = [
     (re.compile(r"^landlord", re.IGNORECASE), "is landlord of", "named", False),
     (re.compile(r"^tenant of owned property", re.IGNORECASE), "is tenant of", "named", False),
     (re.compile(r"^co-tenant", re.IGNORECASE), "shares a tenancy with", "named", True),
+    (re.compile(r"^in phone contact(?: \((?P<what>[^)]*)\))?", re.IGNORECASE),
+     "was in phone contact with", "named", True),
     (re.compile(r"^tenant", re.IGNORECASE), "is tenant of", "named", False),
     (re.compile(r"^same number on a prvs tenancy record", re.IGNORECASE), "is on a tenancy record with the same number as", "named", False),
     (re.compile(r"^owner$", re.IGNORECASE), "is owner linked to", "named", False),
@@ -107,7 +111,8 @@ _RULES: list[tuple[re.Pattern[str], str, str, bool]] = [
     (re.compile(r"^driving licence registered with the same number", re.IGNORECASE), "holds a driving licence on the same number as", "named", False),
     (re.compile(r"^(?:verification record|named in verification)", re.IGNORECASE), "has a verification record on the same number as", "named", False),
     # -- travel ----------------------------------------------------------------------------
-    (re.compile(r"^room-mate at hotel", re.IGNORECASE), "shared a hotel room with", "named", True),
+    (re.compile(r"^room-mate at hotel", re.IGNORECASE), "shared hotel with", "named", True),
+    (re.compile(r"^shared hotel stay", re.IGNORECASE), "shared hotel with", "named", True),
     (re.compile(r"^co-guest", re.IGNORECASE), "stayed at the same hotel on the same day as", "named", True),
     (re.compile(r"^guest at the same hotel", re.IGNORECASE), "stayed at the same hotel as", "named", True),
     (re.compile(r"^used same phone/cnic at hotel", re.IGNORECASE), "checked into a hotel on the same phone/CNIC as", "named", False),

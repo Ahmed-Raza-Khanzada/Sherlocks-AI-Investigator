@@ -43,7 +43,7 @@ from sherlocks.linkgraph.systems import system_label
 # cdr_report_app counts PSRMS ``WIT`` rows as suspects and ``SUS`` rows as witnesses,
 # in both its provider summary and its PDF renderer - the upstream codes are observed to
 # be inverted. Follow the production app rather than the code letters.
-PSRMS_ROLES = {"FIR": "Complainant", "WIT": "Accused / suspect", "SUS": "Witness"}
+PSRMS_ROLES = {"FIR": "Complainant", "WIT": "Accused / suspect", "SUS": "Witness", "AFFP": "Victim"}
 
 _ROLE_LABELS = {
     "owner": "Owner",
@@ -368,9 +368,12 @@ def _psrms(ctx: _Ctx, data: dict, raw: Any) -> None:
             others.append((fir, role, ref))
 
     # Pass 2: everyone else, named by what they are to the subject in that FIR.
+    def side(r: str | None) -> str | None:
+        return "Accused" if r and r.startswith("Accused") else r
+
     for fir, role, ref in others:
         label = f"{fir.get('fir_no')}/{fir.get('fir_year')}"
-        mine = subject_role.get(label)
+        mine, role = side(subject_role.get(label)), side(role) or role
         if mine is None:
             # A different FIR that merely shares the identifier we searched on.
             relation = f"Same identifier in FIR {label} ({role})"
@@ -380,6 +383,8 @@ def _psrms(ctx: _Ctx, data: dict, raw: Any) -> None:
             relation = f"Complainant against the subject in FIR {label}"
         elif mine == "Complainant" and role == "Accused":
             relation = f"Accused by the subject in FIR {label}"
+        elif mine == "Victim" and role == "Accused":
+            relation = f"Accused of harming the subject in FIR {label}"
         elif role == "Witness" and mine == "Witness":
             relation = f"Co-witness in FIR {label}"   # becomes a weak link (graph.link_related)
         elif role == "Witness":
@@ -608,7 +613,67 @@ def _old_tenant(ctx: _Ctx, data: dict, raw: Any) -> None:
         ctx.rec.add_field(f"Tenancy #{row.get('tenant_id') or len(ctx.rec.fields) + 1}", address or "-")
 
 
+def _hotel_profiles(ctx: _Ctx, profiles: list[dict]) -> None:
+    """Hotel Eye ``/api/person``: one profile per person the phone / CNIC found."""
+    known = ctx.known_cnics()
+    for prof in profiles:
+        p = prof.get("person") or {}
+        ref = _ref(p.get("name"), p.get("father_name"), p.get("cnic"), [p.get("phone")],
+                   [p.get("temporary_address"), p.get("permanent_address")])
+        stays = _rows(prof.get("hotel_eye_stays"))
+        own = (ref.cnic in known) if (known and ref.cnic) else (ctx.is_subject(ref) or not (ref.cnic or ref.phones))
+        if not own:
+            # Another person's profile on the searched number / CNIC.
+            last = stays[0] if stays else {}
+            ctx.relate(ref, "Used same phone/CNIC at hotel check-in",
+                       " · ".join(str(x) for x in (last.get("hotel"), last.get("check_in")) if x) or None)
+            continue
+        ctx.absorb(ref)
+        for key, label in (("gender", "Gender"), ("date_of_birth", "Date of birth"), ("passport", "Passport"),
+                           ("email", "Email"), ("nationality", "Nationality")):
+            if p.get(key):
+                ctx.rec.add_field(label, p[key])
+                if key in ("passport", "email"):
+                    ctx.rec.subject.extra[key] = str(p[key])
+        for i, s in enumerate(stays, 1):
+            stay = HotelStay(hotel=str(s.get("hotel") or "Unknown hotel"), district=s.get("district") or None,
+                             room=str(s.get("room_no") or "") or None, check_in=s.get("check_in") or None,
+                             check_out=s.get("check_out") or None)
+            ctx.rec.stays.append(stay)
+            ctx.rec.add_field(f"Stay {i}", f"{stay.hotel} ({stay.district or '-'}, PS {s.get('police_station') or '-'}) "
+                                           f"room {stay.room or '-'} | {stay.check_in or '-'} → {stay.check_out or '-'} | "
+                                           f"{s.get('visit_purpose') or ''} | {str(s.get('role') or '').replace('_', ' ')}")
+        # People who stayed with them: a shared hotel stay, stated by Hotel Eye.
+        for w in _rows(prof.get("stay_with_persons")):
+            if not isinstance(w, dict):
+                continue
+            wref = _ref(w.get("name") or w.get("guest_name"), w.get("father_name"),
+                        w.get("cnic") or w.get("cnic_or_passport"), [w.get("phone")])
+            detail = " · ".join(str(x) for x in (w.get("hotel"), f"room {w['room_no']}" if w.get("room_no") else None,
+                                                  w.get("check_in"), str(w.get("role") or "").replace("_", " ")) if x)
+            ctx.relate(wref, "Shared hotel stay", detail or None)
+        for link in _rows(prof.get("criminal_links")):
+            if not isinstance(link, dict):
+                continue
+            if link.get("cro_no"):
+                ctx.rec.add_field("CRO No. (via Hotel Eye)", link["cro_no"])
+            for r in _rows(link.get("records")):
+                no, _, year = str(r.get("fir_no") or "").partition("/")
+                if no and year:
+                    ctx.rec.firs.append(FirKey(fir_no=no, fir_year=year, police_station=str(r.get("police_station") or ""),
+                                               offence=r.get("fir_offence"), status=r.get("status"),
+                                               role="Accused (CRO via Hotel Eye)"))
+            if link.get("records") or link.get("cro_no"):
+                for flag in ("criminal_record", "fir_record"):
+                    if flag not in ctx.rec.flags:
+                        ctx.rec.flags.append(flag)
+    ctx.rec.add_field("Hotel stays", len(ctx.rec.stays))
+
+
 def _hotel_eye(ctx: _Ctx, data: dict, raw: Any) -> None:
+    if isinstance(raw, dict) and isinstance(raw.get("profiles"), list):
+        _hotel_profiles(ctx, raw["profiles"])
+        return
     records = _rows(raw.get("records")) if isinstance(raw, dict) else []
     originals: list[dict] = []
     if isinstance(raw, dict):
@@ -952,12 +1017,18 @@ _DOC_ROLES = {
 def _fir_document(ctx: _Ctx, doc: dict) -> None:
     """A FIR file report read by sherlocks.evidence.fir_document: people by role."""
     label = f"{doc.get('fir_no')}/{doc.get('fir_year')}"
-    mine = next((_DOC_ROLES.get(key) for key, people in (doc.get("roster") or {}).items() for p in people
-                 if ctx.is_subject(_ref(p.get("name"), p.get("father"), p.get("cnic"), [p.get("phone")]))), None)
+    # The subject's own role; a complainant also listed as a witness is the complainant.
+    held = {_DOC_ROLES.get(key) for key, people in (doc.get("roster") or {}).items() for p in people
+            if ctx.is_subject(_ref(p.get("name"), p.get("father"), p.get("cnic"), [p.get("phone")]))}
+    mine = next((r for r in ("Complainant", "Accused", "Witness", "Guarantor", "Investigating officer") if r in held), None)
     for key, people in (doc.get("roster") or {}).items():
         role = _DOC_ROLES.get(key, "Named")
         if role in ("Witness", "Guarantor") and mine in ("Witness", "Guarantor"):
             role = "Co-witness"   # witnesses of the same case: a weak link, not a statement
+        elif role == "Accused" and mine == "Complainant":
+            role = "Accused by the subject"     # he filed this FIR against them - not co-accused
+        elif role == "Complainant" and mine == "Accused":
+            role = "Complainant against the subject"
         for p in people:
             ref = _ref(p.get("name"), p.get("father"), p.get("cnic"), [p.get("phone")], [p.get("address")])
             if ref.is_empty:

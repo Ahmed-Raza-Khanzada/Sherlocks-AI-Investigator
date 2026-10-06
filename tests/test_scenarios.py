@@ -328,6 +328,6 @@ def test_findings_network_and_investigator_over_http(demo):
     with client.stream("POST", f"{url}/investigate", json={"graph": graph, "question": "how is Bilal linked to Asif Ali?"}) as r:
         text = r.read().decode()
     kinds = [line[7:] for line in text.splitlines() if line.startswith("event: ")]
-    assert kinds[0] == "start" and kinds[-1] == "final" and "step" in kinds
+    assert kinds[0] == "start" and kinds[-1] == "final" and "agent" in kinds
     final = json.loads(text.strip().split("data: ")[-1])
-    assert "route" in final["answer"]
+    assert "linked through" in final["answer"]

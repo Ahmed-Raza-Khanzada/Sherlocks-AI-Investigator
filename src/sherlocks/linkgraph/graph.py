@@ -294,6 +294,8 @@ class GraphBuilder:
                         "role": fir.role, "system": rec.system, "offence": fir.offence}
                 if fir.ps_id:
                     item["ps_id"] = fir.ps_id
+                if fir.status:
+                    item["status"] = fir.status
                 if item not in data["firs"]:
                     data["firs"].append(item)
             for stay in rec.stays:

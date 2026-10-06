@@ -71,6 +71,7 @@ def _fake_ems_endpoints(monkeypatch):
         "psrms_fir_url": f"{host}/restapi/Criminal_api/firfilereport",
         "labs_url": f"{host}/api/v1/show-reports",
         "safe_cro_url": f"{host}/api/cro-report-pdf",
+        "hotel_person_url": "",   # the Hotel Eye person API is off unless a test turns it on
     }
     for key in ems.CONF:
         monkeypatch.setitem(ems.CONF, key, fake.get(key, f"test-{key}"))

@@ -84,7 +84,10 @@ and allow at least 16 MB request bodies on `sherlocks.graphs.store` (PHP
 `post_max_size`/`upload_max_filesize`, nginx `client_max_body_size`).
 
 - `store()` receives every finished search as JSON (`id`, `seed_label`, `params`,
-  `stats`, `graph` {nodes, edges}, `events`). Save it however you like, e.g. one row per
+  `stats`, `graph` {nodes, edges, case}, `events`). **The same run is posted again**
+  whenever its case changes after the search (a file uploaded and read, the incident
+  pinned, a question answered): update the row for that `run_id` (`updateOrCreate`), do not
+  add a new one. Save it however you like, e.g. one row per
   graph with a `longText`/`json` `payload` column and the user who ran it.
 - `show($graphId)` loads one saved graph back (with your own permission check). The tab
   then shows it, and **chat, leads and the AI investigator work on it** because the page
@@ -114,15 +117,30 @@ Your own "saved graphs" list simply links to `route('sherlocks.graph', $id)` for
 
 ## What the tab does by itself (nothing to build)
 
+All of it comes from Sherlocks' own page script: deploying Sherlocks updates the tab, with no change on the portal side.
+
 - **Live graph** over Server-Sent Events: people and links appear as each police system answers.
 - **Search by** CNIC, mobile, email, or several people at once ("Multiple people").
 - **Live EMS only.** The page is pinned with `backend: 'ems'`, so the data-source choice is hidden. It asks for confirmation before each live search.
 - **Chat** about the graph, **person briefs**, **compare two people**, **leads** (linkage patterns), and the **AI investigator**, which streams its steps.
 - **Case evidence** read while the graph builds: the FIR file of every FIR found (complainant, accused, witnesses, case diaries), the forensic/medical lab reports of that FIR (DNA, chemical, FSL, MLO; PDFs read, scanned pages read by the AI vision model), and the CRO dossier of every criminal (poses, fingerprints). Listed in the "Case evidence" card; each opens with its quoted facts and pictures.
-- **Sherlock chat bubble** (bottom right), usable from the moment the graph starts building: it reads the evidence, can fetch a document or check one system itself, and cites every answer (`F3` opens the quote).
+- **Sherlock chat bubble** (bottom right), usable from the moment the graph starts building - a messenger-style chat (Sherlock's messages on the left with his avatar, the officer's on the right, time stamps, a typing indicator, lists and sources as chips). It is a team of agents behind one voice (their internal steps are not shown):
+  - replies in the officer's language - **English, اردو or Roman Urdu** - in natural sentences;
+  - remembers who is being discussed ("ye kitni FIRs mein hai?" means the person just mentioned);
+  - answers fact questions **exactly, computed from the records** (how many FIRs, criminals among his connections or in the whole graph, links between two people, hotel stays, phones, vehicles, documents, what's new, case summary), each item with its source;
+  - investigates open questions, and can fetch a document or check one system itself;
+  - records what the officer states and **asks the officer questions throughout the chat** (where/when it happened, the crime, the main suspect, the FIR, whose CDR) with answer buttons - remembering every answer, never asking the same thing again;
+  - checks every reply before it is shown (numbers, sources, no contradiction with what the officer said); cites every answer (`F3` opens the quote).
+- **Uploads in the chat** (📎 or drag and drop): image (JPG, PNG), PDF, Word (.docx), Excel (.xlsx) only, up to 25 MB. CDRs and tower dumps go to the CDR agent (and the CDR server). The browser sends them straight to Sherlocks; if a proxy sits in front of Sherlocks, allow 30 MB bodies there.
+- **Incident map** (📍): the officer pins where and when it happened. Map tiles load from OpenStreetMap in the officer's browser (or a tile server set on the Sherlocks side).
+- **Find in graph** understands names by sound across scripts: "altaf" finds الطاف, and the other way round.
+- **Connections filter** (toolbar): tick which kinds of link to show - co-accused, complaint (FIR filed), FIR witness, PRVS / verification witness, police, family, property, vehicle, phone/SIM, work, hotel, online; only those links and the people they connect are drawn.
 - **Case report (PDF)** for senior officers: written automatically when the graph finishes or is stopped; the "📑 Case report" button downloads it. Every assessment cites its evidence.
 - **Token renewal:** when the token expires, the page calls `/sherlocks/token` and carries on.
 - `onRunComplete(run)` fires once per finished search → POST to `store()`.
+
+`onCaseUpdated(run)` fires (debounced) when a finished run's case changes; the tab view
+saves it the same way as `onRunComplete`.
 
 `window.Sherlocks` also exposes `loadGraph(run)`, `openRun(runId)`, `setToken(token)` and
 `currentRun()`, in case the portal wants to drive the page from its own buttons.
@@ -152,8 +170,9 @@ Your own "saved graphs" list simply links to `route('sherlocks.graph', $id)` for
 > env keys from `laravel/env.example`, and register the routes from
 > `laravel/routes/sherlocks.php` inside our authenticated route group. Implement the two
 > TODOs in `SherlocksController` with a new `sherlocks_graphs` table (migration + model:
-> user_id, run_id, subject, payload longText, timestamps) and our existing permission
-> checks, and add a "Saved graphs" list linking to `route('sherlocks.graph', $id)`. Add a
+> user_id, run_id (indexed), subject, payload longText, timestamps) and our existing permission
+> checks - `store()` must `updateOrCreate` by run_id and user_id because the same run is posted
+> again when its case changes, and the save route must accept bodies up to 16 MB, and add a "Saved graphs" list linking to `route('sherlocks.graph', $id)`. Add a
 > "Sherlocks" menu item opening `route('sherlocks.tab')` inside our layout via a same-site
 > iframe. Do not copy or modify Sherlocks' JavaScript/CSS; the view loads them from
 > `SHERLOCKS_API_BASE`. Keep everything between `@verbatim` and `@endverbatim` in the view unchanged.

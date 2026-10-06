@@ -34,7 +34,7 @@ from rapidfuzz import fuzz, process
 
 from sherlocks.linkgraph.dossier import criminal_flags
 from sherlocks.linkgraph.graph import witness_role
-from sherlocks.linkgraph.normalize import name_key
+from sherlocks.linkgraph.normalize import name_key, sounds_like
 from sherlocks.linkgraph.systems import system_label
 
 # A record naming more people than this (a big FIR roster) is a crowd: its people are
@@ -156,7 +156,19 @@ class PersonNetwork:
                 return pid
         names = {pid: name_key(n["label"]) for pid, n in self.people.items()}
         hit = process.extractOne(name_key(ref), names, scorer=fuzz.WRatio, score_cutoff=80)
-        return hit[2] if hit else None
+        if hit:
+            return hit[2]
+        # One distinctive word of a name ("kamran" -> Kamran Ahmed), held by one person.
+        from sherlocks.linkgraph.rarity import COMMON_NAME_TOKENS
+
+        words = [w for w in name_key(ref).split() if len(w) >= 3 and w not in COMMON_NAME_TOKENS]
+        if words:
+            holders = [pid for pid, key in names.items() if all(w in key.split() for w in words)]
+            if len(holders) == 1:
+                return holders[0]
+        # The same name in the other script ("afzal" for افضل): one person must match.
+        by_sound = [pid for pid, n in self.people.items() if sounds_like(ref, n["label"])]
+        return by_sound[0] if len(by_sound) == 1 else None
 
     def criminal(self, pid: str) -> bool:
         return bool(criminal_flags(self.data(pid)))

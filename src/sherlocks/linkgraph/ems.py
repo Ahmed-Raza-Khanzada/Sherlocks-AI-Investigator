@@ -90,12 +90,19 @@ CONF = {
     "labs_token": _env("EMS_LABS_TOKEN"),
     "safe_cro_url": _env("EMS_SAFE_CRO_URL"),
     "safe_key": _env("EMS_SAFE_KEY"),
+    # CDR Report App (CDR, multi-CDR, BTS analysis; IMEI and nearest-police-station lookups).
+    "cdr_api_url": _env("EMS_CDR_API_URL"),
+    "cdr_api_key": _env("EMS_CDR_API_KEY"),
     "cfms_url": _env("EMS_CFMS_URL"),
     "watchlist_url": _env("EMS_WATCHLIST_URL"),
     "watchlist_key": _env("EMS_WATCHLIST_KEY"),
     "hotel_cnic_url": _env("EMS_HOTEL_CNIC_URL"),
     "hotel_mobile_url": _env("EMS_HOTEL_MOBILE_URL"),
     "hotel_key": _env("EMS_HOTEL_KEY"),
+    # Hotel Eye person API: one call by phone / CNIC -> profiles with stays, companions, CRO links.
+    "hotel_person_url": _env("EMS_HOTEL_PERSON_URL"),
+    "hotel_person_key": _env("EMS_HOTEL_PERSON_KEY"),
+    "hotel_person_cookie": _env("EMS_HOTEL_PERSON_COOKIE"),
     "sbvs_base": _env("EMS_SBVS_BASE"),
     "sbvs_key": _env("EMS_SBVS_KEY"),
     "prvs_base": _env("EMS_PRVS_BASE"),
@@ -285,6 +292,7 @@ class Req:
     data: dict[str, Any] | None = None
     json: Any = None
     timeout: int | None = None   # override the client default for a slow endpoint
+    files: Any = None            # multipart uploads: {field: (filename, bytes)} or a list of pairs
 
 
 _SECRET_HEADERS = {"autokenn", "secrt", "api_key", "secret_key", "x-api-key", "api-key", "api-token",
@@ -335,7 +343,8 @@ class EmsHttp:
         text = ""
         try:
             resp = self.session.request(req.method, req.url, headers=req.headers, params=req.params,
-                                        data=req.data, json=req.json, timeout=req.timeout or self.timeout)
+                                        data=req.data, json=req.json, files=req.files,
+                                        timeout=req.timeout or self.timeout)
             status = resp.status_code
             # PSRMS (and others) prefix the JSON with a UTF-8 BOM, which resp.json() chokes
             # on - it would fall through to a text blob and every hit would read as
@@ -361,14 +370,15 @@ class EmsHttp:
         finally:
             self._log(req, status, text, error, (_time.time() - started) * 1000)
 
-    def fetch_bytes(self, url: str, *, timeout: int | None = None, max_bytes: int = 40_000_000) -> bytes:
+    def fetch_bytes(self, url: str, *, timeout: int | None = None, max_bytes: int = 40_000_000,
+                    headers: dict[str, str] | None = None) -> bytes:
         """A binary download (a report PDF), audited like any call. Raises on HTTP errors."""
         import time as _time
 
         started = _time.time()
         status, error, size = 0, None, 0
         try:
-            resp = self.session.get(url, timeout=timeout or max(self.timeout, 60), stream=True)
+            resp = self.session.get(url, timeout=timeout or max(self.timeout, 60), stream=True, headers=headers)
             status = resp.status_code
             resp.raise_for_status()
             chunks, size = [], 0
@@ -382,7 +392,8 @@ class EmsHttp:
             error = repr(exc)
             raise
         finally:
-            self._log(Req("GET", url), status, f"<{size} bytes>", error, (_time.time() - started) * 1000)
+            self._log(Req("GET", url, headers=dict(headers or {})), status, f"<{size} bytes>", error,
+                      (_time.time() - started) * 1000)
 
     def _log(self, req: Req, status: int, response_text: str, error: str | None, ms: float) -> None:
         """Write the full outbound call (system, input, URL, body, response) to the audit
@@ -403,6 +414,9 @@ class EmsHttp:
             lines.append(f"  params:  {_redact(req.params, _SECRET_FIELDS)}")
         if req.data:
             lines.append(f"  data:    {_redact(req.data, _SECRET_FIELDS)}")
+        if req.files:
+            pairs = req.files.items() if isinstance(req.files, dict) else req.files
+            lines.append("  files:   " + ", ".join(f"{k}={v[0]} ({len(v[1])} bytes)" for k, v in pairs))
         if req.json is not None:
             lines.append(f"  json:    {_redact(req.json, _SECRET_FIELDS) if isinstance(req.json, dict) else req.json}")
         if error:
@@ -874,6 +888,42 @@ class EmsBackend:
     # -- travel / employment / police -----------------------------------------------
 
     def _hotel_eye(self, cnic: str | None, phone: str | None) -> dict[str, Any]:
+        if not (cnic or phone):
+            return _result("hotel_eye", "invalid_input", "CNIC or mobile required")
+        if CONF.get("hotel_person_url"):
+            out = self._hotel_person(cnic, phone)
+            if out is not None:
+                return out
+        return self._hotel_eye_legacy(cnic, phone)
+
+    def _hotel_person(self, cnic: str | None, phone: str | None) -> dict[str, Any] | None:
+        """Hotel Eye ``/api/person``: profiles found by the phone and/or CNIC, each with its
+        stays, the people who stayed with them, and CRO links. ``None`` = the API failed;
+        the older per-identifier endpoints are tried instead."""
+        headers = {"X-API-KEY": CONF.get("hotel_person_key", ""), "Content-Type": "application/json",
+                   "Accept": "application/json"}
+        if CONF.get("hotel_person_cookie"):
+            headers["Cookie"] = CONF["hotel_person_cookie"]
+        try:
+            code, body = self.http.send(Req("POST", CONF["hotel_person_url"], headers=headers, timeout=SLOW_TIMEOUT,
+                                            json={"phone": phone or "", "cnic": dashed_cnic(cnic) if cnic else "",
+                                                  "passport": "", "email": ""}))
+        except requests.RequestException as exc:
+            logger.info("Hotel Eye person API failed (%s); using the older endpoints", exc)
+            return None
+        if not isinstance(body, dict) or "text_response" in body or code >= 400 and code != 404:
+            return None
+        profiles = [p for p in _rows(body.get("profiles")) if isinstance(p, dict)]
+        if not body.get("found") or not profiles:
+            return _no("hotel_eye")
+        stays = sum(len(_rows(p.get("hotel_eye_stays"))) for p in profiles)
+        companions = sum(len(_rows(p.get("stay_with_persons"))) for p in profiles)
+        return _result("hotel_eye", "success",
+                       f"{stays} Hotel Eye stay(s) in {len(profiles)} profile(s)"
+                       + (f", {companions} person(s) stayed with them" if companions else ""),
+                       hit=True, raw={"profiles": profiles, "inputs": body.get("inputs")}, data={})
+
+    def _hotel_eye_legacy(self, cnic: str | None, phone: str | None) -> dict[str, Any]:
         headers = {"x-api-key": CONF["hotel_key"], "Content-Type": "application/x-www-form-urlencoded"}
         # by-mobile can return hundreds of stays and take ~90s; give it the slow timeout.
         probes = self._both(cnic and Req("POST", CONF["hotel_cnic_url"], headers=headers, data={"cnic": dashed_cnic(cnic)}, timeout=SLOW_TIMEOUT),

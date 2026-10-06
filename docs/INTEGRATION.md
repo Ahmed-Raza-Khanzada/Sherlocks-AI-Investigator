@@ -228,3 +228,12 @@ searching next come back as `suggestions`, and the officer decides whether to se
 
 `401`: token missing, expired or signed with another secret. `404`: unknown run or
 person. `422`: bad input (the `detail` says which field).
+
+
+## Case updates after a search
+
+The case of a finished search keeps growing: files uploaded in the Sherlock chat, the
+incident pinned on the map, answers to Sherlock's questions, documents the chat fetched.
+The page calls `onCaseUpdated(run)` (debounced) with the full run export each time; save it
+like `onRunComplete`, updating the row for that run id. A saved graph that Sherlocks still
+holds reopens with its latest case automatically.

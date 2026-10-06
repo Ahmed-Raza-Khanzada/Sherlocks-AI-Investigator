@@ -91,6 +91,7 @@ def _target(net: PersonNetwork, pid: str, case: CaseFile) -> dict[str, Any]:
             "name": prox.get("nearest_name"), "hops": prox.get("hops"),
             "route": [h["relation"] for h in route.get("hops") or []]},
         "evidence": case.for_person(pid),
+        "role": case.roles.get(pid),
     }
 
 
@@ -265,4 +266,8 @@ def assemble(graph: dict[str, Any], case: CaseFile, *, llm: Any = None, run: dic
         "stats": stats, "targets": targets, "graph_evidence": gitems, "findings": findings[:12],
         "key_people": net.key_people(top=8), "timeline": _timeline(net, case), **written,
         "cited": sorted(cited, key=lambda x: (x[0], int(x[1:]))),
+        "incident": case.incident,
+        "roles": {net.name(p): r for p, r in case.roles.items() if p in net.people},
+        "uploads": [{"id": d["id"], "title": d["title"], "summary": d.get("summary")}
+                    for d in case.documents.values() if d["kind"] in ("upload", "cdr")],
     }

@@ -230,6 +230,10 @@ class RunManager:
         self._briefs: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._slots = threading.BoundedSemaphore(max(1, settings.api.max_concurrent_jobs))
         self._llm_factory = llm_factory
+        # Uploads, incident pins and answers are worked here, apart from the graph runs.
+        from concurrent.futures import ThreadPoolExecutor
+
+        self._jobs = ThreadPoolExecutor(max_workers=3, thread_name_prefix="case")
 
     # -- configuration --------------------------------------------------------------
 
@@ -553,7 +557,7 @@ class RunManager:
         case file and may fetch documents or run a lookup itself; what it fetches joins
         the case file (saved with the run, or returned as ``case`` on the final event
         for a graph posted back by the host)."""
-        from sherlocks.linkgraph.investigator import investigate
+        from sherlocks.linkgraph.sherlock_team import run_turn
 
         handle = self._runs.get(run_id) if run_id else None
         case = self.case_of(graph, run_id)
@@ -564,9 +568,21 @@ class RunManager:
             agents = self._agents(case, backend, graph=graph)
         before = case.version
 
+        # A graph with FIRs but no documents read yet (built before document reading): read them now.
+        reading = 0
+        if run_id and not case.documents and not (handle is not None and handle.status in ("queued", "running")):
+            reading = self.read_documents(run_id)
+
         def events() -> Any:
-            for event in investigate(graph, question, llm=self._llm(), history=history, case=case, agents=agents,
-                                     backend=backend, live_calls=self.settings.evidence.chat_live_calls):
+            for event in run_turn(graph, question, llm=self._llm(), history=history, case=case, agents=agents,
+                                  backend=backend, live_calls=self.settings.evidence.chat_live_calls):
+                if event.get("type") == "final" and reading:
+                    from sherlocks.linkgraph.conversation import READING_LINE
+
+                    event["answer"] = (event.get("answer") or "") + "\n\n" + READING_LINE[event.get("language") or "en"].format(n=reading)
+                    event["reading_documents"] = reading
+                if event.get("type") == "final" and handle is not None:
+                    self.store.save(handle.to_dict())
                 if event.get("type") == "final" and case.version != before and handle is None:
                     event["case"] = case.to_dict()
                     run = self.store.load(run_id) if run_id else None
@@ -576,6 +592,216 @@ class RunManager:
                 yield event
 
         return events()
+
+    # -- the case board: uploads, the incident, answers --------------------------------
+
+    def _session(self, run_id: str) -> dict[str, Any] | None:
+        """The case file of a run and how to save it: the live handle, or the stored run."""
+        handle = self._runs.get(run_id)
+        if handle is not None:
+            backend = self.backend(handle.backend)
+            # Fresh agents: the run's own may be stopped, and a stopped run still takes uploads.
+            agents = self._agents(handle.case, backend, handle=handle)
+            agents.cancelled = lambda: False
+            return {"case": handle.case, "agents": agents, "graph": handle.builder.snapshot, "emit": handle.emit,
+                    "save": lambda: self.store.save(handle.to_dict())}
+        run = self.store.load(run_id)
+        if run is None:
+            return None
+        graph = run.setdefault("graph", {"nodes": [], "edges": []})
+        case = CaseFile.from_dict(graph.get("case"))
+        agents = self._agents(case, self.backend(self.backend_kind(run.get("backend"))), graph=graph)
+
+        def save() -> None:
+            graph["case"] = case.to_dict()
+            self.store.save(run)
+
+        return {"case": case, "agents": agents, "graph": lambda: graph, "emit": lambda level, message: None, "save": save}
+
+    def _upload_dir(self) -> Path:
+        return self.settings.output_path / "uploads"
+
+    def upload(self, run_id: str, name: str, content: bytes, *, note: str = "", owner: str | None = None) -> dict[str, Any]:
+        """Accept a file (checked now) and read it in the background. Raises
+        :class:`~sherlocks.evidence.uploads.UploadError` for a refused file, LookupError
+        for an unknown run."""
+        from sherlocks.evidence.uploads import check_upload, process_upload, safe_name
+
+        session = self._session(run_id)
+        if session is None:
+            raise LookupError("Run not found")
+        name = safe_name(name)
+        kind = check_upload(name, content, self.settings.evidence.max_upload_mb)
+
+        def work() -> None:
+            try:
+                process_upload(session["agents"], name=name, content=content, note=note, owner=owner,
+                               upload_dir=self._upload_dir(), emit=session["emit"])
+            except Exception as exc:  # noqa: BLE001 - reported on the case board
+                logger.info("Upload %s failed: %s", name, exc)
+                session["case"].attempt("upload", f"upload-failed:{name}", "error", str(exc))
+            finally:
+                session["save"]()
+
+        session["case"].attempt("upload", f"upload:{name}", "accepted", f"{name} received - reading it")
+        self._jobs.submit(work)
+        return {"accepted": name, "kind": kind}
+
+    def upload_file(self, run_id: str, doc_id: str) -> tuple[bytes, str, str] | None:
+        session = self._session(run_id)
+        doc = session["case"].documents.get(doc_id) if session else None
+        path = Path((doc or {}).get("data", {}).get("path") or "")
+        if not doc or not path.is_file() or self._upload_dir() not in path.resolve().parents:
+            return None
+        return path.read_bytes(), doc["data"].get("name") or path.name, doc["data"].get("mime") or "application/octet-stream"
+
+    def set_incident(self, run_id: str, incident: dict[str, Any]) -> dict[str, Any]:
+        """The officer pinned the incident: record it, then (in the background) find the
+        nearest police station and re-read every uploaded CDR against the point."""
+        from sherlocks.evidence.questioner import ask_gaps
+
+        session = self._session(run_id)
+        if session is None:
+            raise LookupError("Run not found")
+        case = session["case"]
+        inc = case.set_incident(incident)
+        where = f"{inc.get('place') or 'a pinned point'} ({inc.get('lat')}, {inc.get('lon')})" if inc.get("lat") is not None else inc.get("place")
+        doc_id, line = case.officer_note(
+            f"Incident location: {where}" + (f", date {inc['date']}" if inc.get("date") else "")
+            + (f" {inc['time']}" if inc.get("time") else "") + (f", FIR {inc['fir']}" if inc.get("fir") else ""), source="map")
+        case.add_fact(doc_id, f"Stated by the officer: the incident took place at {where}"
+                      + (f" on {inc['date']}" if inc.get("date") else ""), line, kind="officer_incident_place", by="officer")
+        if inc.get("lat") is not None:
+            case.close_question("incident:place", where or "")
+            case.close_question("incident:pin", where or "")
+        if inc.get("date"):
+            case.close_question("incident:when", inc["date"])
+
+        def work() -> None:
+            try:
+                self._incident_followups(session)
+                ask_gaps(case, session["graph"]())
+            except Exception:
+                logger.exception("Incident follow-up failed")
+            finally:
+                session["save"]()
+
+        session["save"]()
+        self._jobs.submit(work)
+        return inc
+
+    def _incident_followups(self, session: dict[str, Any]) -> None:
+        from sherlocks.evidence import cdr as cdr_agent
+        from sherlocks.evidence.uploads import graph_phones
+
+        case, agents, emit = session["case"], session["agents"], session["emit"]
+        inc = case.incident or {}
+        if inc.get("lat") is not None and getattr(agents.source, "name", "") != "demo":
+            server = cdr_agent.CdrServer(getattr(agents.source, "http", None))
+            if server.ready:
+                out = server.provider("nearest_ps", {"latitude": float(inc["lat"]), "longitude": float(inc["lon"])})
+                if out.get("hit") or out.get("status") == "success":
+                    case.set_incident({"nearest_ps": out.get("summary")})
+                    emit("info", f"📍 Nearest police station to the incident: {out.get('summary')}")
+        phones = {p: n for p, (_pid, n) in graph_phones(session["graph"]()).items()}
+        for doc in list(case.documents.values()):
+            path = Path((doc.get("data") or {}).get("path") or "")
+            if doc["kind"] != "cdr" or not path.is_file():
+                continue
+            analysis = cdr_agent.analyse(path.read_bytes(), phones_on_graph=phones, incident=inc, llm=None,
+                                         radius_km=self.settings.evidence.cdr_radius_km)
+            lines = [line for line in analysis.get("lines", [])
+                     if line.startswith(("Incident day", "Near the incident", "Towers within"))]
+            if lines:
+                case.append_text(doc["id"], "\n".join(["Against the pinned incident:", *lines]))
+                for line in lines:
+                    case.add_fact(doc["id"], line, line, kind="telecom", by="cdr")
+                data = doc.setdefault("data", {}).setdefault("analysis", {})
+                data["near_incident"] = analysis.get("near_incident") or []
+                emit("hit", f"📶 {doc['title']} against the incident: {lines[0]} [{doc['id']}]")
+
+    def answer_question(self, run_id: str, qid: str, answer: str, pid: str | None = None) -> dict[str, Any]:
+        from sherlocks.evidence.questioner import ask_gaps
+        from sherlocks.evidence.uploads import _link_cdr_on_graph, graph_phones
+
+        session = self._session(run_id)
+        if session is None:
+            raise LookupError("Run not found")
+        case = session["case"]
+        q = next((q for q in case.questions if q["id"] == qid), None)
+        if q is None:
+            raise LookupError("Question not found")
+        graph = session["graph"]()
+        names = {n["id"]: n.get("label") for n in graph.get("nodes") or [] if n.get("kind") == "person"}
+        label = names.get(pid or "", answer) if pid else answer
+        case.answer(qid, label or answer)
+        case.officer_note(f"Answer to \"{q['text']}\": {label}", source="answer")
+        if pid and pid in names:
+            if q["key"] == "roles:main":
+                case.set_role(pid, "main suspect")
+            elif q["key"].startswith("cdr_owner:"):
+                doc = case.documents.get(q["key"].split(":", 1)[1])
+                if doc is not None:
+                    doc.setdefault("owners", []).append(pid)
+                    analysis = (doc.get("data") or {}).get("analysis") or {}
+                    _link_cdr_on_graph(session["agents"], doc["id"], analysis, graph_phones(graph), pid)
+        ask_gaps(case, session["graph"]())
+        session["save"]()
+        return {"question": q, "open": case.open_questions()}
+
+    def read_documents(self, run_id: str) -> int:
+        """Read the case documents of a graph that has none yet - one built before document
+        reading existed, or with it off: the FIR file (and its lab reports) of every FIR on
+        the graph with a police-station id, and the CRO dossier of every CRO number. In the
+        background; returns how many documents were queued."""
+        session = self._session(run_id)
+        if session is None or not self.settings.evidence.enabled:
+            return 0
+        case, agents, graph = session["case"], session["agents"], session["graph"]()
+        if case.dialog.get("backfilled") or not agents.enabled:
+            return 0
+        firs: dict[str, tuple[str | None, str, str, str, str]] = {}
+        cros: dict[str, str | None] = {}
+        for node in graph.get("nodes") or []:
+            d = node.get("data") or {}
+            nid = str(node.get("id") or "")
+            if node.get("kind") == "system" and nid.startswith("s:fir_roster:"):
+                parts = nid[len("s:fir_roster:"):].split("/")
+                if len(parts) == 3 and parts[2].isdigit():
+                    firs.setdefault(f"{parts[0]}/{parts[1]}/{parts[2]}", (d.get("owner"), parts[0], parts[1], parts[2], nid))
+            if node.get("kind") == "system":
+                for f in d.get("fields") or []:
+                    if str(f.get("label") or "").startswith("CRO No") and str(f.get("value") or "").strip():
+                        cros.setdefault(str(f["value"]).strip(), d.get("owner"))
+            if node.get("kind") == "person":
+                for f in d.get("firs") or []:
+                    no, _, year = str(f.get("label") or "").partition("/")
+                    if f.get("ps_id") and no and year:
+                        firs.setdefault(f"{no}/{year}/{f['ps_id']}", (nid, no, year, str(f["ps_id"]), None))
+        case.dialog["backfilled"] = True
+        if not (firs or cros):
+            session["save"]()
+            return 0
+
+        def work() -> None:
+            try:
+                for owner, no, year, ps, sid in list(firs.values())[: self.settings.evidence.max_documents]:
+                    agents._fir_task(owner, no, year, ps, None, sid)  # noqa: SLF001
+                for cro_no, owner in cros.items():
+                    agents._cro_task(owner, cro_no)  # noqa: SLF001
+                agents.drain(timeout=600)
+            except Exception:  # noqa: BLE001
+                logger.exception("Reading the documents of %s failed", run_id)
+            finally:
+                session["save"]()
+
+        session["save"]()
+        self._jobs.submit(work)
+        return len(firs) + len(cros)
+
+    def case_index(self, run_id: str) -> dict[str, Any] | None:
+        session = self._session(run_id)
+        return session["case"].index() if session else None
 
     def cancel(self, run_id: str) -> bool:
         handle = self._runs.get(run_id)

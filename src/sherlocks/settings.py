@@ -262,7 +262,17 @@ class EvidenceSettings(BaseModel):
     auto_report: bool = True
     # The chat may call police systems itself (FIR document, lab reports, CRO dossier,
     # one system lookup) to check a lead - at most this many live calls per question.
-    chat_live_calls: int = 4
+    chat_live_calls: int = 6
+    # Uploads (image, PDF, Word, Excel) per file.
+    max_upload_mb: int = 25
+    # Send an uploaded CDR / BTS file to the CDR server for its analysis (its report also
+    # looks up top contacts in the police systems - live queries). false = own analysis only.
+    cdr_auto_analyze: bool = True
+    # "Near the incident": towers within this distance of the pinned point.
+    cdr_radius_km: float = 2.0
+    # Map tiles for pinning the incident ({z}/{x}/{y}); a tile server on the police network
+    # when the officers' browsers have no internet.
+    map_tiles: str = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 
 
 class Settings(BaseModel):
@@ -394,6 +404,10 @@ def _env_overrides(env: dict[str, str]) -> dict[str, Any]:
             "ai_reader": _as_bool(get("SHERLOCKS_EVIDENCE_AI_READER")),
             "auto_report": _as_bool(get("SHERLOCKS_EVIDENCE_AUTO_REPORT")),
             "chat_live_calls": _as_int(get("SHERLOCKS_EVIDENCE_CHAT_LIVE_CALLS")),
+            "max_upload_mb": _as_int(get("SHERLOCKS_UPLOAD_MAX_MB")),
+            "cdr_auto_analyze": _as_bool(get("SHERLOCKS_CDR_AUTO_ANALYZE")),
+            "cdr_radius_km": _as_float(get("SHERLOCKS_CDR_RADIUS_KM")),
+            "map_tiles": get("SHERLOCKS_MAP_TILES"),
         },
         "osint": {
             "enabled": _as_bool(get("SHERLOCKS_OSINT_ENABLED")),

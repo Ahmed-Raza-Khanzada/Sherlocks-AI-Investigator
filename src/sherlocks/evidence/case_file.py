@@ -26,7 +26,11 @@ _MAX_TEXT = 60_000
 _SPACE = re.compile(r"\s+")
 CITATION = re.compile(r"\b([DFL]\d{1,4})\b")
 
-KIND_LABELS = {"fir": "FIR document", "lab": "Forensic / medical report", "cro": "CRO dossier"}
+KIND_LABELS = {"fir": "FIR document", "lab": "Forensic / medical report", "cro": "CRO dossier",
+               "upload": "Uploaded file", "cdr": "CDR / tower analysis", "notes": "Officer's statements"}
+NOTES_KEY = "notes:officer"
+# Roles the officer can give people on the case board.
+ROLES = ("main suspect", "suspect", "victim", "complainant", "witness", "informer", "cleared")
 
 
 def _now() -> str:
@@ -58,6 +62,15 @@ class CaseFile:
         self.report: dict[str, Any] | None = None
         self.report_status = "none"             # none | building | ready | failed
         self.version = 0
+        # The rest of the case board the agent team shares.
+        self.incident: dict[str, Any] | None = None   # {lat, lon, place, date, time, fir, nearest_ps}
+        self.roles: dict[str, str] = {}               # person id -> role stated by the officer
+        self.questions: list[dict[str, Any]] = []     # open / answered questions to the officer
+        self.conversation: list[dict[str, Any]] = []  # {q, a, at, checks}
+        self.assessment: dict[str, Any] | None = None
+        self.seen: dict[str, int] = {}                # highest D/F/L ids already told to the officer
+        # Dialogue state: who is being discussed (pronouns resolve to them), what was asked.
+        self.dialog: dict[str, Any] = {"focus": [], "last_type": None, "announced": 0}
 
     # -- writing -----------------------------------------------------------------------
 
@@ -139,6 +152,87 @@ class CaseFile:
                                    "quote": squash(quote)[:400], "strength": strength}
             self._bump()
             return link_id
+
+    # -- the officer's own words, the incident, roles, questions ----------------------------
+
+    def officer_note(self, text: str, *, source: str = "chat") -> tuple[str, str]:
+        """Append what the officer said to the "Officer's statements" document, so facts
+        taken from it can quote it like any document. Returns (doc id, the line)."""
+        with self._lock:
+            line = f"[{_now()[:16].replace('T', ' ')} · {source}] {squash(text)[:1500]}"
+            doc = self.doc_for(NOTES_KEY)
+            if doc is None:
+                doc_id = self.add_document(kind="notes", key=NOTES_KEY, title="Officer's statements",
+                                           source="The investigating officer", text=line,
+                                           summary="What the officer stated in the chat, on the map and in answers")
+            else:
+                doc_id = doc["id"]
+                doc["text"] = (doc["text"] + "\n" + line)[-_MAX_TEXT:]
+                self._bump()
+            return doc_id, line
+
+    def set_incident(self, incident: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            clean = {k: v for k, v in incident.items() if v not in (None, "")}
+            self.incident = {**(self.incident or {}), **clean, "at": _now()}
+            self._bump()
+            return self.incident
+
+    def set_role(self, pid: str, role: str) -> None:
+        with self._lock:
+            self.roles[pid] = role
+            self._bump()
+
+    def ask(self, key: str, text: str, *, action: str = "text", about: str | None = None,
+            options: list[dict[str, str]] | None = None, by: str = "Questioner") -> dict[str, Any] | None:
+        """Ask the officer something once. ``key`` identifies the gap ("incident:place",
+        "cdr_owner:D4"), so the same question is never asked twice."""
+        with self._lock:
+            if any(q["key"] == key for q in self.questions):
+                return None
+            q = {"id": f"Q{len(self.questions) + 1}", "key": key, "text": text, "action": action, "about": about,
+                 "options": options or [], "status": "open", "answer": None, "by": by, "asked_at": _now()}
+            self.questions.append(q)
+            self._bump()
+            return q
+
+    def answer(self, qid: str, answer: str) -> dict[str, Any] | None:
+        with self._lock:
+            q = next((q for q in self.questions if q["id"] == qid), None)
+            if q is None:
+                return None
+            q["status"], q["answer"], q["answered_at"] = "answered", squash(answer)[:500], _now()
+            self._bump()
+            return q
+
+    def close_question(self, key: str, answer: str = "") -> None:
+        with self._lock:
+            for q in self.questions:
+                if q["key"] == key and q["status"] == "open":
+                    q["status"], q["answer"], q["answered_at"] = "answered", answer[:500], _now()
+                    self._bump()
+
+    def open_questions(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [q for q in self.questions if q["status"] == "open"]
+
+    def add_turn(self, question: str, answer: str, checks: dict[str, Any] | None = None) -> None:
+        with self._lock:
+            self.conversation.append({"q": question[:2000], "a": answer[:4000], "at": _now(), "checks": checks or {}})
+            del self.conversation[:-60]
+            self._bump()
+
+    def set_assessment(self, assessment: dict[str, Any]) -> None:
+        with self._lock:
+            self.assessment = {**assessment, "at": _now()}
+            self._bump()
+
+    def append_text(self, doc_id: str, text: str) -> None:
+        with self._lock:
+            doc = self.documents.get(doc_id)
+            if doc is not None:
+                doc["text"] = (doc["text"] + "\n" + text)[:_MAX_TEXT]
+                self._bump()
 
     def mark_read(self, doc_id: str, by: str) -> None:
         with self._lock:
@@ -223,6 +317,8 @@ class CaseFile:
                 "documents": [{k: v for k, v in d.items() if k not in ("text", "data")} for d in self.documents.values()],
                 "facts": list(self.facts.values()), "links": list(self.links.values()),
                 "attempts": self.attempts[-60:], "report_status": self.report_status,
+                "incident": self.incident, "roles": dict(self.roles), "questions": list(self.questions),
+                "assessment": self.assessment, "turns": len(self.conversation),
             }
 
     def document(self, doc_id: str) -> dict[str, Any] | None:
@@ -237,7 +333,10 @@ class CaseFile:
         with self._lock:
             return {"version": self.version, "documents": list(self.documents.values()),
                     "facts": list(self.facts.values()), "links": list(self.links.values()),
-                    "attempts": list(self.attempts), "report": self.report, "report_status": self.report_status}
+                    "attempts": list(self.attempts), "report": self.report, "report_status": self.report_status,
+                    "incident": self.incident, "roles": dict(self.roles), "questions": list(self.questions),
+                    "conversation": list(self.conversation), "assessment": self.assessment, "seen": dict(self.seen),
+                    "dialog": dict(self.dialog)}
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> CaseFile:
@@ -260,4 +359,12 @@ class CaseFile:
         case.report = data.get("report") if isinstance(data.get("report"), dict) else None
         case.report_status = str(data.get("report_status") or ("ready" if case.report else "none"))
         case.version = int(data.get("version") or 0)
+        case.incident = data.get("incident") if isinstance(data.get("incident"), dict) else None
+        case.roles = {str(k): str(v) for k, v in (data.get("roles") or {}).items()}
+        case.questions = [q for q in data.get("questions") or [] if isinstance(q, dict) and q.get("id")]
+        case.conversation = [t for t in data.get("conversation") or [] if isinstance(t, dict)]
+        case.assessment = data.get("assessment") if isinstance(data.get("assessment"), dict) else None
+        case.seen = {str(k): int(v) for k, v in (data.get("seen") or {}).items() if str(v).isdigit()}
+        if isinstance(data.get("dialog"), dict):
+            case.dialog = {"focus": [], "last_type": None, "announced": 0, **data["dialog"]}
         return case
