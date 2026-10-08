@@ -59,7 +59,7 @@ def _fake_ems_endpoints(monkeypatch):
         "hope_emp_url": f"{host}/api/client/hope-employee-cnic-search",
         "hope_empr_url": f"{host}/api/client/hope_employer_cnic_search",
         "dls_login_url": f"{host}/auth/login", "dls_api": f"{host}/api",
-        "igp_url": f"{host}/api/complaint-details",
+        "igp_url": f"{host}/api/search-complaints-by-cnic",
         "pfc_url": f"{host}/api/citizen/icop-complaints",
         "hrmis_url": f"{host}/api/fir/officer_data/",
         "milap_url": f"{host}/api/lost-records",

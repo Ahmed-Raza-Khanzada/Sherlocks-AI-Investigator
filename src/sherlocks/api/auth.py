@@ -13,6 +13,11 @@ portal), that application owns the accounts. It signs tokens itself with the sha
 ``SHERLOCKS_AUTH_SECRET``, in exactly the format ``issue`` produces, and hands them to
 the browser; Sherlocks verifies them and records the user named in them. No password
 is set on this side in that mode - see ``docs/INTEGRATION.md``.
+
+**Which systems an officer may use.** A token may carry ``sys``: the system keys its
+officer may query (``["nadra", "simsdb", "psrms"]``). The agents' live calls for that
+officer are then limited to them (``evidence/guard.py``). A token without ``sys`` is not
+restricted, so hosts that do not send it yet keep working.
 """
 
 from __future__ import annotations
@@ -82,15 +87,23 @@ class SessionAuth:
     def _sign(self, payload: bytes) -> str:
         return _b64(hmac.new(self._secret, payload, hashlib.sha256).digest())
 
-    def issue(self, username: str) -> dict[str, object]:
+    def issue(self, username: str, systems: list[str] | None = None) -> dict[str, object]:
         expires = int(time.time()) + self.ttl
-        payload = json.dumps({"u": username, "exp": expires}, separators=(",", ":")).encode()
+        claims: dict[str, object] = {"u": username, "exp": expires}
+        if systems is not None:
+            claims["sys"] = [str(s).lower() for s in systems]
+        payload = json.dumps(claims, separators=(",", ":")).encode()
         body = _b64(payload)
         return {"token": f"{body}.{self._sign(payload)}", "expires_at": expires,
                 "username": username, "expires_in": self.ttl}
 
     def verify(self, token: str | None) -> str:
         """Return the username the token belongs to, or raise ``AuthError``."""
+        return str(self.claims(token).get("u") or "")
+
+    def claims(self, token: str | None) -> dict[str, object]:
+        """The verified claims of a token (``u`` user, ``exp``, optional ``sys``), or raise
+        ``AuthError``."""
         if not token or "." not in token:
             raise AuthError("No session token")
         body, signature = token.rsplit(".", 1)
@@ -106,7 +119,7 @@ class SessionAuth:
             raise AuthError("Malformed session token") from exc
         if int(claims.get("exp", 0)) < time.time():
             raise AuthError("Session expired - sign in again")
-        return str(claims.get("u") or "")
+        return claims if isinstance(claims, dict) else {}
 
     def login(self, username: str, password: str) -> dict[str, object]:
         if not self.enabled:

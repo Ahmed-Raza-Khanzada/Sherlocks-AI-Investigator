@@ -104,7 +104,23 @@ def _line(it: dict[str, Any], lang: str) -> str:
            + (f", {_t(lang, 'occurred', 'waqia', 'وقوعہ')} {when}" if when else "") + f": {crimes} ({who})")
     if it.get("outcome"):
         out += f" - {_w(OUTCOME, it['outcome'], lang)}"
+    if it.get("co_accused"):
+        out += f" - {_t(lang, 'co-accused', 'saathi mulzim', 'شریک ملزم')}: {_join(list(it['co_accused'])[:5], lang)}"
+    out += _bearing(it.get("relevance"), lang)
     return out + (f" [{it['source']}]" if it.get("source") else "")
+
+
+def _bearing(rel: dict[str, Any] | None, lang: str) -> str:
+    """How a previous FIR bears on the new case (empty when the new case is not described)."""
+    if rel is None:
+        return ""
+    from sherlocks.linkgraph.relevance import say_reasons
+
+    if rel.get("reasons"):
+        return " - " + _t(lang, "bears on the new case: ", "naye case se taluq: ", "نئے کیس سے تعلق: ") + say_reasons(
+            rel["reasons"], lang)
+    return " - " + _t(lang, "no link to the new case found", "naye case se koi taluq nahi mila",
+                      "نئے کیس سے کوئی تعلق نہیں ملا")
 
 
 def _list(items: list[dict[str, Any]], lang: str, limit: int = 12) -> list[str]:
@@ -132,9 +148,9 @@ def _cases(f: dict[str, Any], lang: str) -> list[str]:
     other = [r for r in rows if r["role_kind"] != "accused" and r["severity"] >= 3]
     for r in other[:2]:
         who = _w(ROLE, r["role_kind"], lang)
-        out.append(_t(lang, f"In FIR {r['label']} ({labels(r['crimes'], lang)}) he is {who}, not the accused.",
-                      f"FIR {r['label']} ({labels(r['crimes'], lang)}) mein woh khud {who} hai, mulzim nahi.",
-                      f"ایف آئی آر {r['label']} ({labels(r['crimes'], lang)}) میں وہ خود {who} ہے، ملزم نہیں۔"))
+        out.append(_t(lang, f"In FIR {r['label']} ({labels(r['crimes'], lang)}) he is {who}.",
+                      f"FIR {r['label']} ({labels(r['crimes'], lang)}) mein woh {who} hai.",
+                      f"ایف آئی آر {r['label']} ({labels(r['crimes'], lang)}) میں وہ {who} ہے۔"))
     light = [r for r in rows if r["role_kind"] == "accused" and r["severity"] < 3]
     if light:
         kinds = Counter(k for r in light for k in r["crimes"][:1])
@@ -233,6 +249,9 @@ def _details(f: dict[str, Any], lang: str) -> list[str]:
             line += "\n  " + _t(lang, "Complainant's account: ", "Muddai ka bayan: ", "مدعی کا بیان: ") + f"\"{d['story']}…\""
         if d.get("outcome"):
             line += "\n  " + _t(lang, "Status: ", "Status: ", "صورتحال: ") + _w(OUTCOME, d["outcome"], lang)
+        if it.get("relevance") is not None:
+            bearing = _bearing(it["relevance"], lang).lstrip(" -")
+            line += "\n  " + bearing[:1].upper() + bearing[1:]
         if it.get("source"):
             line += f" [{it['source']}]"
         out.append(line)
@@ -313,6 +332,45 @@ def _io(f: dict[str, Any], lang: str) -> list[str]:
     return out
 
 
+def _hotel_times(f: dict[str, Any], lang: str, limit: int) -> list[str]:
+    """Hotel stays against the moments that matter: was he in a hotel when each of his
+    FIRs happened, and at the new case's time - then the stays on record."""
+    s = f.get("subject") or ""
+    out: list[str] = []
+    for m in f["at_times"]:
+        src = f" [{m['doc'] or ', '.join(m['sources'])}]" if (m.get("doc") or m.get("sources")) else ""
+        if not m["day"]:
+            out.append(_t(lang, f"• **{m['what']}**: its date of occurrence is not on record yet, so it cannot be "
+                                f"checked against hotel stays.{src}",
+                          f"• **{m['what']}**: is ki waqia ki tareekh record mein nahi, is liye hotel stays se "
+                          f"milaya nahi ja sakta.{src}",
+                          f"• **{m['what']}**: اس کے واقعے کی تاریخ ریکارڈ میں نہیں، اس لیے ہوٹل قیام سے ملایا نہیں جا سکتا۔{src}"))
+        elif m["stays"]:
+            where = "; ".join(m["stays"])
+            out.append(_t(lang, f"• **{m['what']}** ({m['day']}): **yes** - {s} was staying at {where} [Hotel Eye].{src}",
+                          f"• **{m['what']}** ({m['day']}): **haan** - {s} us waqt {where} mein thehra hua tha [Hotel Eye].{src}",
+                          f"• **{m['what']}** ({m['day']}): **جی ہاں** - {s} اس وقت {where} میں ٹھہرا ہوا تھا [Hotel Eye]۔{src}"))
+        else:
+            out.append(_t(lang, f"• **{m['what']}** ({m['day']}): **no** hotel stay of {s} on record covers that day.{src}",
+                          f"• **{m['what']}** ({m['day']}): us din {s} ka **koi** hotel stay record mein nahi.{src}",
+                          f"• **{m['what']}** ({m['day']}): اس دن {s} کا **کوئی** ہوٹل قیام ریکارڈ میں نہیں۔{src}"))
+    any_yes = any(m["stays"] for m in f["at_times"])
+    head = (_t(lang, f"{s} was in a hotel at the time of a case on record.", f"{s} ek case ke waqt hotel mein tha.",
+               f"{s} ایک کیس کے وقت ہوٹل میں تھا۔") if any_yes else
+            _t(lang, f"No hotel stay of {s} on record falls at the time of his cases.",
+               f"{s} ka koi hotel stay us ke cases ke waqt ka record mein nahi.",
+               f"{s} کا کوئی ہوٹل قیام اس کے کیسز کے وقت کا ریکارڈ میں نہیں۔") if f.get("stays_known") else
+            _t(lang, f"No hotel stay is recorded for {s}, so none falls at the time of his cases.",
+               f"{s} ka koi hotel stay record mein nahi, is liye cases ke waqt bhi koi nahi.",
+               f"{s} کا کوئی ہوٹل قیام ریکارڈ میں نہیں، اس لیے کیسز کے وقت بھی کوئی نہیں۔"))
+    out = [head, "", *out]
+    if f.get("items"):
+        out += ["", _t(lang, f"All stays on record ({f['count']}):", f"Record mein tamam stays ({f['count']}):",
+                       f"ریکارڈ میں تمام قیام ({f['count']}):"),
+                *[f"• {it['text']} [Hotel Eye]" for it in f["items"][:limit]]]
+    return out
+
+
 def _simple(f: dict[str, Any], lang: str) -> list[str] | None:
     s, n, items = f.get("subject") or "", f.get("count", 0), f.get("items") or []
     short = _join([it["text"] for it in items[:3]], lang)
@@ -338,8 +396,77 @@ def _simple(f: dict[str, Any], lang: str) -> list[str] | None:
     return None
 
 
+def _role_head(f: dict[str, Any], lang: str) -> list[str]:
+    """A question about FIRs in one role: yes or no for that role first, then the person's
+    other FIRs, each with its role, crimes and accused - whatever the role asked."""
+    s, role, yes = f.get("subject") or "", f["asked_role"], f.get("yes_no")
+    who = _w(ROLE, role, lang)
+    matching, others = f.get("matching") or [], f.get("others") or []
+    lines: list[str] = []
+    if not matching:
+        lines.append(_t(lang, ("No - " if yes else "") + f"no FIR names {s} as {who}.",
+                        ("Nahi - " if yes else "") + f"kisi FIR mein {s} {who} nahi.",
+                        ("نہیں - " if yes else "") + f"کسی ایف آئی آر میں {s} {who} نہیں۔"))
+    else:
+        def one(r: dict[str, Any]) -> str:
+            accused = _join(list(r.get("accused") or [])[:4], lang) if role != "accused" else ""
+            tag = _t(lang, "accused", "mulzimaan", "ملزمان")
+            return f"FIR {r['label']}" + (f" ({tag}: {accused})" if accused else "")
+
+        firs = _join([one(r) for r in matching[:6]], lang)
+        lines.append(_t(lang, ("Yes - " if yes else "") + f"{s} is {who} in {len(matching)} FIR(s): {firs}.",
+                        ("Haan - " if yes else "") + f"{s} {len(matching)} FIR(s) mein {who} hai: {firs}.",
+                        ("جی ہاں - " if yes else "") + f"{s} {len(matching)} ایف آئی آر میں {who} ہے: {firs}۔"))
+    for i, r in enumerate(others[:5]):
+        as_ = _w(ROLE, r["role_kind"], lang)
+        crimes = labels(r.get("crimes") or [], lang) or str(r.get("offence") or "").strip() or "-"
+        at = f", {r['ps']}" if r.get("ps") else ""
+        accused = _join(list(r.get("accused") or [])[:6], lang)
+        but = (not matching and i == 0)
+        lines.append(_t(
+            lang,
+            ("But he " if but else "He ") + f"appears in FIR {r['label']}{at} ({crimes}) as {as_}"
+            + (f" - the accused: {accused}." if accused else "."),
+            ("Lekin woh " if but else "Woh ") + f"FIR {r['label']}{at} ({crimes}) mein {as_} hai"
+            + (f" - mulzimaan: {accused}." if accused else "."),
+            ("لیکن وہ " if but else "وہ ") + f"ایف آئی آر {r['label']}{at} ({crimes}) میں {as_} ہے"
+            + (f" - ملزمان: {accused}۔" if accused else "۔")))
+    return lines
+
+
+def _fact(f: dict[str, Any], lang: str) -> list[str]:
+    """One fact asked: the answer itself first, then where else the records say it."""
+    if f.get("new_case_unknown"):
+        # Asked about the new case, whose FIR is not on the board: say so; the old FIRs are background.
+        s = f["subject"].lower()
+        return [_t(lang, f"The new case's FIR is not on the board yet, so its {s} is not known. In the previous FIRs:",
+                   f"Naye case ki FIR abhi board par nahi, is liye us ka {s} maloom nahi. Pichli FIRs mein:",
+                   f"نئے کیس کی ایف آئی آر ابھی بورڈ پر نہیں، اس لیے اس کا {s} معلوم نہیں۔ پچھلی ایف آئی آرز میں:"),
+                *[f"• {it['text']}" + (f" [{it['source']}]" if it.get("source") else "") for it in f["items"]]]
+    best, rest = f["items"][0], f["items"][1:]
+    where = f" ({best['doc'].split(' · ')[0]})" if best.get("doc") else ""
+    lines = [f"{f['subject']}{where}: {best['value']}" + (f" [{best['source']}]" if best.get("source") else "")]
+    if rest:
+        lines.append(_t(lang, "Also in the records:", "Records mein yeh bhi:", "ریکارڈ میں یہ بھی:"))
+        lines += [f"• {it['text']}" + (f" [{it['source']}]" if it.get("source") else "") for it in rest]
+    return lines
+
+
 def narrate(facts: dict[str, Any], language: str, limit: int = 12) -> str | None:
     kind = facts.get("type")
+    if kind == "fact" and facts.get("items"):
+        return "\n".join(_fact(facts, language if language in _I else "en"))
+    if facts.get("asked_role"):
+        lang = language if language in _I else "en"
+        head = _role_head(facts, lang)
+        if kind in ("cases", "count_cases"):
+            keep = {r["label"] for r in facts.get("matching") or []}
+            items = [it for it in facts.get("items") or [] if it.get("fir") in keep]
+            return "\n".join([*head, *(["", *_list(items, lang, limit)] if items else [])])
+        rest = narrate({k: v for k, v in facts.items() if k != "asked_role"}, language, limit)
+        return "\n".join([*head, "", rest]) if rest else "\n".join(head)
+    if kind == "hotels" and facts.get("at_times"):
+        return "\n".join(_hotel_times(facts, language if language in _I else "en", limit))
     if facts.get("empty") and kind not in ("serious_cases",):
         return None
     lang = language if language in _I else "en"

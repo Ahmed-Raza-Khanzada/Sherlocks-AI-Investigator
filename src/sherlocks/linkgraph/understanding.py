@@ -102,6 +102,46 @@ IO_REPORT = re.compile(r"(?<![\w؀-ۿ])(i\.?o\b|investigat\w*\s+(?:officer|repor
                        r"guilty|innocent|be ?gunah|begunah|qasoor ?war|gunah ?gar|declared?|found (?:him|her)|"
                        r"challan (?:hua|huwa|kia|kiya|pesh)|charge ?sheet\w*|169|final report|a class|b class|c class|"
                        r"تفتیشی|بے گناہ|قصوروار|گناہگار|چالان ہوا)(?![\w؀-ۿ])", re.IGNORECASE)
+# "the target", "main suspect", "mulzim" with no name: the person the case is about.
+TARGET = re.compile(r"(?<![\w؀-ۿ])(targets?|the suspect|main suspect|prime suspect|asal mulzim|main mulzim|"
+                    r"the accused|is (?:case )?ka mulzim|ٹارگٹ|مرکزی ملزم)(?![\w؀-ۿ])", re.IGNORECASE)
+# "explain that", "what is that", "tafseel batao", "aur batao": more on the last answer.
+FOLLOWUP = re.compile(r"(?<![\w؀-ۿ])(explain\w*|elaborate|in detail|details?|more|tell me more|tafs[ei]+l\w*|"
+                      r"samjha\w*|samjh\w*|matlab|wazahat|aur batao|aur btao|aur bataen|"
+                      r"what\s+\w{1,3}\s+(?:that|this|it)|what does (?:that|this|it) mean|"
+                      r"کیا مطلب|وضاحت|تفصیل|مزید|سمجھائیں)(?![\w؀-ۿ])", re.IGNORECASE)
+# The more detailed answer for a follow-up on each kind of answer.
+DEEPER = {"cases": "fir_details", "count_cases": "fir_details", "serious_cases": "fir_details",
+          "fir_status": "io_report", "summary": "fir_details", "fir_details": "documents", "io_report": "documents",
+          "criminals_near": "criminals_near", "associates": "associates", "profile": "profile",
+          "connection": "connection", "hotels": "hotels", "phones": "phones", "vehicles": "vehicles",
+          "documents": "documents"}
+# Which role a question about FIRs is about. "FIR on / against him", "us par case", "ke
+# khilaf": where he is the accused. "Did he file", "muddai": the complainant. And so on.
+_CASE_WORD = r"(?:firs?|cases?|parch[aey]|muqadm[aey]|mukadm[aey]|muqadmat|ایف آئی آر|مقدم[ہے]|مقدمات|پرچ[ہے])"
+ROLE_ASKED: list[tuple[str, re.Pattern[str]]] = [
+    ("complainant", re.compile(r"complainant|muddai|mudai|filed by|did\s+(?:\S+\s+){1,3}(?:file|lodge|register)\w*|"
+                               r"(?:file|lodge|register)\w*\s+(?:any|a|an|koi)\s+(?:fir|case|complaint)|"
+                               r"lodged|darj (?:karwa|krwa)\w*|درج کروا\w*|مدعی|مستغیث", re.IGNORECASE)),
+    ("witness", re.compile(r"witness|gawah|گواہ", re.IGNORECASE)),
+    ("victim", re.compile(r"victim|mutasir|affected party|injured|مقتول|متاثر", re.IGNORECASE)),
+    ("accused", re.compile(rf"against|khilaf|khilaaf|خلاف|accused|mulzim|naamzad|namzad|nominated|booked|charged|"
+                           rf"ملزم|نامزد|{_CASE_WORD}\s+(?:on|upon)\b|"
+                           rf"(?<![\w؀-ۿ])(?:par|pr|pe|per|پر)\s+(?:koi\s+|kitn\w*\s+|کوئی\s+)?{_CASE_WORD}|"
+                           rf"{_CASE_WORD}\s+(?:\w+\s+){{0,2}}(?:par|pr|pe|پر)(?![\w؀-ۿ])", re.IGNORECASE)),
+]
+YES_NO = re.compile(r"^\s*(?:is|are|was|were|does|do|did|has|have|had|kya|kia|koi|any|کیا|کوئی)\b|"
+                    r"(?<![\w؀-ۿ])(?:koi|any|کوئی)\s+" + _CASE_WORD, re.IGNORECASE)
+
+
+def asked_role(text: str) -> str | None:
+    """The role a question about a person's FIRs is about, or None (any role)."""
+    for role, rx in ROLE_ASKED:
+        if rx.search(text or ""):
+            return role
+    return None
+
+
 FIR_SUMMARY = re.compile(r"(?<![\w؀-ۿ])(summary|summari[sz]e|khulasa|brief|خلاصہ)(?![\w؀-ۿ])", re.IGNORECASE)
 FIR_WORD = re.compile(r"(?<![\w؀-ۿ])(firs?|ایف آئی آر|muqadm\w*|mukadm\w*|parch\w*)(?![\w؀-ۿ])", re.IGNORECASE)
 
@@ -142,12 +182,12 @@ def rule_type(text: str, has_people: int) -> QueryType:
         return "criminals_all"
     if has_people >= 2 and (has["connections"] or not any(has[k] for k in ("cases", "hotel", "phone", "vehicle"))):
         return "connection"
+    if has["hotel"]:              # "in a hotel at the FIR's time": the stays, checked against the FIRs
+        return "hotels"
     if has["status"] and (has["cases"] or has_people):
         return "fir_status"
     if has["cases"]:
         return "count_cases" if has["count"] else "cases"
-    if has["hotel"]:
-        return "hotels"
     if has["vehicle"]:            # "gaari ka number" is a vehicle, not a phone
         return "vehicles"
     if has["phone"]:
@@ -168,13 +208,31 @@ def rule_type(text: str, has_people: int) -> QueryType:
     return "open"
 
 
-def understand(message: str, net: PersonNetwork, focus: list[str], llm: Any = None) -> dict[str, Any]:
-    """``{type, people (ids), pronoun, by}``."""
+def targets(net: PersonNetwork, roles: dict[str, str] | None = None) -> list[str]:
+    """Who "the target" / "the suspect" is: the officer's main suspect, else the people searched."""
+    main = [p for p, r in (roles or {}).items() if r == "main suspect" and p in net.people]
+    return main or [p for p in net.seeds() if p in net.people]
+
+
+def understand(message: str, net: PersonNetwork, focus: list[str], llm: Any = None, *,
+               roles: dict[str, str] | None = None, last_type: str | None = None) -> dict[str, Any]:
+    """``{type, people (ids), pronoun, by}``. ``roles`` resolve "the target"; ``last_type``
+    lets a follow-up ("explain that") continue the last answer, in more detail."""
     from sherlocks.linkgraph.investigator import _mentioned
 
     message = normalise(message)
     pronoun = bool(PRONOUNS.search(message))
     people = _mentioned(net, message, sound=not (pronoun and focus))
+    if not people and TARGET.search(message):
+        people = targets(net, roles)
+        pronoun = True
+    # A short follow-up with nobody new named: the same subject, the deeper answer.
+    if (not people and last_type in DEEPER and FOLLOWUP.search(message) and len(message.split()) <= 8
+            and not FIR_NO.search(message)):
+        who = [p for p in focus if p in net.people][:1] or targets(net, roles)[:1]
+        if who:
+            return {"type": DEEPER[last_type], "people": who, "pronoun": True, "by": "follow-up", "crimes": [],
+                    "firs": []}
     kind: str | None = None
     by = "rules"
     if llm is not None:
@@ -214,4 +272,4 @@ def understand(message: str, net: PersonNetwork, focus: list[str], llm: Any = No
         ruled = rule_type(message, 1)
         kind = ruled if ruled in ("fir_details", "io_report") else kind
     return {"type": kind, "people": people, "pronoun": pronoun, "by": by, "crimes": sorted(asked_crimes(message)),
-            "firs": firs}
+            "firs": firs, "role": asked_role(message), "yes_no": bool(YES_NO.search(message))}

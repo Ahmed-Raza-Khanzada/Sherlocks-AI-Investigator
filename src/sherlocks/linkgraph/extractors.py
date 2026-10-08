@@ -794,6 +794,55 @@ def _milap(ctx: _Ctx, data: dict, raw: Any) -> None:
                 ctx.relate(ref, relation, detail) if not ctx.is_subject(ref) else ctx.absorb(ref)
 
 
+def _against_ref(row: Any) -> PersonRef:
+    """One person a complaint is against (the API's keys vary by form version)."""
+    row = row if isinstance(row, dict) else {"name": row}
+    pick = lambda *keys: next((row.get(k) for k in keys if row.get(k)), None)  # noqa: E731
+    return _ref(pick("name", "respondent_name", "against_name", "accused_name", "person_name"),
+                pick("fathername", "father_name", "respondent_fathername", "against_fathername"),
+                pick("cnic", "respondent_cnic", "against_cnic"),
+                [pick("phone", "cell", "contact", "mobile", "respondent_phone", "against_phone")],
+                [pick("address", "respondent_address", "against_address")])
+
+
+def _igp_cms(ctx: _Ctx, data: dict, raw: Any) -> None:
+    """IGP complaints, both ways: complaints the person filed (the complainant is the
+    subject; everyone complained against is linked) and complaints filed against the
+    person (the complainant is linked; the subject is found among those complained
+    against)."""
+    for row in _rows(raw.get("complaints")) if isinstance(raw, dict) else []:
+        if not isinstance(row, dict):
+            continue
+        complainant = _ref(row.get("complainant_name"), row.get("complainant_fathername"),
+                           row.get("complainant_cnic"),
+                           [row.get("complainant_phone"), row.get("complainant_cell")],
+                           [row.get("complainant_address")])
+        against = [_against_ref(a) for a in _rows(row.get("complaint_against"))]
+        role = str(row.get("cnic_role") or "").lower()
+        about = clean_text(row.get("other_subject") or row.get("subject") or row.get("complaint_category"))
+        when = str(row.get("created_at") or "")[:10]
+        tracking = row.get("tracking_id") or row.get("complaint_no") or row.get("id")
+        is_against = "against" in role or (role != "complainant" and any(ctx.is_subject(a) for a in against))
+        ctx.rec.add_field("IGP complaint" + (" against the subject" if is_against else " filed"), " | ".join(
+            str(v) for v in (tracking, when, row.get("complaint_category"), about, row.get("district_name"),
+                             row.get("status")) if v))
+        detail = f"IGP complaint {tracking} ({when}): {about}" if about else f"IGP complaint {tracking}"
+        if is_against:
+            for a in against:
+                if ctx.is_subject(a):
+                    ctx.absorb(a)
+            if not complainant.is_empty:
+                ctx.relate(complainant, "Filed a complaint against the subject", detail)
+            for a in against:
+                if not ctx.is_subject(a) and not a.is_empty:
+                    ctx.relate(a, "Complained against alongside the subject", detail)
+        else:
+            ctx.take(complainant)
+            for a in against:
+                if not a.is_empty:
+                    ctx.relate(a, "Complained against by the subject", detail)
+
+
 def _employment(ctx: _Ctx, data: dict, raw: Any) -> None:
     ref = _ref(data.get("name"), data.get("father_name"), data.get("cnic"),
                [data.get("contact"), data.get("other_contact")], [data.get("permanent_address")])
@@ -1097,6 +1146,7 @@ _HANDLERS: dict[str, Callable[[_Ctx, dict, Any], None]] = {
     "sbvs": _sbvs,
     "trust": _trust,
     "milap": _milap,
+    "igp_cms": _igp_cms,
     "evs": _employment,
     "hope": _employment,
     "hrmis": _hrmis,
@@ -1111,7 +1161,8 @@ _HANDLERS: dict[str, Callable[[_Ctx, dict, Any], None]] = {
 
 # Systems whose handler already reads every row of the payload. Running the generic
 # walker on them too would re-find the same people under less precise relations.
-_HANDLER_IS_COMPLETE = {"simsdb", "subscriber", "psrms", "prvs", "old_tenant", "hotel_eye", "caller_id", "fir_roster"}
+_HANDLER_IS_COMPLETE = {"simsdb", "subscriber", "psrms", "prvs", "old_tenant", "hotel_eye", "caller_id", "fir_roster",
+                        "igp_cms"}
 
 
 def _sweep(ctx: _Ctx, system: str, raw: Any, cap: int) -> None:

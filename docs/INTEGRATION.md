@@ -65,6 +65,20 @@ Route::get('/sherlocks/token', fn () => ['token' => sherlocks_token(auth()->user
 `SHERLOCKS_SECRET` in Laravel must equal `SHERLOCKS_AUTH_SECRET` in Sherlocks. Keep
 tokens short-lived (15 min). The portal asks for a new one through `onTokenExpired`.
 
+**Which systems the officer may use.** Add `"sys"` to the payload - the system keys this
+user is cleared for, e.g. `["nadra", "simsdb", "psrms", "cro"]` - and Sherlock's agents make
+live calls for that user only to those systems; any other call is refused and logged. Without
+`sys` the user is not restricted (older hosts keep working).
+
+```php
+$payload = json_encode(['u' => $user->username, 'exp' => time() + $ttl,
+                        'sys' => $user->sherlocksSystems()],          // e.g. from roles / permissions
+                       JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+```
+
+Every live call the agents make - who (the token's `u`), which case, which agent, why, which
+system and identifier, made or refused - is kept with the case: `GET .../graph/runs/{id}/audit`.
+
 **Never put `SHERLOCKS_API_KEY` in a page.** The key is for server-to-server calls only.
 
 ## 3. The tab
@@ -237,3 +251,9 @@ incident pinned on the map, answers to Sherlock's questions, documents the chat 
 The page calls `onCaseUpdated(run)` (debounced) with the full run export each time; save it
 like `onRunComplete`, updating the row for that run id. A saved graph that Sherlocks still
 holds reopens with its latest case automatically.
+
+Sherlocks also stores each case board on its own (table `case_board`; run
+`alembic upgrade head` once after updating) with a version number. If the portal posts
+back an older copy of a case than the one Sherlocks holds, the newer board is kept and only
+the officer's own edits in the older copy (roles, incident details) are merged in - an old
+save can never undo newer work.

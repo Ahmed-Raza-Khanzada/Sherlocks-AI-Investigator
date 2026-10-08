@@ -1,0 +1,976 @@
+<title>Sherlock Agent Plan</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Naskh+Arabic:wght@400;600&display=swap">
+<style>
+/* Layout: teams, the diagram, the flows, each agent in detail,
+   then the five design rules, the full diagram (four lanes around the case board), agent roster,
+   one turn step by step, triggers, build order, open decisions. */
+:root {
+  --bg: #f3f5f8; --surface: #ffffff; --ink: #121a2b; --muted: #5a6478; --line: #d6dce6;
+  --navy: #12305a; --gold: #a87a07; --red: #b4232f; --teal: #0f7a6c; --violet: #6a3fa0; --blue: #2459a8;
+  --chip: #eef2f8; --lane: #e8ecf2; --orange: #b35a12; --boardbg: #fff8e6;
+  --display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0b1120; --surface: #121a2e; --ink: #e7ecf5; --muted: #95a2bb; --line: #26324c;
+  --navy: #8fb3ec; --gold: #f2c14e; --red: #f07079; --teal: #4fd1bd; --violet: #c3a3f0; --blue: #7fb0ff;
+  --chip: #1a2540; --lane: #0f1729; --orange: #f5a25a; --boardbg: #1d1a10; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #0b1120; --surface: #121a2e; --ink: #e7ecf5; --muted: #95a2bb; --line: #26324c;
+  --navy: #8fb3ec; --gold: #f2c14e; --red: #f07079; --teal: #4fd1bd; --violet: #c3a3f0; --blue: #7fb0ff;
+  --chip: #1a2540; --lane: #0f1729; --orange: #f5a25a; --boardbg: #1d1a10; color-scheme: dark }
+body { background: var(--bg); color: var(--ink); font: 15px/1.55 var(--body); padding-inline: 20px; padding-block: 28px 56px; }
+.wrap { max-width: 1180px; margin: 0 auto; display: flex; flex-direction: column; gap: 30px; }
+.eyebrow { font: 600 11px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--gold); }
+h1 { font: 800 clamp(30px, 5vw, 48px)/1.04 var(--display); margin: 8px 0 10px; text-wrap: balance; }
+h2 { font: 600 22px/1.2 var(--display); margin: 0; text-wrap: balance; }
+h3 { margin: 0; font: 600 15.5px/1.3 var(--body); }
+p { margin: 0; }
+.lede { max-width: 72ch; color: var(--muted); }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 20px; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+.sub { color: var(--muted); max-width: 74ch; }
+.tablewrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; min-width: 820px; }
+th, td { text-align: left; padding: 9px 10px; border-top: 1px solid var(--line); vertical-align: top; }
+th { font: 600 11px/1.2 var(--mono); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+td:first-child { font-weight: 600; white-space: nowrap; }
+td.now { color: var(--muted); }
+td.better { background: color-mix(in srgb, var(--teal) 8%, transparent); }
+.rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+.rules div { border-top: 3px solid var(--red); padding-top: 8px; font-size: 14px; }
+.rules b { display: block; font-family: var(--display); font-size: 15.5px; margin-bottom: 2px; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; color: var(--muted); }
+.legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; background: var(--c); vertical-align: -1px; }
+.diagram { overflow-x: auto; }
+.diagram svg { display: block; width: 100%; min-width: 920px; height: auto; }
+svg .lane { fill: var(--lane); }
+svg .lanelbl { font: 600 11px var(--mono); letter-spacing: .12em; }
+svg .box rect { fill: var(--surface); stroke: var(--c); stroke-width: 1.6; }
+svg .bt { font: 600 14.5px var(--display); fill: var(--ink); }
+svg .bt .id { fill: var(--c); font-family: var(--mono); font-size: 12.5px; }
+svg .bs { font: 400 12.5px var(--body); fill: var(--muted); }
+svg .boardr { fill: var(--boardbg); stroke: var(--gold); stroke-width: 2.2; }
+svg .boardt { font: 800 17px var(--display); fill: var(--gold); }
+svg .boardrow { font: 500 12.5px var(--mono); fill: var(--ink); }
+svg .boardrow .tier { fill: var(--red); }
+svg .al { font: 500 11px var(--mono); fill: var(--muted); }
+svg .ar { fill: none; stroke-width: 1.6; }
+svg .dash { stroke-dasharray: 5 4; }
+.team { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.agent { border: 1px solid var(--line); border-top: 4px solid var(--c); border-radius: 10px; padding: 12px 14px; background: var(--bg); min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.agent .role { font: 600 11px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--c); display: flex; justify-content: space-between; gap: 8px; }
+.agent p { font-size: 13.5px; }
+.agent .io { font: 500 12px/1.45 var(--mono); color: var(--muted); }
+.pill { display: inline-block; font: 600 10.5px/1 var(--mono); padding: 4px 7px; border-radius: 99px; background: var(--chip); color: var(--navy); letter-spacing: .04em; }
+.pill.new { background: color-mix(in srgb, var(--teal) 18%, transparent); color: var(--teal); }
+.pill.ext { background: color-mix(in srgb, var(--gold) 18%, transparent); color: var(--gold); }
+.groups { display: flex; flex-direction: column; gap: 18px; }
+.group h3 { font-family: var(--display); font-size: 17px; margin-bottom: 8px; color: var(--c); }
+ol.steps { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 8px; }
+ol.steps b { font-family: var(--display); }
+.chat { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 760px) { .chat { grid-template-columns: 1fr; } }
+.bubble { border-radius: 12px; padding: 12px 14px; font-size: 14px; border: 1px solid var(--line); background: var(--bg); min-width: 0; }
+.bubble.officer { border-left: 4px solid var(--muted); }
+.bubble.sher { border-left: 4px solid var(--navy); }
+.bubble .who { font: 600 11px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; display: block; }
+.bubble .spec { color: var(--violet); }
+.bubble .q { color: var(--gold); display: block; margin-top: 8px; }
+code { font: 500 12.5px var(--mono); background: var(--chip); padding: 1px 5px; border-radius: 4px; }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.cols > div { min-width: 0; }
+a { color: var(--blue); }
+ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
+</style>
+<style>
+.teams { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; }
+.teamcard { border: 1px solid var(--line); border-left: 5px solid var(--c); border-radius: 10px; padding: 12px 14px; background: var(--bg); min-width: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; }
+.teamcard b.t { font: 600 16px/1.2 var(--display); color: var(--c); }
+.teamcard .job { font-weight: 600; }
+.states { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font: 500 12.5px var(--mono); }
+.states span { padding: 5px 9px; border-radius: 99px; background: var(--chip); color: var(--ink); }
+.states span.ok { background: color-mix(in srgb, var(--teal) 18%, transparent); color: var(--teal); }
+.states span.no { background: color-mix(in srgb, var(--red) 15%, transparent); color: var(--red); }
+.states i { color: var(--muted); font-style: normal; }
+.bubble.desk { border-left: 4px solid var(--red); font-size: 13px; }
+.present { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+.present .bubble { display: flex; flex-direction: column; gap: 8px; }
+.present ul { margin: 0; padding-inline-start: 18px; display: flex; flex-direction: column; gap: 3px; font-size: 13.5px; }
+.present blockquote { margin: 0; padding: 6px 10px; border-inline-start: 3px solid var(--gold); background: var(--surface); font-size: 13px; color: var(--muted); }
+.present .q { margin-top: 0; }
+.bubble.urdu { font-family: "Noto Naskh Arabic", "Segoe UI", serif; font-size: 15px; line-height: 1.9; border-left: 1px solid var(--line); border-right: 4px solid var(--navy); }
+.bubble.desk .who { color: var(--red); }
+.bubble.team { border-left: 4px solid var(--violet); font-size: 13px; }
+.bubble.team .who { color: var(--violet); }
+/* Live status demo: the chat is dark, so the demo is too, in both themes. */
+.statusdemo { background: #131c33; border: 1px solid #22304d; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; max-width: 520px; }
+.sdrow { display: flex; align-items: baseline; gap: 8px; min-height: 24px; }
+.sdshimmer { display: inline-block; font: 500 14px var(--body); color: #9fb0cf; }
+.sdshimmer[dir="rtl"] { font-family: "Noto Naskh Arabic", serif; font-size: 16px; line-height: 1.7; }
+.sdtime { font: 500 11px var(--mono); color: #8b98b4; }
+@media (prefers-reduced-motion: no-preference) {
+  .sdshimmer { color: transparent; background: linear-gradient(90deg, #6f7d99 0%, #6f7d99 38%, #ffffff 50%, #6f7d99 62%, #6f7d99 100%);
+    background-size: 250% 100%; -webkit-background-clip: text; background-clip: text; animation: sdsweep 1.6s linear infinite; }
+  .sdshimmer[dir="rtl"] { animation-name: sdsweep-rtl; }
+}
+@keyframes sdsweep { from { background-position: 100% 0; } to { background-position: 0 0; } }
+@keyframes sdsweep-rtl { from { background-position: 0 0; } to { background-position: 100% 0; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Plan · v4 · built 7 October 2026</div>
+    <h1>Sherlock agent plan</h1>
+    <p class="lede">Two teams share one case board. The <b>Officer team</b> talks to the user and makes sure every question gets a correct answer. The <b>Sherlock team</b> works quietly to solve the case. The <b>Question desk</b> sits between them, so a question is never asked twice and every answer the user gives reaches Sherlock.</p>
+  </header>
+
+  <section class="panel" id="built">
+    <h2>Built</h2>
+    <p class="sub">Every step of the build order is implemented and tested (415 tests). Where each part lives:</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Part of the plan</th><th>Code</th><th>Tests</th></tr></thead>
+        <tbody>
+          <tr><td>Board foundation, store, versions</td><td><code>evidence/case_file.py</code>, <code>board_store.py</code>, migration <code>9c4e1a7b2d30</code></td><td><code>test_board.py</code></td></tr>
+          <tr><td>Safety and audit</td><td><code>evidence/guard.py</code>, <code>api/auth.py</code> (<code>sys</code> claim), <code>/runs/{id}/audit</code></td><td><code>test_board.py</code></td></tr>
+          <tr><td>Question desk</td><td><code>evidence/question_desk.py</code>, <code>questioner.py</code></td><td><code>test_question_desk.py</code></td></tr>
+          <tr><td>Answer checker, which source wins</td><td><code>sherlock_team.validate</code>, <code>evidence/trust.py</code></td><td><code>test_checker.py</code></td></tr>
+          <tr><td>Corrections</td><td><code>linkgraph/corrections.py</code></td><td><code>test_corrections.py</code></td></tr>
+          <tr><td>Shared toolbox, API router</td><td><code>investigator.py</code> tools, <code>linkgraph/api_router.py</code>, <code>researcher.py</code></td><td><code>test_toolbox.py</code></td></tr>
+          <tr><td>Presenter</td><td><code>linkgraph/presenter.py</code>, <code>web/app.js</code> (tables, quotes, view block)</td><td><code>test_presenter.py</code></td></tr>
+          <tr><td>Officer team: briefer, budgets, quick view, follow-ups</td><td><code>briefer.py</code>, <code>budget.py</code>, <code>quick_view.py</code>, <code>sherlock_team.run_turn</code></td><td><code>test_officer_team.py</code></td></tr>
+          <tr><td>Ingest: Graph analyst, Dossier</td><td><code>evidence/graph_analyst.py</code>, <code>dossiers.py</code></td><td><code>test_casework.py</code>, <code>test_toolbox.py</code></td></tr>
+          <tr><td>CDR team R1-R6</td><td><code>evidence/cdr.py</code>, <code>cdr_team.py</code></td><td><code>test_cdr_team.py</code></td></tr>
+          <tr><td>Sherlock team in the background</td><td><code>linkgraph/casework.py</code></td><td><code>test_casework.py</code></td></tr>
+          <tr><td>Case report from the board</td><td><code>evidence/case_report.py</code>, <code>report_pdf.py</code></td><td><code>test_report.py</code>, <code>test_evidence.py</code></td></tr>
+          <tr><td>Live status line</td><td><code>conversation.STATUS</code>, <code>web/app.js</code></td><td>-</td></tr>
+          <tr><td>Chat test set</td><td><code>linkgraph/eval_chats.py</code>, <code>scripts/eval_chats.py</code></td><td><code>test_eval_chats.py</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="sub">How it all works now: <code>docs/SHERLOCK_AGENTS.md</code>. Still open: the decisions at the end of this page, and a run against the live systems.</p>
+  </section>
+
+  <section class="panel">
+    <h2>What changed in v4</h2>
+    <p class="sub">Seven gaps from the v3 review, each now covered in the plan, plus a case report that holds Sherlock's full assessment and a live status line in the chat.</p>
+    <div class="rules">
+      <div><b>Reply time budget</b>Each step of a reply has a time limit, with a fallback when it runs over. Fewer model calls in a row. <a href="#latency">Section</a></div>
+      <div><b>Corrections</b>When the user corrects an earlier answer, the new one replaces it, and everything built on the old one is checked again. <a href="#corrections">Section</a></div>
+      <div><b>Where the board lives</b>Stored in the database with a version number. Background agents only add. An older portal save can't overwrite a newer board. <a href="#store">Section</a></div>
+      <div><b>No self-wake</b>Every write records which agent made it. No agent is woken by its own writes. <a href="#wakes">Section</a></div>
+      <div><b>Batch events</b>A whole CDR or document counts as one event, so it doesn't use up Sherlock's run budget. <a href="#wakes">Section</a></div>
+      <div><b>Safety and audit</b>Document text is treated as data, never as instructions. Lookups are limited to people on the case. Every external call is logged. <a href="#safety">Section</a></div>
+      <div><b>Which source wins</b>An order of trust for conflicting sources. Conflicts are still shown. <a href="#trust">Section</a></div>
+      <div><b>Case report = Sherlock's assessment</b>The downloaded PDF contains Sherlock's full, current assessment: hypotheses, contradictions, CDR analysis, the officer's statements and next steps. Brought up to date on download. <a href="#report">Section</a></div>
+      <div><b>Live status line</b> <span class="pill new">built</span> While the user waits, the chat shows what is running now, in their language, as shimmering text. <a href="#status">Section</a></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>The teams</h2>
+    <div class="teams">
+      <div class="teamcard" style="--c:var(--navy)"><b class="t">Officer team</b><span class="job">Answers what the user asked, correctly.</span><span>Officer agent, Case briefer, Answer checker, Presenter (the voice the user reads), Statement recorder. Knows the whole chat and the case summary, uses any tool in the toolbox, and can ask Sherlock what he thinks.</span></div>
+      <div class="teamcard" style="--c:var(--violet)"><b class="t">Sherlock team</b><span class="job">Solves the case in the background.</span><span>Sherlock (lead), Summarizer, Questioner, Report writer. Uses the same toolbox.</span></div>
+      <div class="teamcard" style="--c:var(--red)"><b class="t">Question desk</b><span class="job">No repeated questions; answers go back to Sherlock.</span><span>Gatekeeper and Question ledger. The Gatekeeper knows the whole conversation. Every question from Sherlock's Questioner passes through it.</span></div>
+      <div class="teamcard" style="--c:var(--blue)"><b class="t">Shared toolbox</b><span class="job">Finds information. Never guesses.</span><span>Board reader, Dossier, Chat memory, Report reader, CDR query, API router.</span></div>
+      <div class="teamcard" style="--c:var(--teal)"><b class="t">Ingest team</b><span class="job">Fills the case board while the graph builds.</span><span>Graph analyst, Document reader, Dossier agent.</span></div>
+      <div class="teamcard" style="--c:var(--orange)"><b class="t">CDR team</b><span class="job">Turns every CDR, tower dump or CDR report into facts.</span><span>Intake, Enricher, Pattern analyst, Location analyst, Cross-CDR linker, Fact writer. Starts as soon as a CDR is provided.</span></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>How it works</h2>
+    <div class="legend">
+      <span style="--c:var(--navy)">Officer team</span>
+      <span style="--c:var(--violet)">Sherlock team</span>
+      <span style="--c:var(--red)">Question desk and checks</span>
+      <span style="--c:var(--blue)">Shared toolbox</span>
+      <span style="--c:var(--gold)">Case board</span>
+      <span style="--c:var(--teal)">Ingest team</span>
+      <span style="--c:var(--orange)">CDR team</span>
+    </div>
+    <div class="diagram">
+      <svg viewBox="0 0 1200 920" role="img" aria-labelledby="tm-t">
+        <title id="tm-t">The user talks to the Officer team. Both teams use the shared toolbox. Sherlock's questions pass the Question desk before the Officer agent asks them. Answers are written to the case board, which wakes Sherlock.</title>
+        <defs>
+          <marker id="t-navy" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--navy)"/></marker>
+          <marker id="t-violet" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--violet)"/></marker>
+          <marker id="t-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--red)"/></marker>
+          <marker id="t-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--blue)"/></marker>
+          <marker id="t-gold" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--gold)"/></marker>
+          <marker id="t-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--orange)"/></marker>
+          <marker id="t-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--teal)"/></marker>
+        </defs>
+
+        <!-- User -->
+        <g class="box" style="--c:var(--muted)"><rect x="40" y="20" width="340" height="56" rx="10"/>
+          <text class="bt" x="56" y="44">User</text>
+          <text class="bs" x="56" y="64">asks, answers, uploads · EN · اردو · Roman</text></g>
+
+        <!-- Officer team -->
+        <rect class="lane" x="20" y="100" width="380" height="530" rx="14"/>
+        <text class="lanelbl" x="36" y="124" style="fill:var(--navy)">OFFICER TEAM · ANSWERS THE USER</text>
+        <g class="box" style="--c:var(--navy)"><rect x="40" y="140" width="340" height="64" rx="10"/>
+          <text class="bt" x="56" y="164"><tspan class="id">O1 </tspan>Officer agent</text>
+          <text class="bs" x="56" y="186">full chat + case summary + Sherlock's view</text></g>
+        <g class="box" style="--c:var(--red)"><rect x="40" y="260" width="340" height="80" rx="10"/>
+          <text class="bt" x="56" y="284"><tspan class="id">O2 </tspan>Answer checker</text>
+          <text class="bs" x="56" y="306">answered what was asked? correct? sourced?</text>
+          <text class="bs" x="56" y="324">passes → Presenter · fails → back to O1</text></g>
+        <g class="box" style="--c:var(--navy)"><rect x="40" y="364" width="340" height="70" rx="10"/>
+          <text class="bt" x="56" y="388"><tspan class="id">O5 </tspan>Presenter</text>
+          <text class="bs" x="56" y="408">reply in the user's language: EN · Roman · اردو</text>
+          <text class="bs" x="56" y="425">bullets, tables, evidence quotes</text></g>
+        <g class="box" style="--c:var(--navy)"><rect x="40" y="470" width="340" height="64" rx="10"/>
+          <text class="bt" x="56" y="494"><tspan class="id">O3 </tspan>Statement recorder</text>
+          <text class="bs" x="56" y="516">user's answers and info, in their words</text></g>
+        <path class="ar" d="M210 340V362" style="stroke:var(--navy)" marker-end="url(#t-navy)"/>
+        <path class="ar" d="M210 76V138" style="stroke:var(--navy)" marker-end="url(#t-navy)"/>
+        <text class="al" x="202" y="95" text-anchor="end">question / answer / info</text>
+        <path class="ar" d="M210 204V258" style="stroke:var(--navy)" marker-end="url(#t-navy)"/>
+        <text class="al" x="218" y="236">draft</text>
+        <path class="ar dash" d="M120 258V206" style="stroke:var(--red)" marker-end="url(#t-red)"/>
+        <text class="al" x="128" y="236">fix once</text>
+        <path class="ar" d="M40 398H28V48H38" style="stroke:var(--navy)" marker-end="url(#t-navy)"/>
+        <path class="ar" d="M380 196H392V490H382" style="stroke:var(--navy)" marker-end="url(#t-navy)"/>
+        <path class="ar" d="M210 534V688" style="stroke:var(--navy)" marker-end="url(#t-navy)"/>
+        <text class="al" x="218" y="620">writes, quoted</text>
+
+        <path class="ar dash" d="M360 138V88H1100V138" style="stroke:var(--violet)" marker-start="url(#t-violet)" marker-end="url(#t-violet)"/>
+        <text class="al" x="730" y="82" text-anchor="middle">not in the facts? "Sherlock, what do you think?"</text>
+        <!-- Shared toolbox -->
+        <rect class="lane" x="430" y="100" width="340" height="300" rx="14"/>
+        <text class="lanelbl" x="446" y="124" style="fill:var(--blue)">SHARED TOOLBOX</text>
+        <g class="box" style="--c:var(--navy)"><rect x="445" y="136" width="310" height="52" rx="9"/>
+          <text class="bt" x="461" y="158"><tspan class="id">O4 </tspan>Case briefer</text>
+          <text class="bs" x="461" y="177">board → context pack for O1, every turn</text></g>
+        <g class="box" style="--c:var(--blue)"><rect x="445" y="200" width="150" height="50" rx="9"/>
+          <text class="bt" x="457" y="221">Board reader</text><text class="bs" x="457" y="239">facts, tiers, sources</text></g>
+        <g class="box" style="--c:var(--blue)"><rect x="605" y="200" width="150" height="50" rx="9"/>
+          <text class="bt" x="617" y="221">Dossier</text><text class="bs" x="617" y="239">all on one person</text></g>
+        <g class="box" style="--c:var(--blue)"><rect x="445" y="260" width="150" height="50" rx="9"/>
+          <text class="bt" x="457" y="281">Chat memory</text><text class="bs" x="457" y="299">what the user said</text></g>
+        <g class="box" style="--c:var(--blue)"><rect x="605" y="260" width="150" height="50" rx="9"/>
+          <text class="bt" x="617" y="281">Report reader</text><text class="bs" x="617" y="299">FIR · MLO · DNA page</text></g>
+        <g class="box" style="--c:var(--blue)"><rect x="445" y="320" width="150" height="50" rx="9"/>
+          <text class="bt" x="457" y="341">CDR query</text><text class="bs" x="457" y="359">CDR team's facts</text></g>
+        <g class="box" style="--c:var(--blue)"><rect x="605" y="320" width="150" height="50" rx="9"/>
+          <text class="bt" x="617" y="341">API router</text><text class="bs" x="617" y="359">catalog + budget</text></g>
+        <text class="al" x="600" y="388" text-anchor="middle">board first · API only by catalog · "nothing found" counts</text>
+        <path class="ar" d="M380 160H428" style="stroke:var(--blue)" marker-start="url(#t-blue)" marker-end="url(#t-blue)"/>
+        <path class="ar" d="M818 212H772" style="stroke:var(--blue)" marker-start="url(#t-blue)" marker-end="url(#t-blue)"/>
+
+        <!-- Question desk -->
+        <rect class="lane" x="430" y="430" width="340" height="200" rx="14"/>
+        <text class="lanelbl" x="446" y="454" style="fill:var(--red)">QUESTION DESK · NO REPEATS</text>
+        <g class="box" style="--c:var(--red)"><rect x="450" y="468" width="300" height="70" rx="10"/>
+          <text class="bt" x="466" y="490"><tspan class="id">Q1 </tspan>Gatekeeper</text>
+          <text class="bs" x="466" y="510">knows the whole chat · drops repeats</text>
+          <text class="bs" x="466" y="528">approved → Officer agent asks it</text></g>
+        <g class="box" style="--c:var(--red)"><rect x="450" y="556" width="300" height="60" rx="10"/>
+          <text class="bt" x="466" y="580"><tspan class="id">Q2 </tspan>Question ledger</text>
+          <text class="bs" x="466" y="600">topic · times asked · status · answer</text></g>
+        <path class="ar" d="M600 538V554" style="stroke:var(--red)" marker-start="url(#t-red)" marker-end="url(#t-red)"/>
+        <path class="ar" d="M450 500H418V180H382" style="stroke:var(--red)" marker-end="url(#t-red)"/>
+        <path class="ar" d="M380 520H404V586H448" style="stroke:var(--navy)" marker-end="url(#t-navy)"/>
+        <path class="ar" d="M600 616V688" style="stroke:var(--red)" marker-end="url(#t-red)"/>
+        <text class="al" x="608" y="660">Q# answered</text>
+
+        <!-- Sherlock team -->
+        <rect class="lane" x="800" y="100" width="380" height="530" rx="14"/>
+        <text class="lanelbl" x="816" y="124" style="fill:var(--violet)">SHERLOCK TEAM · SOLVES THE CASE</text>
+        <g class="box" style="--c:var(--violet)"><rect x="820" y="140" width="340" height="80" rx="10"/>
+          <text class="bt" x="836" y="164"><tspan class="id">S1 </tspan>Sherlock · lead detective</text>
+          <text class="bs" x="836" y="186">hypotheses · concerns · contradictions</text>
+          <text class="bs" x="836" y="204">labelled speculation · next steps</text></g>
+        <g class="box" style="--c:var(--violet)"><rect x="820" y="250" width="160" height="60" rx="10"/>
+          <text class="bt" x="836" y="274"><tspan class="id">S2 </tspan>Summarizer</text>
+          <text class="bs" x="836" y="294">case so far, timeline</text></g>
+        <g class="box" style="--c:var(--violet)"><rect x="1000" y="250" width="160" height="60" rx="10"/>
+          <text class="bt" x="1016" y="274"><tspan class="id">S3 </tspan>Report writer</text>
+          <text class="bs" x="1016" y="294">case report PDF</text></g>
+        <g class="box" style="--c:var(--violet)"><rect x="820" y="350" width="340" height="64" rx="10"/>
+          <text class="bt" x="836" y="374"><tspan class="id">S4 </tspan>Questioner</text>
+          <text class="bs" x="836" y="396">what to ask the user next, ranked</text></g>
+        <path class="ar" d="M990 220V348" style="stroke:var(--violet)" marker-end="url(#t-violet)"/>
+        <path class="ar" d="M820 390H790V500H752" style="stroke:var(--violet)" marker-end="url(#t-violet)"/>
+        <text class="al" transform="translate(784 450) rotate(-90)" text-anchor="middle">proposed</text>
+        <text class="al" x="795" y="204" text-anchor="middle">asks</text>
+        <text class="al" x="404" y="152" text-anchor="middle">brief</text>
+        <path class="ar" d="M900 630V688" style="stroke:var(--violet)" marker-end="url(#t-violet)"/>
+        <text class="al" x="892" y="660" text-anchor="end">assessment, gaps</text>
+        <path class="ar dash" d="M1170 688V180H1162" style="stroke:var(--gold)" marker-end="url(#t-gold)"/>
+        <text class="al" x="1160" y="660" text-anchor="end">new info wakes Sherlock</text>
+
+        <!-- Case board -->
+        <rect class="boardr" x="20" y="690" width="1160" height="96" rx="14"/>
+        <text x="40" y="718"><tspan class="boardt">CASE BOARD</tspan><tspan class="al" dx="12">shared memory · every entry has a source and a tier</tspan></text>
+        <text class="boardrow" x="40" y="746">Facts F# <tspan class="tier">[fact | inference | speculation]</tspan>  ·  Documents D#  ·  Dossiers  ·  Incident  ·  Roles  ·  Timeline</text>
+        <text class="boardrow" x="40" y="770">User statements  ·  Answered questions Q#  ·  Summary  ·  Hypotheses  ·  Ranked gaps  ·  Conversation</text>
+
+        <!-- Ingest -->
+        <rect class="lane" x="20" y="806" width="1160" height="100" rx="14"/>
+        <text class="lanelbl" x="36" y="828" style="fill:var(--teal)">INGEST TEAM</text>
+        <g class="box" style="--c:var(--teal)"><rect x="40" y="840" width="260" height="50" rx="9"/>
+          <text class="bt" x="56" y="870"><tspan class="id">A1 </tspan>Graph analyst</text></g>
+        <g class="box" style="--c:var(--teal)"><rect x="330" y="840" width="260" height="50" rx="9"/>
+          <text class="bt" x="346" y="870"><tspan class="id">A2 </tspan>Document reader</text></g>
+        <g class="box" style="--c:var(--orange)"><rect x="620" y="840" width="260" height="50" rx="9"/>
+          <text class="bt" x="636" y="870"><tspan class="id">CDR </tspan>CDR team (see below)</text></g>
+        <g class="box" style="--c:var(--teal)"><rect x="910" y="840" width="250" height="50" rx="9"/>
+          <text class="bt" x="926" y="870"><tspan class="id">A4 </tspan>Dossier agent</text></g>
+        <path class="ar" d="M260 840V788" style="stroke:var(--teal)" marker-end="url(#t-teal)"/>
+        <path class="ar" d="M550 840V788" style="stroke:var(--teal)" marker-end="url(#t-teal)"/>
+        <path class="ar" d="M840 840V788" style="stroke:var(--orange)" marker-end="url(#t-orange)"/>
+        <path class="ar" d="M1120 840V788" style="stroke:var(--teal)" marker-start="url(#t-teal)" marker-end="url(#t-teal)"/>
+      </svg>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Two flows through the Officer team</h2>
+    <div class="cols">
+      <div>
+        <h3 style="margin-bottom:8px">A · The user asks a question</h3>
+        <ol class="steps">
+          <li><b>O4 Case briefer</b> hands O1 the context pack: the whole chat, the case summary, Sherlock's latest view, and the facts that match this message.</li>
+          <li><b>O1</b> reads the message with that context: language, who it is about, what exactly is asked.</li>
+          <li>If the pack is not enough, <b>O1</b> asks the toolbox: a report page, CDR query, or the API router.</li>
+          <li>Still not in the facts, or the user asks for an opinion ("kya ye shamil hai?")? <b>O1</b> asks <b>Sherlock</b> what he thinks.</li>
+          <li><b>O1</b> drafts the answer as content, not final wording: the direct answer, facts with sources, evidence quotes, Sherlock's view labelled as his view.</li>
+          <li><b>O2</b> checks the draft. If it fails, it goes back to O1 once with the reasons.</li>
+          <li><b>O5 Presenter</b> writes the checked answer for the user: in their language and a layout that is easy to read.</li>
+          <li>Then <b>O1</b> takes the top approved question from the <b>Gatekeeper</b>, if one is waiting, and asks it after the answer.</li>
+        </ol>
+      </div>
+      <div>
+        <h3 style="margin-bottom:8px">B · The user answers or gives information</h3>
+        <ol class="steps">
+          <li><b>O1</b> sees an answer or new information, not a question.</li>
+          <li><b>O3</b> records it on the case board in the user's own words, with the turn it came from.</li>
+          <li>If it answers a question the user was asked, the <b>Question ledger</b> marks that question answered and stores the answer.</li>
+          <li>The board change wakes the <b>Sherlock team</b>. Sherlock re-assesses with the new information.</li>
+          <li>The Questioner proposes the next questions. The Gatekeeper filters them before the user ever sees one.</li>
+          <li><b>O1</b> thanks the user briefly and says what it recorded, so the user knows it was understood.</li>
+          <li>If the user changes something they said earlier, it is a <b>correction</b>, not new information: see <a href="#corrections">Corrections</a>.</li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>The CDR team</h2>
+    <p class="sub">A team of its own, because a CDR is not a document to read once. It is thousands of rows that need cleaning, lookups, pattern work and mapping, and it gets more valuable when a second CDR or the incident pin arrives. The team starts the moment a CDR is provided and writes every finding to the case board with the rows it rests on.</p>
+    <div class="diagram">
+      <svg viewBox="0 0 1200 470" role="img" aria-labelledby="cdr-t">
+        <title id="cdr-t">CDR files go through intake, enrichment, three analysts and a fact writer, which writes to the case board.</title>
+        <defs>
+          <marker id="c-or" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--orange)"/></marker>
+          <marker id="c-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--blue)"/></marker>
+          <marker id="c-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--red)"/></marker>
+          <marker id="c-gold" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--gold)"/></marker>
+        </defs>
+        <text class="lanelbl" x="20" y="66" style="fill:var(--muted)">PROVIDED</text>
+        <g class="box" style="--c:var(--muted)"><rect x="20" y="80" width="200" height="60" rx="9"/>
+          <text class="bt" x="34" y="104">CDR Excel</text><text class="bs" x="34" y="124">Jazz, Zong, Telenor, Ufone</text></g>
+        <g class="box" style="--c:var(--muted)"><rect x="20" y="160" width="200" height="60" rx="9"/>
+          <text class="bt" x="34" y="184">Tower (BTS) dump</text><text class="bs" x="34" y="204">every number at a site</text></g>
+        <g class="box" style="--c:var(--muted)"><rect x="20" y="240" width="200" height="60" rx="9"/>
+          <text class="bt" x="34" y="264">CDR report</text><text class="bs" x="34" y="284">CDR server PDF, read back</text></g>
+        <path class="ar" d="M220 110H258" style="stroke:var(--orange)" marker-end="url(#c-or)"/>
+        <path class="ar" d="M220 190H258" style="stroke:var(--orange)" marker-end="url(#c-or)"/>
+        <path class="ar" d="M220 270H258" style="stroke:var(--orange)" marker-end="url(#c-or)"/>
+
+        <g class="box" style="--c:var(--orange)"><rect x="260" y="80" width="180" height="220" rx="10"/>
+          <text class="bt" x="276" y="106"><tspan class="id">R1 </tspan>Intake</text>
+          <text class="bs" x="276" y="132">CDR, BTS or report?</text>
+          <text class="bs" x="276" y="152">known → CDR server</text>
+          <text class="bs" x="276" y="172">new → own analysis</text>
+          <text class="bs" x="276" y="192">odd headers → model</text>
+          <text class="bs" x="276" y="212">cleans numbers, times</text>
+          <text class="bs" x="276" y="232">owner known?</text></g>
+        <g class="box" style="--c:var(--blue)"><rect x="260" y="14" width="180" height="40" rx="9"/>
+          <text class="bt" x="276" y="39">CDR server API</text></g>
+        <path class="ar" d="M350 54V78" style="stroke:var(--blue)" marker-start="url(#c-blue)" marker-end="url(#c-blue)"/>
+        <g class="box" style="--c:var(--red)"><rect x="260" y="330" width="180" height="44" rx="9"/>
+          <text class="bt" x="276" y="357">Question desk</text></g>
+        <path class="ar" d="M350 300V328" style="stroke:var(--red)" marker-start="url(#c-red)" marker-end="url(#c-red)"/>
+        <text class="al" x="358" y="318">whose CDR?</text>
+        <path class="ar" d="M440 190H468" style="stroke:var(--orange)" marker-end="url(#c-or)"/>
+
+        <g class="box" style="--c:var(--blue)"><rect x="470" y="14" width="180" height="40" rx="9"/>
+          <text class="bt" x="486" y="39">API router</text></g>
+        <path class="ar" d="M560 54V78" style="stroke:var(--blue)" marker-start="url(#c-blue)" marker-end="url(#c-blue)"/>
+        <g class="box" style="--c:var(--orange)"><rect x="470" y="80" width="180" height="220" rx="10"/>
+          <text class="bt" x="486" y="106"><tspan class="id">R2 </tspan>Enricher</text>
+          <text class="bs" x="486" y="132">number → owner (SIMs)</text>
+          <text class="bs" x="486" y="152">cell ID → lat / lon</text>
+          <text class="bs" x="486" y="172">IMEI → handset</text>
+          <text class="bs" x="486" y="192">matches graph phones</text>
+          <text class="bs" x="486" y="212">nearest police station</text></g>
+        <path class="ar" d="M650 190L678 100" style="stroke:var(--orange)" marker-end="url(#c-or)"/>
+        <path class="ar" d="M650 190L678 200" style="stroke:var(--orange)" marker-end="url(#c-or)"/>
+        <path class="ar" d="M650 190L678 300" style="stroke:var(--orange)" marker-end="url(#c-or)"/>
+
+        <g class="box" style="--c:var(--orange)"><rect x="680" y="60" width="180" height="80" rx="10"/>
+          <text class="bt" x="696" y="84"><tspan class="id">R3 </tspan>Patterns</text>
+          <text class="bs" x="696" y="106">top contacts, timeline</text>
+          <text class="bs" x="696" y="124">silences, IMEI swaps</text></g>
+        <g class="box" style="--c:var(--orange)"><rect x="680" y="160" width="180" height="80" rx="10"/>
+          <text class="bt" x="696" y="184"><tspan class="id">R4 </tspan>Location</text>
+          <text class="bs" x="696" y="206">towers near the pin</text>
+          <text class="bs" x="696" y="224">movement, home / work</text></g>
+        <g class="box" style="--c:var(--orange)"><rect x="680" y="260" width="180" height="80" rx="10"/>
+          <text class="bt" x="696" y="284"><tspan class="id">R5 </tspan>Cross-CDR</text>
+          <text class="bs" x="696" y="306">common contacts</text>
+          <text class="bs" x="696" y="324">same tower, same time</text></g>
+        <path class="ar" d="M860 100L898 170" style="stroke:var(--orange)" marker-end="url(#c-or)"/>
+        <path class="ar" d="M860 200H898" style="stroke:var(--orange)" marker-end="url(#c-or)"/>
+        <path class="ar" d="M860 300L898 230" style="stroke:var(--orange)" marker-end="url(#c-or)"/>
+
+        <g class="box" style="--c:var(--orange)"><rect x="900" y="130" width="280" height="140" rx="10"/>
+          <text class="bt" x="916" y="156"><tspan class="id">R6 </tspan>Fact writer</text>
+          <text class="bs" x="916" y="180">each finding → a fact F#</text>
+          <text class="bs" x="916" y="200">quoted with file · sheet · rows</text>
+          <text class="bs" x="916" y="220">fact or inference, never mixed</text>
+          <text class="bs" x="916" y="240">contacts → phone links on graph</text>
+          <text class="bs" x="916" y="260">pins on the map, timeline entries</text></g>
+        <path class="ar" d="M1040 270V398" style="stroke:var(--gold)" marker-end="url(#c-gold)"/>
+
+        <rect class="boardr" x="20" y="400" width="1160" height="56" rx="12"/>
+        <text x="40" y="434"><tspan class="boardt">CASE BOARD</tspan><tspan class="al" dx="12">CDR facts with row refs · phone links · map pins · timeline → wakes Sherlock, read by the CDR query tool</tspan></text>
+      </svg>
+    </div>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Provided file</th><th>Path</th><th>What the team does</th></tr></thead>
+        <tbody>
+          <tr><td>Known format (Jazz, Zong, Telenor, Ufone, unified export, BTS dump)</td><td><span class="pill">server + own</span></td><td>R1 sends it to the CDR server API with the incident date, place and FIR. The PDF report comes back and is read as a document. The team also runs its own analysis, and any difference between the two is flagged.</td></tr>
+          <tr><td>New format, unknown to the server</td><td><span class="pill new">own analysis</span></td><td>No PDF report comes back, so the team does all of it: R1 maps the columns (model for unfamiliar headers), then R2 to R6 produce every insight the server would have: contacts, owners, towers, IMEIs, incident window, patterns, cross-CDR links.</td></tr>
+          <tr><td>Server down, or no report in time</td><td><span class="pill new">own analysis</span></td><td>Same as a new format. The server is tried again later; when its report arrives it is compared with the team's facts.</td></tr>
+          <tr><td>A CDR report (PDF) provided directly</td><td><span class="pill">report</span></td><td>Read like any document, with page references. If the raw Excel arrives later, the own analysis runs and is compared.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="sub">In every path, R2 calls the API router for what the file alone can't tell: the owner of each number (SIMs, Subscriber), the handset behind an IMEI, the tower's location and the nearest police station. Calls are budgeted and recorded like any other.</p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Finding</th><th>Tier</th><th>How it is written (example)</th></tr></thead>
+        <tbody>
+          <tr><td>Calls between two numbers</td><td><span class="pill">fact</span></td><td>"0300-xxxx21 called 0321-xxxx45 14 times between 20 Feb and 2 Mar" [D9, Sheet1, rows 112–140]</td></tr>
+          <tr><td>Phone near the scene</td><td><span class="pill">fact</span></td><td>"Connected to tower 4471, 1.2 km from the pin, 21:40–22:15 on 1 Mar" [D9 rows 311–318]. Never "was at the scene"</td></tr>
+          <tr><td>Phone silent around the incident</td><td><span class="pill">fact</span></td><td>"No activity from 21:10 to 23:50 on 1 Mar; active every evening the week before" [D9]</td></tr>
+          <tr><td>Handset or SIM changed</td><td><span class="pill">fact</span></td><td>"IMEI changed on 3 Mar, two days after the incident" [D9 row 402]</td></tr>
+          <tr><td>Two suspects at the same tower</td><td><span class="pill ext">inference</span></td><td>"Both numbers on tower 4471 within 10 minutes: they may have been together" [D9, D11]</td></tr>
+          <tr><td>Home and work area</td><td><span class="pill ext">inference</span></td><td>"Most night-time activity on tower 2210 (Gulberg): likely home area" [D9]</td></tr>
+          <tr><td>Contact already on the graph</td><td><span class="pill">fact</span></td><td>"Top contact #3 is Sajid's registered number" [D9 + SIMs call id] → phone link added to the graph</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="rules">
+      <div><b>Rows or nothing</b>Every CDR fact cites the file and the rows it comes from, so anyone can open the sheet and check it.</div>
+      <div><b>A tower is not a place</b>Findings say "connected to a tower X km away", never "was at". Coverage radius is stated.</div>
+      <div><b>Never depends on the server</b>The team can always produce the full analysis itself. The server report is a second opinion when available, not a requirement.</div>
+      <div><b>Owner first</b>Until the owner is confirmed (SIMs record or the user), findings are filed under the number, not a person.</div>
+      <div><b>Re-runs on new information</b>Pin moved: R4 again. Owner confirmed: findings move to that person. Second CDR: R5 runs. New graph phone: R2 matches again.</div>
+      <div><b>Mostly code</b>Only odd headers and reading a scanned CDR report use the model. Counting, distances and matching are code, so they can't hallucinate.</div>
+      <div><b>Wakes Sherlock</b>A finished CDR is a milestone. Sherlock reads the new facts and may ask for the next CDR through the Question desk.</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>What the Officer agent knows, and whom it asks</h2>
+    <p class="sub">The Officer agent never starts a reply cold. <b>O4 Case briefer</b> builds a context pack before every turn, and while answering O1 can still call any tool or ask Sherlock.</p>
+    <div class="rules">
+      <div><b>Two parts</b>A standing part, the same every turn (chat, summary, Sherlock's view, what's new), and a part matched to this message: facts about the people and topic asked.</div>
+      <div><b>Ranked and trimmed</b>Facts about the person in focus and the asked topic first, newest and strongest tier first. Duplicates merged. Trimmed to fit, but every source keeps its title.</div>
+      <div><b>Says what's missing</b>The pack lists what the board does not hold for this question, e.g. "no employer on record". That tells O1 to call the API router or ask Sherlock instead of guessing.</div>
+      <div><b>Same sources everywhere</b>Every line keeps its F#, D#, row or call id, so the Answer checker can verify the reply against the exact pack O1 used.</div>
+    </div>
+    <div class="cols">
+      <div>
+        <h3 style="margin-bottom:8px">Context pack, every turn</h3>
+        <div class="tablewrap">
+          <table style="min-width:0">
+            <thead><tr><th>Part</th><th>From</th></tr></thead>
+            <tbody>
+              <tr><td>Whole chat</td><td>Recent turns word for word; older turns as a running summary, so nothing the user said is lost</td></tr>
+              <tr><td>Case summary</td><td>S2 Summarizer on the board: targets, incident, timeline, key findings</td></tr>
+              <tr><td>Sherlock's view</td><td>S1's latest assessment: hypotheses, concerns, next steps, with its time</td></tr>
+              <tr><td>Who we are discussing</td><td>Focus person and their dossier</td></tr>
+              <tr><td>What the user told us</td><td>Statements and answered questions from the ledger</td></tr>
+              <tr><td>What's new</td><td>Board entries since the last reply</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <h3 style="margin-bottom:8px">Asking Sherlock</h3>
+        <ol class="steps">
+          <li><b>When.</b> The toolbox found no fact, or the user asks for a judgment: why, how, is he involved, what next.</li>
+          <li><b>Quick, not full.</b> One model call, no tool rounds, with a 4-second budget. Sherlock answers only from his stored assessment and the context pack. He does not start a full background run while the user waits. Over budget: the reply says "Sherlock is looking into it" and his view comes later as a follow-up.</li>
+          <li><b>Labelled.</b> The reply keeps facts and opinion apart: "Records mein ye nahi hai. Sherlock ka andaza: …". The Answer checker enforces this.</li>
+          <li><b>Remembered.</b> The question and Sherlock's view go on the board. If the question needs real work, Sherlock picks it up in the next background run and the user is told when he has more.</li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="latency">
+    <h2>Reply time budget</h2>
+    <p class="sub">Everything runs on our own model server (Qwen 27B, <code>configs/default.yaml</code>). A chain of six model calls in a row would take too long, so each step has a time limit and a fallback, and most steps are code. Target: <b>first words on screen within 3 s; the whole reply usually under 8 s, never over 20 s.</b></p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Step</th><th>Model?</th><th>Budget</th><th>If it runs over</th></tr></thead>
+        <tbody>
+          <tr><td>O4 Case briefer</td><td>no (old chat summary is updated in the background, never while the user waits)</td><td>300 ms</td><td>Use the last pack and add what's new</td></tr>
+          <tr><td>O1 understand + draft</td><td>yes, one call, which also picks the tools</td><td>4 s</td><td>Answer from the board and a template, with "partial answer"</td></tr>
+          <tr><td>Toolbox calls</td><td>no</td><td>3 s in total, run in parallel</td><td>Answer without them; the slow call finishes in the background and its result is sent as a follow-up</td></tr>
+          <tr><td>Sherlock quick view</td><td>yes, one call, only when asked for</td><td>4 s, runs alongside the toolbox calls</td><td>"Sherlock is looking into it", sent later as a follow-up</td></tr>
+          <tr><td>O2 Answer checker</td><td>code first; model only when the draft has a claim that no query computed</td><td>200 ms code, 3 s model</td><td>Remove the unchecked claim and say it was not verified</td></tr>
+          <tr><td>O1 revise (once)</td><td>yes</td><td>3 s</td><td>Send the checked parts only</td></tr>
+          <tr><td>O5 Presenter</td><td>templates in all three languages by default; model only for free-form answers. Streamed</td><td>2 s</td><td>Use the template version</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="rules">
+      <div><b>At most 2 model calls on most turns</b>O1 drafts, then O5 uses templates. The O2 model check, the revise and Sherlock's quick view only run when needed. Every turn records how many model calls it made.</div>
+      <div><b>In parallel, not one after another</b>Toolbox calls and Sherlock's quick view run at the same time. O1 doesn't wait for anything it doesn't need.</div>
+      <div><b>Partial beats late</b>When a budget runs out, the user gets the checked part now and the rest as a follow-up message in the same thread. A spinner for 30 seconds is a failure.</div>
+      <div><b>Measured</b>Every turn logs each step's time. The test set fails a change if the typical reply time gets slower than the current agent's.</div>
+    </div>
+  </section>
+
+  <section class="panel" id="status">
+    <h2>While the user waits: the live status line</h2>
+    <p class="sub">The user should never stare at dots. While a reply is being worked out, the chat shows one short line saying what is running right now, in the user's language. A light band sweeps across the words from the first character to the last (right to left for Urdu). <span class="pill new">built</span> in <code>app.js</code>, <code>app.css</code>, <code>conversation.STATUS</code>.</p>
+    <div class="statusdemo" aria-hidden="true">
+      <div class="sdrow"><span class="sdshimmer" id="sd-en">Reading your message</span><span class="sdtime" id="sd-t"></span></div>
+      <div class="sdrow" dir="rtl"><span class="sdshimmer" dir="rtl" id="sd-ur">آپ کا پیغام پڑھ رہا ہوں</span></div>
+    </div>
+    <div class="cols">
+      <div>
+        <h3 style="margin-bottom:8px">How it works</h3>
+        <ol class="steps">
+          <li><b>Status events.</b> Before each slow step, the turn sends <code>{"type":"status","key","tool","text"}</code> over the existing <code>/graph/investigate</code> SSE stream: reading, understanding, case board, counting, police systems, Sherlock thinking, each investigator tool, writing, checking.</li>
+          <li><b>Fixed text, user's language.</b> Lines come from <code>STATUS</code> and <code>TOOL_STATUS</code> in English, Roman Urdu and Urdu, never from the model, so they can't make things up. Names and systems are filled in: "Checking NADRA · Kamran Ahmed", "FIR file mangwa raha hoon".</li>
+          <li><b>No flicker.</b> Each line stays at least 450 ms; quick steps are skipped over. After 8 s the seconds appear ("9s"), so a slow lookup is visibly still working.</li>
+          <li><b>Replaced by the answer.</b> When the reply arrives, the line disappears. Later, the Presenter's streamed words take over from it.</li>
+        </ol>
+      </div>
+      <div>
+        <h3 style="margin-bottom:8px">Rules</h3>
+        <ul class="plain">
+          <li>One line at a time, the step running now. No step list or agent names.</li>
+          <li>Says what is being checked, never what was found. Findings belong in the checked answer.</li>
+          <li>Background work (Sherlock team, CDR team) shows its own small status on the case board, not in the chat.</li>
+          <li>Screen readers hear it through <code>role="status"</code>. With reduced motion, the text stays still.</li>
+          <li>Urdu keeps its letters joined: the sweep is a gradient over the whole line, not separate letters.</li>
+          <li>As the plan's agents arrive (O4, O2, O5, Question desk, CDR team), each sends its own status lines.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>The Answer checker</h2>
+    <p class="sub">The one agent whose only job is that the user gets a correct answer to what they asked. Nothing reaches the user without passing it.</p>
+    <div class="rules">
+      <div><b>Answered what was asked</b>The first sentence answers the actual question. "How many FIRs?" must start with a number, not a summary of the case.</div>
+      <div><b>Correct</b>Every number matches the computed count. Every name, date and FIR number exists on the board or in a tool result.</div>
+      <div><b>Sourced</b>Every claim cites a real F#, D# or call id. A claim with no source is removed.</div>
+      <div><b>Consistent</b>Nothing contradicts what the user stated earlier or what the records say. A conflict is shown as a conflict, not hidden, and the order of trust (<a href="#trust">below</a>) decides which source the answer leads with.</div>
+      <div><b>Honest about gaps</b>If the tools found nothing, the reply says so and names what was checked. No guessing.</div>
+      <div><b>Labelled</b>Speculation from Sherlock is marked as a suspicion. A question from the Questioner comes after the answer, never instead of it.</div>
+    </div>
+    <p class="sub">On failure: back to the Officer agent once, with the reasons. If the reason is missing data, the Officer agent may ask the toolbox one more time. If it still fails, the reply goes out with a visible warning on the part in doubt.</p>
+  </section>
+
+  <section class="panel" id="trust">
+    <h2>Which source wins</h2>
+    <p class="sub">Tiers say how sure a claim is (fact, inference, speculation). Trust says who it comes from. When two sources disagree, the answer leads with the more trusted one, shows the other next to it, and names both. Nothing is deleted. Sherlock, the Answer checker and the Summarizer all use the same order, so they never pick different winners.</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Trust</th><th>Source</th><th>Examples</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>Official system record</td><td>NADRA, SIMs, Excise, PSRMS record, CDR rows</td></tr>
+          <tr><td>2</td><td>Official document</td><td>FIR text, MLO, DNA or Chemical report, CRO dossier, CDR server report</td></tr>
+          <tr><td>3</td><td>The officer's statement</td><td>What the user told us in chat. A later statement replaces an earlier one (<a href="#corrections">Corrections</a>)</td></tr>
+          <tr><td>4</td><td>Derived by us</td><td>CDR and graph inferences, Sherlock's assessment</td></tr>
+          <tr><td>5</td><td>Unverified</td><td>OSINT, Caller ID, web search</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="rules">
+      <div><b>Shown, not settled</b>"FIR mein waqia 1 March likha hai [D7]; aap ne 2 March bataya (turn 6)." The officer decides. Sherlock records the conflict on the board as something to look into.</div>
+      <div><b>Topic exceptions</b>For the incident's time and place, and for people's roles, the officer's statement leads over the FIR. Investigators often know more than the FIR shows. The FIR is still shown next to it.</div>
+      <div><b>Newer of the same rank</b>Between two sources of the same rank, the newer one leads. Between two documents, the one with an exact page reference leads.</div>
+      <div><b>Never upgrades the tier</b>A trusted source doesn't turn an inference into a fact. "Likely home area" stays an inference even when it comes from CDR rows.</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>The Presenter</h2>
+    <p class="sub">The Officer agent works out <i>what</i> to say. The Answer checker makes sure it is right. The Presenter decides <i>how</i> the user reads it: in their own language, laid out so the answer is clear at a glance.</p>
+    <div class="rules">
+      <div><b>Same language as the user</b>Urdu script gets Urdu, written right to left. Roman Urdu gets Roman Urdu. English gets English. It follows the user's latest message, so switching language mid-chat works.</div>
+      <div><b>Answer first</b>The first line answers the question in bold: a number, a name, yes or no. Detail follows only as much as the question needs.</div>
+      <div><b>Layout fits the content</b>Three or more items become bullets. FIRs, calls or people compared side by side become a small table. A short answer stays a sentence.</div>
+      <div><b>Evidence shown, not just cited</b>Key points carry a short quote from the record with its source, e.g. FIR file page 2 or CDR rows 311–318. Quotes stay in the record's language, with a translation when the user's language differs.</div>
+      <div><b>Fact and opinion apart</b>Sherlock's view sits in its own labelled block ("Sherlock ka andaza"). Missing information is said plainly. The next question comes last, on its own line.</div>
+      <div><b>Nothing changes in transit</b>Numbers, names, FIR numbers, CNICs, phone numbers and sources are copied exactly. A format guard compares them with the checked answer before sending.</div>
+    </div>
+    <p class="sub">Illustrative example: the same checked answer, presented for each language. Names and references are made up.</p>
+    <div class="present">
+      <div class="bubble sher"><span class="who">English</span>
+        <p><b>Kamran is named in 5 FIRs</b>: accused in 3, complainant in 2.</p>
+        <ul><li>FIR 488/25, PS Gulberg: accused, attempted murder, under trial [D7]</li><li>FIR 391/26, PS Model Town: accused, hurt, under investigation [D8]</li><li>FIR 112/24, PS Saddar: accused, cheque bounce, on bail [F6]</li></ul>
+        <blockquote>"ملزم نے پستول سے فائر کیا"<br>"The accused fired with a pistol." FIR 488/25, page 2</blockquote>
+        <p class="spec">Sherlock's view (not confirmed): the two recent FIRs suggest escalation.</p>
+        <span class="q">Do you have Kamran's CDR for March 2023?</span></div>
+      <div class="bubble sher"><span class="who">Roman Urdu</span>
+        <p><b>Kamran 5 FIRs mein naamzad hai</b>: 3 mein mulzim, 2 mein muddai.</p>
+        <ul><li>FIR 488/25, Thana Gulberg: mulzim, iqdam-e-qatl, zer-e-samaat [D7]</li><li>FIR 391/26, Thana Model Town: mulzim, zakhmi karna, zer-e-tafteesh [D8]</li><li>FIR 112/24, Thana Saddar: mulzim, cheque bounce, zamanat par [F6]</li></ul>
+        <blockquote>"ملزم نے پستول سے فائر کیا"<br>"Mulzim ne pistol se fire kiya." FIR 488/25, safha 2</blockquote>
+        <p class="spec">Sherlock ka andaza (tasdeeq nahi): haal ki do FIRs se lagta hai jurm barh raha hai.</p>
+        <span class="q">Kya aap ke paas Kamran ka March 2023 ka CDR hai?</span></div>
+      <div class="bubble sher urdu" dir="rtl" lang="ur"><span class="who">اردو</span>
+        <p><b>کامران 5 ایف آئی آرز میں نامزد ہے</b>: 3 میں ملزم، 2 میں مدعی۔</p>
+        <ul><li>ایف آئی آر 488/25، تھانہ گلبرگ: ملزم، اقدامِ قتل، زیرِ سماعت [D7]</li><li>ایف آئی آر 391/26، تھانہ ماڈل ٹاؤن: ملزم، ضرب، زیرِ تفتیش [D8]</li><li>ایف آئی آر 112/24، تھانہ صدر: ملزم، چیک باؤنس، ضمانت پر [F6]</li></ul>
+        <blockquote>"ملزم نے پستول سے فائر کیا"<br>ایف آئی آر 488/25، صفحہ 2</blockquote>
+        <p class="spec">شرلاک کا اندازہ (تصدیق شدہ نہیں): حالیہ دو ایف آئی آرز سے جرم میں اضافہ ظاہر ہوتا ہے۔</p>
+        <span class="q">کیا آپ کے پاس کامران کا مارچ 2023 کا سی ڈی آر ہے؟</span></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>The Question desk</h2>
+    <p class="sub">Sherlock's Questioner proposes questions. The Gatekeeper decides which ones the user will see. The Question ledger remembers every question by its topic, so the same question in other words is still caught.</p>
+    <div class="states">
+      <span>proposed</span><i>→</i><span class="no">rejected: already known</span><i>or</i><span class="ok">approved</span><i>→</i><span>asked</span><i>→</i><span class="ok">answered</span><i>or</i><span class="ok">"don't know"</span><i>or</i><span>no reply, ask again later (max 2)</span>
+    </div>
+    <div class="rules">
+      <div><b>Same topic, same question</b>Each question has a topic key, such as <code>incident:date</code>, <code>roles:main</code> or <code>cdr_owner:D3</code>. Rewording does not make it new.</div>
+      <div><b>Answered anywhere closes it</b>If the board already holds the answer, from chat, a document, the map or an API, the question is dropped.</div>
+      <div><b>"Don't know" counts</b>"Pata nahi" or "نہیں معلوم" is an answer. That question is not asked again.</div>
+      <div><b>Max two asks</b>An unanswered question is asked at most twice, never in two replies in a row.</div>
+      <div><b>One per reply</b>At most one question per reply, and none while the user is still busy with an earlier one.</div>
+      <div><b>Reads the whole chat</b>The Gatekeeper has the full conversation, not only the ledger. If the user mentioned the answer while asking something else ("waqia wale din, yani 1 March ko…"), the question is already answered.</div>
+      <div><b>Tells the team what it knows</b>A rejection is never just "no". It says: "Already answered in turn 2: 01-03-2023, about 22:00" or "User said they don't know, turn 5". Sherlock uses that answer and stops asking.</div>
+      <div><b>Same question, other words</b>Topic keys catch most repeats in code. For a free-form question with no key, the model compares it with every earlier question and answer in the chat.</div>
+      <div><b>Checked twice</b>The Gatekeeper checks when a question is approved and again just before the Officer agent asks it, in case the user answered in between.</div>
+      <div><b>Tells Sherlock why</b>A rejected question goes back to the Questioner with the reason and the answer already on file, so Sherlock uses it.</div>
+    </div>
+    <p class="sub">Builds on <code>questioner.py</code>, which already has topic keys, the ask count and the "closed when known" rule. The Gatekeeper moves those rules out of the Questioner into their own step, so every question passes the same check.</p>
+  </section>
+
+  <section class="panel" id="corrections">
+    <h2>Corrections</h2>
+    <p class="sub">"Nahi, 2 March tha." "Kamran nahi, Imran ne fire kiya." A correction is not new information. The old answer has to stop being used, and everything built on it has to be checked again.</p>
+    <div class="cols">
+      <div>
+        <h3 style="margin-bottom:8px">What happens</h3>
+        <ol class="steps">
+          <li><b>O1 spots it.</b> Words like "nahi", "galat", "actually", "درست کریں", plus a value for a topic already on file. If O1 isn't sure, it asks once: "Pehle aap ne 1 March bataya tha. 2 March kar dun?"</li>
+          <li><b>O3 replaces, never deletes.</b> The new statement is written with <code>replaces: S7</code>. The old one is marked replaced and stays visible in the history.</li>
+          <li><b>The ledger updates.</b> The question's answer changes, and the record shows both turns.</li>
+          <li><b>Everything built on it is flagged.</b> Every board entry keeps the ids it rests on. Each entry built on the old statement, directly or through other entries, is marked <span class="pill ext">stale</span> and drops out of answers until it is redone.</li>
+          <li><b>Redo.</b> Each stale entry goes back to the agent that made it: R4 for location, R6 to re-file facts under a different person, A4 for dossiers, S1 for hypotheses. This is one event, not one per entry.</li>
+          <li><b>Tell the user.</b> "Note kar liya: waqia 2 March. Tower aur CDR ka jaiza dobara ho raha hai." If the user's earlier reply relied on the old value, the follow-up says what changed.</li>
+        </ol>
+      </div>
+      <div>
+        <h3 style="margin-bottom:8px">What gets redone</h3>
+        <div class="tablewrap">
+          <table style="min-width:0">
+            <thead><tr><th>Corrected</th><th>Redone</th></tr></thead>
+            <tbody>
+              <tr><td>Incident date or time</td><td>R4 incident window, R3 silences around it, timeline, S1</td></tr>
+              <tr><td>Incident place</td><td>R4 towers near the pin, nearest police station, S1</td></tr>
+              <tr><td>Who owns a phone or CDR</td><td>R6 re-files the findings under the right person, R5, A4 for both people, S1</td></tr>
+              <tr><td>A person's role</td><td>A4, S2 summary, S1, the Questioner's ranked gaps</td></tr>
+              <tr><td>Who a person is (wrong match)</td><td>Graph link removed, A1, A4, every fact linked through it</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Example</h2>
+    <p class="sub">Illustrative. Names, numbers and references are made up to show the flow.</p>
+    <div class="cols">
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div class="bubble officer"><span class="who">User</span>Kamran kitni FIRs mein hai?</div>
+        <div class="bubble sher"><span class="who">Officer agent</span>Kamran 5 FIRs mein hai: 3 mein mulzim, 2 mein muddai [F4–F8]. Sab se sangeen FIR 488/25 hai (iqdam-e-qatl) [D7].<span class="q">Kya waqia 01-03-2023 ko hua tha?</span></div>
+        <div class="bubble officer"><span class="who">User</span>Haan, raat 10 baje ke qareeb.</div>
+        <div class="bubble sher"><span class="who">Officer agent</span>Shukriya. Maine note kar liya: waqia 01-03-2023, raat taqreeban 10 baje.</div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div class="bubble desk"><span class="who">Answer checker</span>First sentence answers "kitni": 5. Count matches the facts query. Sources F4–F8, D7 exist. Question comes after the answer. Pass.</div>
+        <div class="bubble desk"><span class="who">Question ledger</span><code>incident:date</code> answered: 01-03-2023, about 22:00, from turn 2.</div>
+        <div class="bubble team"><span class="who">Sherlock team</span>New date on the board. Sherlock checks Kamran's CDR for that night. The Questioner proposes "Waqia kab hua?" and "Kamran ka CDR hai?"</div>
+        <div class="bubble desk"><span class="who">Gatekeeper</span>"Waqia kab hua?" rejected. To Sherlock team: already answered in turn 2, "01-03-2023, raat taqreeban 10 baje". "Kamran ka CDR hai?" approved, queued for after the next answer.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>The shared toolbox</h2>
+    <p class="sub">Both teams use the same tools. The Officer team uses them to answer the user, the Sherlock team to work the case. Each team has its own API budget. Tools never call each other.</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Tool</th><th>Example ask</th><th>What comes back</th><th>Built from</th></tr></thead>
+        <tbody>
+          <tr><td>Board reader</td><td>"facts about FIR 488/25"</td><td>F# entries with quote, source and tier</td><td><code>knowledge.py</code>, <code>case_queries.py</code></td></tr>
+          <tr><td>Dossier</td><td>"Kamran"</td><td>identity, role, FIRs, links, documents, statements, open hypotheses</td><td>A4 (new)</td></tr>
+          <tr><td>Chat memory</td><td>"did the user say when it happened?"</td><td>the user's own words, with the turn</td><td><code>case.conversation</code>, statements</td></tr>
+          <tr><td>Report reader</td><td>"what does the MLO say about injuries?"</td><td>quoted lines with document and page</td><td><code>read_document</code>, <code>search_evidence</code></td></tr>
+          <tr><td>CDR query</td><td>"Kamran's number near the scene on 01-03?"</td><td>the CDR team's facts: calls, towers, distances, IMEIs, with row references</td><td>CDR team output, <code>cdr_lookup</code></td></tr>
+          <tr><td>API router</td><td>"vehicles owned by Kamran"</td><td>data, or "checked, nothing found", with a call id</td><td><code>researcher.py</code>, <code>systems.py</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="cols">
+      <div>
+        <h3 style="margin-bottom:8px">How the API router picks a system</h3>
+        <ol class="steps">
+          <li><b>Topic.</b> The ask is mapped to a topic: work, vehicle, phone, hotel, identity, property, complaint, record, FIR file, lab.</li>
+          <li><b>Catalog.</b> Each system lists the topics it answers, the identifier it needs, its output and its trust level. The model can only pick from this list.</li>
+          <li><b>Identifier check.</b> A CNIC-only system is called only when the person's CNIC is known. Otherwise the lookup that finds it runs first.</li>
+          <li><b>Memory.</b> Systems already searched for that person are skipped, including the ones that found nothing.</li>
+          <li><b>Write back.</b> Data becomes facts with a call id. Nothing found is recorded too. A topic no system holds gets "no connected system holds this".</li>
+        </ol>
+      </div>
+      <div class="tablewrap">
+        <table style="min-width:0">
+          <thead><tr><th>Topic</th><th>Systems, in order</th></tr></thead>
+          <tbody>
+            <tr><td>identity</td><td>NADRA, CFMS (foreigners)</td></tr>
+            <tr><td>work</td><td>EVS, HOPE, HRMIS, SBVS, PRVS</td></tr>
+            <tr><td>vehicle</td><td>Excise, AVLC, TRACS, DLS</td></tr>
+            <tr><td>phone</td><td>SIMs, Subscriber, Caller ID <span class="pill ext">unverified</span></td></tr>
+            <tr><td>address, family</td><td>PRVS, Old Tenant, TRUST, DLS</td></tr>
+            <tr><td>record, FIR</td><td>PSRMS, CRO, Watchlist, FIR Roster, ARMS</td></tr>
+            <tr><td>complaint, lost</td><td>PFC, IGP CMS, MILAP</td></tr>
+            <tr><td>hotel</td><td>Hotel Eye</td></tr>
+            <tr><td>footprint</td><td>OSINT <span class="pill ext">unverified</span></td></tr>
+            <tr><td>FIR file, lab, CRO</td><td>PSRMS file, Labs, SAFE</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="report">
+    <h2>The case report: Sherlock's full assessment</h2>
+    <p class="sub">The PDF the officer downloads is Sherlock's work on the case, in full. Today <code>case_report.assemble</code> makes one model call over the graph and case file when the run ends, and keeps that PDF until <code>rebuild=true</code>. Nothing from the chat, the CDR team, Sherlock's hypotheses or the officer's corrections reaches it. In the new plan, <b>S3 Report writer</b> writes no new judgments. It lays out what the Sherlock team already concluded on the board, so the report and the chat always agree.</p>
+    <div class="cols">
+      <div>
+        <h3 style="margin-bottom:8px">On download</h3>
+        <ol class="steps">
+          <li><b>Up to date?</b> The report is tied to a board version. If Sherlock's assessment already covers the current board, the PDF is built straight away (code only, about 2 s).</li>
+          <li><b>If not, bring it up to date.</b> If entries arrived after his last run, S2 → S1 → S4 run first. The officer sees "Sherlock is finishing his assessment…" with progress. Budget 90 s.</li>
+          <li><b>Over budget.</b> The report is built from the last assessment. The cover says "Assessment as of 14:02 (board v41). 6 newer entries are not yet assessed" and lists them in an appendix. The report never pretends to be newer than it is.</li>
+          <li><b>S3 builds it.</b> Report sections are filled from board entries; the model is only used to join them into readable paragraphs. Each paragraph keeps its ids.</li>
+          <li><b>Checked like a chat answer.</b> The O2 Answer checker runs on the report: every id exists, every number matches, speculation is labelled, no <span class="pill ext">stale</span> entry is used.</li>
+          <li><b>Kept per version.</b> The PDF is cached by board version, not once per run. A newer board means a new report, so <code>rebuild=true</code> is no longer needed.</li>
+        </ol>
+      </div>
+      <div>
+        <h3 style="margin-bottom:8px">What the report contains</h3>
+        <div class="tablewrap">
+          <table style="min-width:0">
+            <thead><tr><th>Section</th><th>From</th></tr></thead>
+            <tbody>
+              <tr><td>Cover</td><td>Subject, FIR, board version, time of the assessment, model, officer. Status: <i>current</i> or <i>as of …</i></td></tr>
+              <tr><td>Executive summary</td><td>S2 summary + S1's main conclusion. Facts only; suspicions go in their own section</td></tr>
+              <tr><td>The incident</td><td>As the officer gave it, plus corrections with turn numbers (exists, extended)</td></tr>
+              <tr><td>Targets and people</td><td>A4 dossiers: identity, role, FIRs, links, statements (exists, extended)</td></tr>
+              <tr><td><b>Sherlock's assessment</b> <span class="pill new">new</span></td><td>Each hypothesis H# with status (open, supported, weakened, ruled out), evidence for and against, and confidence. Then a view on each person: role and involvement, with the basis for it</td></tr>
+              <tr><td><b>Contradictions and conflicts</b> <span class="pill new">new</span></td><td>Sources that disagree, which one leads under the order of trust, and what would settle it</td></tr>
+              <tr><td><b>Suspicions (not evidence)</b> <span class="pill new">new</span></td><td>Sherlock's labelled speculation, in a clearly marked section so it can't be read as fact</td></tr>
+              <tr><td><b>How the assessment changed</b> <span class="pill new">new</span></td><td>Each change to a hypothesis or role: before → after, and the entry that changed it (a CDR, a correction, a document)</td></tr>
+              <tr><td><b>CDR analysis</b> <span class="pill new">new</span></td><td>Per CDR: owner, period, top contacts, towers near the incident, silences, IMEI changes, cross-CDR links, differences from the server report. Row references throughout</td></tr>
+              <tr><td>Linkages, network, findings</td><td>Graph evidence G# (exists)</td></tr>
+              <tr><td>Timeline</td><td>One timeline from documents, CDR, the officer's statements and the graph (exists, extended)</td></tr>
+              <tr><td><b>Officer's statements and Q&amp;A</b> <span class="pill new">new</span></td><td>What the officer told us, every question with its answer or "don't know", and questions still open</td></tr>
+              <tr><td><b>Asked of Sherlock in chat</b> <span class="pill new">new</span></td><td>Quick views he gave in chat, and whether his full assessment later confirmed, changed or replaced them</td></tr>
+              <tr><td>Evidence</td><td>Documents and quoted facts (exists)</td></tr>
+              <tr><td><b>Checked, nothing found</b> <span class="pill new">new</span></td><td>Systems searched with no result, missing lab reports, pages that couldn't be read. Shows the work done</td></tr>
+              <tr><td>Next steps</td><td>S4 ranked gaps + S1 recommendations: what to get, from whom, and why it matters to which hypothesis</td></tr>
+              <tr><td>References and audit</td><td>Every id cited (G, D, F, L, H, Q, CDR rows, call ids), plus a summary of the API calls made for this case</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <div class="rules">
+      <div><b>Nothing new at download</b>The report says only what is on the board. A judgment that isn't in S1's assessment can't appear in the report, so chat and report never disagree.</div>
+      <div><b>Cites or is dropped</b>The current rule stays and covers the new ids too: a statement with no real G, D, F, L, H, Q, row or call id is removed.</div>
+      <div><b>Tiers visible</b>Every assessment line shows fact, inference or speculation. Speculation never appears in the executive summary.</div>
+      <div><b>Corrections respected</b>Replaced and stale entries are left out of the body; they appear only under "How the assessment changed".</div>
+      <div><b>Same everywhere</b>The report, the chat and the dashboard all read the same assessment version. Reports from the same board version always say the same thing.</div>
+      <div><b>Works without the model</b>If the model is down, S3 builds every section from the board entries with templates, as <code>_rule_written</code> does today. The cover says it was built without the model.</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Which agents use the AI model</h2>
+    <p class="sub">An agent that follows fixed rules is written as code. Code is faster and cheaper, and it can't hallucinate. The model is used only where judgment or language is needed.</p>
+    <div class="cols">
+      <div><h3 style="margin-bottom:6px">AI model</h3><ul class="plain"><li>O1 Officer agent: understanding the question, drafting the answer</li><li>O5 Presenter: only for free-form answers; templates in all three languages handle the rest without the model</li><li>S1 Sherlock, S2 Summarizer</li><li>A2 Document reader, for scanned pages and photos</li><li>CDR R1 Intake, only for odd headers or a scanned CDR report</li><li>O2 Answer checker, only for "does this contradict something"</li><li>Q1 Gatekeeper, only to compare a free-form question with the chat</li></ul></div>
+      <div><h3 style="margin-bottom:6px">Code only</h3><ul class="plain"><li>Q1 Gatekeeper topic-key checks, Q2 Question ledger</li><li>API router and its catalog</li><li>CDR team R2–R6: lookups, counts, distances, matching</li><li>O4 Case briefer, Board reader, Dossier, Chat memory (model only to summarise old chat turns)</li><li>O2 checks on numbers, sources and "was it answered"</li><li>O5 format guard: numbers, names and sources unchanged, language matches</li><li>O3 Statement recorder (model optional, for free-form statements)</li></ul></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>All agents</h2>
+    <p class="sub">"New" is code to write. "Extend" means the agent exists and gets new duties. "Exists" means wiring only.</p>
+    <div class="groups">
+      <div class="group" style="--c:var(--navy)"><h3>Officer team</h3>
+        <div class="team">
+          <div class="agent" style="--c:var(--navy)"><div class="role">O1 Officer agent <span class="pill ext">extend</span></div><p>Works out the answer. Starts each turn with the whole chat, the case summary and Sherlock's view. Uses any tool; asks Sherlock when the facts don't answer. Drafts the answer as structured content with sources, plus one approved question, for the checker and the Presenter.</p><div class="io">from: conversation.py, understanding.py</div></div>
+          <div class="agent" style="--c:var(--navy)"><div class="role">O4 Case briefer <span class="pill new">new</span></div><p>Gives the Officer agent everything the case board knows that matters for this turn: chat, case summary, Sherlock's view, matched facts, and a list of what is missing.</p><div class="io">from: conversation.case_memory, knowledge.search, dossiers</div></div>
+          <div class="agent" style="--c:var(--navy)"><div class="role">O5 Presenter <span class="pill new">new</span></div><p>The voice the user reads. Writes the checked answer in the user's language (English, Roman Urdu or Urdu) and lays it out to read easily: answer first, bullets, tables, evidence quotes, Sherlock's view and the next question set apart.</p><div class="io">from: conversation.compose, narrate.py, offences.py</div></div>
+          <div class="agent" style="--c:var(--red)"><div class="role">O2 Answer checker <span class="pill ext">extend</span></div><p>Makes sure the user is answered correctly: answered what was asked, correct, sourced, consistent, honest about gaps.</p><div class="io">from: sherlock_team.validate</div></div>
+          <div class="agent" style="--c:var(--navy)"><div class="role">O3 Statement recorder <span class="pill">exists</span></div><p>Writes the user's answers and new information to the board in their own words, and tells the ledger which question was answered.</p><div class="io">from: sherlock_team.collect</div></div>
+        </div></div>
+      <div class="group" style="--c:var(--violet)"><h3>Sherlock team</h3>
+        <div class="team">
+          <div class="agent" style="--c:var(--violet)"><div class="role">S1 Sherlock <span class="pill ext">extend</span></div><p>Works the case quietly: hypotheses, concerns, contradictions, labelled speculation, next steps. Uses the toolbox. Wakes on new information.</p><div class="io">from: investigator.py tools · out: board.assessment</div></div>
+          <div class="agent" style="--c:var(--violet)"><div class="role">S2 Summarizer <span class="pill new">new</span></div><p>Keeps a rolling summary and timeline of the case for Sherlock and the report.</p><div class="io">out: board.summary, board.timeline</div></div>
+          <div class="agent" style="--c:var(--violet)"><div class="role">S3 Report writer <span class="pill ext">extend</span></div><p>Builds the downloadable case report: Sherlock's full assessment, hypotheses, contradictions, CDR analysis, the officer's statements and next steps, all from the board. Writes no new judgments. Brings the assessment up to date first if it is behind, and stores each report by board version. <a href="#report">Details</a></p><div class="io">from: case_report.py, report_pdf.py · in: board.assessment, board.summary</div></div>
+          <div class="agent" style="--c:var(--violet)"><div class="role">S4 Questioner <span class="pill ext">extend</span></div><p>Proposes the questions that would move the case most, ranked by Sherlock's gaps. Sends them to the Gatekeeper.</p><div class="io">from: questioner.gaps</div></div>
+        </div></div>
+      <div class="group" style="--c:var(--red)"><h3>Question desk</h3>
+        <div class="team">
+          <div class="agent" style="--c:var(--red)"><div class="role">Q1 Gatekeeper <span class="pill new">new</span></div><p>Knows the whole conversation, the ledger and the board. Checks every proposed question: if the user already answered it, or said they don't know, even in other words or without being asked, it rejects the question and tells the Sherlock team the answer and the turn it came in.</p><div class="io">rules from: questioner.next_question, ask_gaps · reads: chat memory</div></div>
+          <div class="agent" style="--c:var(--red)"><div class="role">Q2 Question ledger <span class="pill ext">extend</span></div><p>Every question ever asked: topic key, times asked, status, the answer and the turn it came in.</p><div class="io">from: case.questions</div></div>
+        </div></div>
+      <div class="group" style="--c:var(--orange)"><h3>CDR team</h3>
+        <div class="team">
+          <div class="agent" style="--c:var(--orange)"><div class="role">R1 Intake <span class="pill ext">extend</span></div><p>Recognises the file. A format the CDR server knows goes to the server for its PDF report. A new format, or no report back, goes to the team's own full analysis. Maps columns, cleans numbers and times, finds the owner or asks.</p><div class="io">from: cdr.load_table, map_columns, CdrServer</div></div>
+          <div class="agent" style="--c:var(--orange)"><div class="role">R2 Enricher <span class="pill new">new</span></div><p>Owner of each number, tower location, handset from IMEI, numbers already on the graph. Uses the API router and the CDR server.</p><div class="io">via: API router, CdrServer</div></div>
+          <div class="agent" style="--c:var(--orange)"><div class="role">R3 Pattern analyst <span class="pill ext">extend</span></div><p>Top contacts, call timeline, first and last calls, silences, IMEI and SIM changes, night and day habits.</p><div class="io">from: cdr.analyse</div></div>
+          <div class="agent" style="--c:var(--orange)"><div class="role">R4 Location analyst <span class="pill ext">extend</span></div><p>Towers near the incident pin in the incident window, movement path, home and work towers.</p><div class="io">from: cdr.analyse (near_incident)</div></div>
+          <div class="agent" style="--c:var(--orange)"><div class="role">R5 Cross-CDR linker <span class="pill new">new</span></div><p>With two or more CDRs: calls between suspects, common contacts, same tower at the same time, numbers present at several sites.</p><div class="io">new</div></div>
+          <div class="agent" style="--c:var(--orange)"><div class="role">R6 Fact writer <span class="pill new">new</span></div><p>Writes each finding as a fact with file, sheet and row numbers; sets fact or inference; adds phone links to the graph and pins to the map.</p><div class="io">out: board facts, links, timeline</div></div>
+        </div></div>
+      <div class="group" style="--c:var(--teal)"><h3>Ingest team</h3>
+        <div class="team">
+          <div class="agent" style="--c:var(--teal)"><div class="role">A1 Graph analyst <span class="pill new">new</span></div><p>Turns each graph change into facts and inferences: shared phones, addresses, co-accused FIRs, hotel overlaps.</p><div class="io">in: graph delta, JSON</div></div>
+          <div class="agent" style="--c:var(--teal)"><div class="role">A2 Document reader <span class="pill ext">extend</span></div><p>FIR, CRO, MLO, DNA, Chemical: quoted facts with report type and page number.</p><div class="io">from: collector.py, readers.py, uploads.py</div></div>
+                    <div class="agent" style="--c:var(--teal)"><div class="role">A4 Dossier agent <span class="pill new">new</span></div><p>One cached card per person, refreshed only when something about that person changes.</p><div class="io">out: board.dossiers</div></div>
+        </div></div>
+    </div>
+  </section>
+
+  <section class="panel" id="store">
+    <h2>Where the board lives</h2>
+    <p class="sub">Today a finished run stays in memory for 30 minutes and is then served from <code>graph_run</code> (<code>runs.py</code>). The case file also travels inside <code>graph["case"]</code>, which the host portal can save and post back. Once background agents write to the board between turns, that setup loses writes or lets an older copy win. The board moves to its own store.</p>
+    <div class="rules">
+      <div><b>Its own table</b>A <code>case_board</code> table keyed by run: one row per entry (fact, statement, question, assessment, dossier) and a version number for the board. Agents read and write the store, not the copy in memory, so eviction after 30 minutes loses nothing.</div>
+      <div><b>Add, never rewrite</b>Agents only add entries. Changing an entry means adding a new one with <code>replaces: F12</code>. Two agents writing at once can't overwrite each other, and the history stays for the audit trail.</div>
+      <div><b>Every entry knows where it came from</b>Each entry stores <code>by</code> (which agent), <code>event</code> (which event or batch), <code>from</code> (the ids it rests on, used for corrections) and <code>trust</code> (its source rank).</div>
+      <div><b>Older saves are refused</b><code>graph["case"]</code> carries the board version. A portal save with an older version doesn't replace the board. Only the officer's own edits in it (roles, pin, notes) are merged in as new entries, and the reply returns the current board.</div>
+      <div><b>One snapshot per turn</b>O4 reads the board at a single version. O1, O2 and O5 all work from that same snapshot, so a background write in the middle of a turn can't make the checker disagree with the draft.</div>
+      <div><b>Background runs survive restarts</b>Waiting and running jobs are stored as job rows, the same way OSINT jobs already are (<code>job_worker.py</code>). After a restart, unfinished Sherlock and CDR runs start again from the last board version.</div>
+    </div>
+  </section>
+
+  <section class="panel" id="safety">
+    <h2>Safety and audit</h2>
+    <p class="sub">The agents read untrusted text (OCR'd FIRs, uploaded files, OSINT and web results) and can call sensitive government systems. The rules below are part of the design, not a later add-on.</p>
+    <div class="rules">
+      <div><b>Document text is data</b>Text from a document, upload, OCR or OSINT result is passed to the model as quoted content, never as instructions. It can never pick a tool, a person to look up, or a system. Only the officer's own message and Sherlock's assessment can lead to a lookup.</div>
+      <div><b>Lookups only for people on the case</b>The API router only looks up people, numbers and CNICs already on the case graph or board, or named by the officer in this chat. A CNIC or number that turns up only inside a document needs the officer to confirm before it is looked up.</div>
+      <div><b>Officer's access applies</b>Today the portal token holds only the username (<code>auth.py</code>). Add the officer's allowed systems to the token. The API router checks them on every call, so the agents never get more access than the officer has.</div>
+      <div><b>Every call logged</b>Who (officer), which case, which agent, the reason (the turn or event), which system, which identifier, the result size and the time. Kept in the database and viewable by admins. A background call is logged under the officer whose case it is.</div>
+      <div><b>Limits per case</b>Each team has a limit on API calls per case and per hour. Going over stops the calls and tells the officer. A sudden jump in lookups is flagged to admins.</div>
+      <div><b>The checker checks quotes too</b>O2 drops any quoted text that isn't in the source document, using the existing <code>quote_in</code> check, so made-up or injected text can't appear as evidence.</div>
+    </div>
+  </section>
+
+  <section class="panel" id="wakes">
+    <h2>What wakes which agent</h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Event</th><th>Agents woken</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td>Graph adds people or links</td><td>A1, then A4</td><td>New relations become facts; touched dossiers refresh</td></tr>
+          <tr><td>Document fetched or uploaded</td><td>A2, then A4</td><td>Facts per page; dossiers of people named in it</td></tr>
+          <tr><td>CDR, tower dump or CDR report provided</td><td>CDR team R1 → R6, then A4 and Sherlock</td><td>Facts with rows; phone links; map pins</td></tr>
+          <tr><td>Incident pinned or moved; CDR owner confirmed</td><td>CDR team R4, or R6 re-files findings</td><td>Location and ownership findings stay correct</td></tr>
+          <tr><td>User asks a question</td><td>Officer team</td><td>Answer it; Sherlock is not waited on</td></tr>
+          <tr><td>User answers or gives info</td><td>O3 → ledger → Sherlock team</td><td>Recorded, question closed, Sherlock re-assesses</td></tr>
+          <tr><td>User corrects earlier info</td><td>O3 → ledger → the agents behind each stale entry → Sherlock team</td><td>Old answer replaced; everything built on it redone (<a href="#corrections">Corrections</a>)</td></tr>
+          <tr><td>Graph phase finished, a batch finished, or 15 facts from outside any batch</td><td>S2 → S1 → S4 → Q1</td><td>Assessment stays current; new questions filtered</td></tr>
+          <tr><td>User downloads the report</td><td>S3 alone if the assessment is current; otherwise S2 → S1 → S4 → S3</td><td>Report is Sherlock's full, current assessment (<a href="#report">Case report</a>)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="rules">
+      <div><b>Never woken by its own writes</b>Each event carries <code>by</code>. An agent is never woken by its own writes. The Sherlock team's writes (summary, assessment, hypotheses, gaps) never wake the Sherlock team; only the Question desk reads the Questioner's gaps.</div>
+      <div><b>A batch is one event</b>A CDR, a document, a graph phase or a correction is one batch with one <code>event</code> id. The hundreds of facts it writes count as a single wake when the batch finishes, not toward the 15-fact count.</div>
+      <div><b>No wake without new input</b>Sherlock runs only if something from outside the Sherlock team changed since his last run (user, ingest, CDR, API). Otherwise the wake is skipped and doesn't count against the run budget.</div>
+      <div><b>One run at a time</b>Several events within a few seconds start one run, and runs never overlap. An event during a run queues exactly one follow-up run.</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Build order</h2>
+    <ol class="steps">
+      <li><b>Live status line</b> <span class="pill new">done</span>. Status events before each step of a turn and each investigator tool; shimmer line in the chat. New agents add their own lines as they are built.</li>
+      <li><b>Test set and timing.</b> Fixed test chats in English, Urdu and Roman Urdu, including corrections and conflicts. Run them against today's agent to get a starting score and reply times. Log the time of each step on every turn.</li>
+      <li><b>Board foundation.</b> The <code>case_board</code> store with a version number; entries only added, with <code>by</code>, <code>event</code>, <code>from</code>, <code>trust</code> and <code>replaces</code>; tier, report type and page on every fact; refuse older portal saves. A change hook that wakes subscribers: debounced, batched, and never on an agent's own writes.</li>
+      <li><b>Safety and audit.</b> Document text as quoted data only; lookups limited to people on the case; the officer's allowed systems in the token; the call log; limits per case. In place before any background agent can call an API.</li>
+      <li><b>Question desk.</b> Move the dedupe rules into the Gatekeeper; ledger stores answers and the turn; rejected questions return with a reason.</li>
+      <li><b>Answer checker.</b> Add the answered-what-was-asked check, the honest-gaps check, the question-after-answer rule and the order of trust to the validator. Code checks first; the model only for claims no query computed.</li>
+      <li><b>Corrections.</b> Spot a correction, write the replacing statement, update the ledger, mark everything built on the old value as stale (via <code>from</code>), and send each stale entry back to the agent that made it as one event.</li>
+      <li><b>Shared toolbox.</b> Wrap board, dossier, chat memory, report reader, CDR and API router as tools both teams call, each team with its own budget.</li>
+      <li><b>API catalog and router.</b> Topics, identifiers, outputs and trust per system; remember searches that found nothing.</li>
+      <li><b>Presenter.</b> O1 hands a structured answer; O5 writes it in the user's language with the layout rules and the format guard. Templates first, streamed; if the guard fails, the template version is sent.</li>
+      <li><b>Officer team split.</b> O4 Case briefer builds the context pack (grown from <code>case_memory</code>); O1 gets it each turn, uses the toolbox, asks Sherlock for a quick view when the facts run out, and takes questions only from the Gatekeeper. Each step has its time budget and fallback; tool calls run in parallel; follow-up messages carry anything that finished late.</li>
+      <li><b>Ingest.</b> A1 Graph analyst streaming during the run; A4 Dossier cache.</li>
+      <li><b>CDR team.</b> Server path for known formats and a full own analysis for new formats or no report; compare the two when both exist. Split <code>cdr.analyse</code> into intake, enricher, patterns, location, cross-CDR and fact writer; add row references and re-runs on new pin, owner or CDR.</li>
+      <li><b>Sherlock team in the background.</b> S2 → S1 → S4 on events, writing summary, assessment and ranked gaps.</li>
+      <li><b>Report writer from the board.</b> Replace the one-shot <code>_llm_written</code> with S3 laying out the board: new sections for the assessment (H#), contradictions, suspicions, how the assessment changed, CDR analysis, statements and Q&amp;A, chat views and "checked, nothing found". Bring the assessment up to date on download; store each PDF by board version; run the Answer checker on the report; template fallback. Tests for each step with real messages in English, Urdu and Roman Urdu.</li>
+    </ol>
+  </section>
+
+  <section class="panel">
+    <h2>Decisions needed</h2>
+    <div class="cols">
+      <div><h3>Sherlock's suspicions in chat?</h3><p class="sub">Recommended: the Officer agent may mention them, clearly labelled as a suspicion. The alternative is to keep them in the report only.</p></div>
+      <div><h3>Background budget</h3><p class="sub">How many Sherlock runs and live API calls per case? Suggested: up to 20 runs and 30 background calls.</p></div>
+      <div><h3>Sherlock on the dashboard</h3><p class="sub">Show Sherlock's hypotheses live on the case board panel, or only when the user asks?</p></div>
+      <div><h3>Report language</h3><p class="sub">English only (recommended for court and file), or also in Urdu? Quotes stay in the language of the record either way.</p></div>
+      <div><h3>Suspicions in the report</h3><p class="sub">Recommended: include them in their own labelled section. Alternative: an "internal" version with suspicions and a "file" version without them.</p></div>
+    </div>
+  </section>
+</div>
+<script>
+// The status demo: cycles through a real turn's lines, as the chat shows them.
+(() => {
+  const en = ["Reading your message", "Working out what you are asking", "Searching the case board",
+              "Checking NADRA · Kamran Ahmed", "Fetching the FIR file", "Sherlock is thinking it through",
+              "Writing the answer", "Checking the answer against the records"];
+  const ur = ["آپ کا پیغام پڑھ رہا ہوں", "سمجھ رہا ہوں آپ کیا پوچھ رہے ہیں", "کیس بورڈ میں ڈھونڈ رہا ہوں",
+              "نادرا · کامران احمد چیک کر رہا ہوں", "ایف آئی آر فائل منگوا رہا ہوں", "شرلاک غور کر رہا ہے",
+              "جواب لکھ رہا ہوں", "جواب ریکارڈ سے ملا رہا ہوں"];
+  const a = document.getElementById("sd-en"), b = document.getElementById("sd-ur"), t = document.getElementById("sd-t");
+  if (!a || !b) return;
+  let i = 0, secs = 0;
+  const restart = (el, text) => { el.textContent = text; el.style.animation = "none"; void el.offsetWidth; el.style.animation = ""; };
+  setInterval(() => { i = (i + 1) % en.length; if (i === 0) secs = 0; restart(a, en[i]); restart(b, ur[i]); }, 2200);
+  setInterval(() => { secs += 1; t.textContent = secs >= 8 ? secs + "s" : ""; }, 1000);
+})();
+</script>

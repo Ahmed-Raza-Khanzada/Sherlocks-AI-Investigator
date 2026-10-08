@@ -25,6 +25,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from sherlocks.evidence.case_file import CITATION, CaseFile
+from sherlocks.evidence.guard import DATA_NOT_INSTRUCTIONS
+from sherlocks.evidence.question_desk import wants_mute
 from sherlocks.evidence.questioner import ask_gaps
 from sherlocks.linkgraph.investigator import investigate
 from sherlocks.linkgraph.network import PersonNetwork
@@ -64,7 +66,23 @@ _COLLECT_SYSTEM = ("You record what a police officer STATES in a chat with the i
                    "questions and requests. Return an empty list when nothing is stated.")
 
 
+_MONTH_NUM = {m: i for i, names in enumerate(
+    [("jan", "january", "جنوری"), ("feb", "february", "فروری"), ("mar", "march", "مارچ"), ("apr", "april", "اپریل"),
+     ("may", "مئی"), ("jun", "june", "جون"), ("jul", "july", "جولائی"), ("aug", "august", "اگست"),
+     ("sep", "sept", "september", "ستمبر"), ("oct", "october", "اکتوبر"), ("nov", "november", "نومبر"),
+     ("dec", "december", "دسمبر")], 1) for m in names}
+_NAMED_DATE = re.compile(r"\b(\d{1,2})\s*(?:st|nd|rd|th)?\s+([a-z]+|[؀-ۿ]+),?\s+(\d{4})\b", re.IGNORECASE)
+
+
 def _iso_date(text: str) -> str | None:
+    named = _NAMED_DATE.search(text)
+    if named and named.group(2).lower() in _MONTH_NUM:
+        try:
+            from datetime import date
+
+            return date(int(named.group(3)), _MONTH_NUM[named.group(2).lower()], int(named.group(1))).isoformat()
+        except ValueError:
+            pass
     m = _DATE.search(text)
     if not m:
         return None
@@ -79,8 +97,11 @@ def _iso_date(text: str) -> str | None:
 
 
 def collect(case: CaseFile, net: PersonNetwork, message: str, llm: Any = None,
-            focus: list[str] | None = None) -> list[str]:
-    """Record the officer's statements. Returns one line per thing recorded."""
+            focus: list[str] | None = None, skip_topics: set[str] | None = None) -> list[str]:
+    """Record the officer's statements. Returns one line per thing recorded. A topic in
+    ``skip_topics`` was just corrected (or waits for the officer to confirm a change), and
+    a value already on file is never overwritten here - changing it is a correction."""
+    skip_topics = skip_topics or set()
     text = message.strip()
     if not text:
         return []
@@ -104,22 +125,28 @@ def collect(case: CaseFile, net: PersonNetwork, message: str, llm: Any = None,
         if _iso_date(text) and any(w in low for w in _INCIDENT_WORDS):
             statements.append(_Statement(fact=text, quote=text, kind="incident_time"))
     # "hamay kamran pr shaq ha": the officer suspects someone - recorded even if the model put it otherwise.
-    if not is_question and _SUSPECT.search(text) and not any(st.kind == "role" for st in statements):
+    if (not is_question and _SUSPECT.search(text) and not any(st.kind == "role" for st in statements)
+            and "role:*" not in skip_topics):
         main = "main suspect" not in case.roles.values()
         statements.append(_Statement(fact=text, quote=text, kind="role", role="main suspect" if main else "suspect"))
     place = _incident_place(text)
-    if place and not is_question and not (case.incident or {}).get("place"):
+    if place and not is_question and not (case.incident or {}).get("place") and "incident:place" not in skip_topics:
         case.set_incident({"place": place})
         case.close_question("incident:place", place)
         done.append(f"incident place: {place}")
     for st in statements:
+        pid = ((net.resolve(st.person) if st.person else None) or _named(net, text) or (focus or [None])[0]
+               if st.kind == "role" else None)
+        topic = {"incident_time": "incident:date", "incident_place": "incident:place"}.get(st.kind) or (
+            f"role:{pid}" if pid else None)
+        if topic in skip_topics or (st.kind == "role" and "role:*" in skip_topics):
+            continue
         fid = case.add_fact(doc_id, f"Stated by the officer: {st.fact}", st.quote, kind=f"officer_{st.kind}",
-                            people=[st.person] if st.person else [], by="officer")
+                            people=[st.person] if st.person else [], by="officer", topic=topic)
         if fid is None:
             continue
         done.append(f"recorded {fid}: {st.fact}")
         if st.kind == "role":
-            pid = (net.resolve(st.person) if st.person else None) or _named(net, text) or (focus or [None])[0]
             if pid and not (case.roles.get(pid) == "main suspect" and (st.role or "suspect").lower() == "suspect"):
                 case.set_role(pid, (st.role or "suspect").lower())
                 if (st.role or "").lower() == "main suspect":
@@ -127,7 +154,7 @@ def collect(case: CaseFile, net: PersonNetwork, message: str, llm: Any = None,
                 done.append(f"role: {net.name(pid)} = {st.role or 'suspect'}")
         if st.kind == "incident_time":
             day = _iso_date(st.quote) or _iso_date(text)
-            if day:
+            if day and not (case.incident or {}).get("date"):
                 case.set_incident({"date": day})
                 case.close_question("incident:when", day)
                 done.append(f"incident date: {day}")
@@ -135,7 +162,9 @@ def collect(case: CaseFile, net: PersonNetwork, message: str, llm: Any = None,
 
 
 _SUSPECT = re.compile(r"(?<![\w؀-ۿ])(shak|shaq|shuba|shubah|شک|شبہ)(?![\w؀-ۿ])", re.IGNORECASE)
-_INCIDENT_WORD = r"(?:wardaa*t|wardat|wardqaa*t|waqia|waqiya|waqa|vaqia|incident|crime|occurrence|jurm|واردات|واقعہ|جرم)"
+_INCIDENT_WORD = (r"(?:wardaa*t|wardat|wardqaa*t|waqia|waqiya|waqa|vaqia|incident|crime|occurrence|jurm|dakait\w*|daka|"
+                  r"dacoity|robbery|snatching|chheena\w*|qatl|murder|chori|theft|aghwa|kidnapping|firing|fire|"
+                  r"واردات|واقعہ|جرم|ڈکیتی|ڈاکہ|قتل|چوری|اغوا|فائرنگ)")
 _PLACE_SAID = [
     # "wardaat saddar mein hui", "waqia Gulshan block 5 par hua"
     re.compile(_INCIDENT_WORD + r"\s+(?P<p>[^.,?!؟]{2,60}?)\s+(?:ma|mein|main|me|mai|par|pr|pe|میں|پر)\s+"
@@ -188,14 +217,93 @@ _CHECK_SYSTEM = ("The draft may be in Urdu, Roman Urdu or English. You are the V
                  "the facts do not mention. Do not flag style.")
 
 
+_COUNTING = ("count_cases", "criminals_near", "criminals_all", "graph_stats", "fir_status")
+_GAP_WORDS = re.compile(r"nothing|no record|not (?:found|known|recorded|in the records|been read)|none|could not|"
+                        r"did not find|do(?:es)? not (?:give|say|show|hold|have|mention)|don'?t (?:give|say|have)|"
+                        r"nahi mil|kuch nahi|koi nahi|record nahi|maloom nahi|نہیں ملا|کچھ نہیں|کوئی نہیں|ریکارڈ میں نہیں",
+                        re.IGNORECASE)
+_QUOTED = re.compile(r"[\"“«]([^\"”»]{6,300})[\"”»][^\[]{0,60}\[([DF]\d{1,4})\]")
+
+
+def unverified_quotes(answer: str, case: CaseFile) -> list[str]:
+    """Quoted text in the answer that is not in the document it cites - made up, or
+    carried in from somewhere else. The Answer checker removes it."""
+    from sherlocks.evidence.case_file import quote_in
+
+    bad = []
+    for m in _QUOTED.finditer(answer or ""):
+        quote, ref = m.group(1), m.group(2)
+        doc = case.documents.get(ref) if ref.startswith("D") else case.documents.get((case.facts.get(ref) or {}).get("doc", ""))
+        fact = case.facts.get(ref)
+        ok = doc is not None and quote_in(quote, doc.get("text", ""))
+        ok = ok or (fact is not None and quote_in(quote, fact.get("quote", "")))
+        if not ok:
+            bad.append(quote)
+    return bad
+
+
+def drop_quotes(answer: str, quotes: list[str]) -> str:
+    for q in quotes:
+        answer = re.sub(r"[\"“«]" + re.escape(q) + r"[\"”»]", "(quote removed: not found in the source)", answer)
+    return answer
+
+
+def _first_part(answer: str) -> str:
+    """The opening of a reply: its first sentence or line (what must answer the question)."""
+    text = re.sub(r"\*\*", "", (answer or "").strip())
+    first = re.split(r"(?<=[.!?؟۔])\s|\n", text, maxsplit=1)[0]
+    return first[:300]
+
+
 def validate(case: CaseFile, net: PersonNetwork, final: dict[str, Any], llm: Any = None) -> dict[str, Any]:
-    """``{ok, issues, checked}`` for a draft answer."""
+    """The Answer checker: ``{ok, issues, checked, rules}`` for a draft answer.
+
+    Code first - answered what was asked, correct numbers, real and current sources,
+    quotes that are in their documents, honest about gaps, the question after the answer,
+    no contradiction of the officer's statements. The model is asked only about
+    contradictions in claims no query computed (``llm`` given)."""
     answer = final.get("answer") or ""
     issues: list[str] = []
-    known = set(case.documents) | set(case.facts) | set(case.links)
+    rules = {"answered": True, "correct": True, "sourced": True, "consistent": True, "honest": True, "labelled": True}
+    known = case.known_ids()
     bad = [ref for ref in dict.fromkeys(CITATION.findall(answer)) if ref not in known]
     if bad:
         issues.append(f"Cites {', '.join(bad)}, which is not in the case file.")
+        rules["sourced"] = False
+    old = [ref for ref in dict.fromkeys(CITATION.findall(answer)) if ref in case.facts and not case.usable(ref)]
+    if old:
+        issues.append(f"Cites {', '.join(old)}, replaced or out of date since a correction.")
+        rules["sourced"] = False
+    quotes = unverified_quotes(answer, case)
+    if quotes:
+        issues.append(f"Quotes text not found in its source: \"{quotes[0][:60]}\".")
+        rules["sourced"] = False
+    query, facts = final.get("query") or {}, final.get("facts")
+    if facts is not None and facts.get("asked_role"):
+        # Asked about one role ("FIR on him" = accused): yes or no for that role, first.
+        opening = _first_part(answer).lower()
+        said_yes = bool(re.match(r"^\W*(yes|haan|han|ji haan|جی ہاں|ہاں)\b", opening))
+        said_no = bool(re.match(r"^\W*(no|nahi|nahin|نہیں)\b", opening)) or bool(re.search(
+            r"\bno fir\b|\bnot (?:the )?" + re.escape(facts["asked_role"]) + r"|kisi fir|کسی ایف آئی آر", opening))
+        if not facts.get("matching") and said_yes:
+            issues.append(f"Says yes, but no FIR names {facts.get('subject')} as {facts['asked_role']}.")
+            rules["answered"] = rules["correct"] = False
+        elif facts.get("matching") and said_no:
+            issues.append(f"Says no, but {facts.get('subject')} is {facts['asked_role']} in "
+                          f"{len(facts['matching'])} FIR(s).")
+            rules["answered"] = rules["correct"] = False
+    elif (query.get("type") in _COUNTING and facts is not None and not facts.get("empty")
+            and str(facts.get("count")) not in _first_part(answer)):
+        issues.append(f"The reply does not open with the exact count ({facts['count']}).")
+        rules["answered"] = rules["correct"] = False
+    asking = (final.get("asking") or {}).get("asked_text")
+    if asking and answer.strip()[:60] and asking.strip()[:40] in answer.strip()[:len(asking) + 5] and len(answer) > len(asking) + 20:
+        issues.append("The reply opens with a question instead of the answer.")
+        rules["answered"] = False
+    if (final.get("intent") == "question" and facts is not None and facts.get("empty") and not final.get("investigation")
+            and not _GAP_WORDS.search(answer)):
+        issues.append("The records hold nothing on this, but the reply does not say so.")
+        rules["honest"] = False
     inc_date = (case.incident or {}).get("date")
     if inc_date and any(w in answer.lower() for w in ("incident", "occurrence", "crime")):
         from datetime import date
@@ -209,7 +317,14 @@ def validate(case: CaseFile, net: PersonNetwork, final: dict[str, Any], llm: Any
             window = answer[max(0, m.start() - 60):m.end() + 60].lower()
             if gap > 1 and any(w in window for w in ("incident", "occurrence", "crime")):
                 issues.append(f"Gives {m.group(0)} as the incident date, but the officer stated {inc_date}.")
+                rules["consistent"] = False
                 break
+    for h in final.get("hypotheses") or []:
+        if h.get("tier") == "speculative" and h.get("statement") and h["statement"][:60] in answer:
+            window = answer[max(0, answer.find(h["statement"][:60]) - 80):answer.find(h["statement"][:60])].lower()
+            if not re.search(r"suspicion|speculat|not confirmed|andaza|tasdeeq|اندازہ|lead|view", window):
+                issues.append("A speculative point is stated as fact - label it as Sherlock's view.")
+                rules["labelled"] = False
     checked = "rules"
     if llm is not None:
         notes = case.doc_for("notes:officer")
@@ -223,11 +338,14 @@ def validate(case: CaseFile, net: PersonNetwork, final: dict[str, Any], llm: Any
         try:
             check, _ = llm.generate_structured(prompt=prompt, schema=_Check, system=_CHECK_SYSTEM,
                                                cache_kind="validator", prompt_version="v1")
-            issues += [i for i in check.issues[:4] if i.strip()]
+            found = [i for i in check.issues[:4] if i.strip()]
+            issues += found
+            if found:
+                rules["consistent"] = False
             checked = "rules + model"
         except Exception as exc:  # noqa: BLE001
             logger.info("Validator model failed: %s", exc)
-    return {"ok": not issues, "issues": issues, "checked": checked}
+    return {"ok": not issues, "issues": issues, "checked": checked, "rules": rules}
 
 
 def revise(final: dict[str, Any], issues: list[str], llm: Any) -> str | None:
@@ -248,6 +366,19 @@ def revise(final: dict[str, Any], issues: list[str], llm: Any) -> str | None:
 # --------------------------------------------------------------------------------------
 
 
+FOLLOW_HEAD = {"en": "More on your last question:", "roman": "Aap ke pichle sawal par mazeed:",
+               "ur": "آپ کے پچھلے سوال پر مزید:"}
+STILL_WORKING = {"en": "(Sherlock is still looking into part of this - I will send it as soon as it is ready.)",
+                 "roman": "(Sherlock abhi is ke kuch hisse par kaam kar rahe hain - tayyar hote hi bhej dunga.)",
+                 "ur": "(شرلاک ابھی اس کے کچھ حصے پر کام کر رہے ہیں - تیار ہوتے ہی بھیج دوں گا۔)"}
+
+
+def QUESTIONS_TEXT(q: dict[str, Any], language: str) -> str:
+    from sherlocks.linkgraph.conversation import QUESTIONS
+
+    return QUESTIONS.get(q["key"], {}).get(language) or q["text"]
+
+
 def _needs_research(query: dict[str, Any], facts: dict[str, Any] | None, hits: list[Any], case: CaseFile,
                     net: PersonNetwork) -> bool:
     """Nothing gathered answers the question, or it is about an FIR whose file is unread."""
@@ -257,6 +388,10 @@ def _needs_research(query: dict[str, Any], facts: dict[str, Any] | None, hits: l
         return True
     if query["type"] in ("fir_details", "fir_status", "io_report") and query["people"]:
         return any(not r.get("doc") for r in _firs(net, query["people"][0], case))
+    if query["type"] == "hotels" and facts is not None and any(not m["day"] and not m.get("doc")
+                                                                for m in facts.get("at_times") or []):
+        return True                     # an FIR's date is only in its unread file
+
     if facts is not None:
         return bool(facts.get("empty")) and bool(query["people"] or query.get("firs"))
     return not hits and bool(query["people"])
@@ -285,6 +420,9 @@ _PLACE = re.compile(r"\b(road|rd|street|st|gali|block|sector|colony|town|nagar|a
                     re.IGNORECASE)
 _TIME = re.compile(r"\b\d{1,2}[:.]\d{2}\b|\b(raat|subah|shaam|dopehar|night|morning|evening|afternoon|kal|parson|"
                    r"yesterday|today|aaj|baje|am|pm)\b|رات|صبح|شام|بجے", re.IGNORECASE)
+_MONTHS = (r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|"
+           r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|جنوری|فروری|مارچ|اپریل|مئی|جون|جولائی|اگست|ستمبر|اکتوبر|نومبر|دسمبر")
+_MONTH_DAY = re.compile(rf"\b\d{{1,2}}\s*(?:st|nd|rd|th)?\s*(?:{_MONTHS})\b|\b(?:{_MONTHS})\s+\d{{1,2}}\b", re.IGNORECASE)
 _PLATE = re.compile(r"\b(?!FIR\b|PS\b|PPC\b|CNIC\b|SIM\b)[A-Z]{2,4}-?\s?\d{2,4}(?!\s*/)\b")          # number plates are written in capitals
 _VEHICLE_WORDS = re.compile(r"\b(car|bike|motorcycle|honda|suzuki|toyota|corolla|mehran|rickshaw|pistol|gun|"
                             r"kalashnikov|klashnikov|knife|chhuri|weapon|hathiyar)\b|گاڑی|موٹر سائیکل|پستول", re.IGNORECASE)
@@ -313,7 +451,7 @@ def _fit_score(q: dict[str, Any], message: str, net: PersonNetwork) -> int:
             return 3
         return 2 if len(text.split()) <= 6 else 1
     if key == "incident:when":
-        return 3 if _iso_date(text) else (2 if _TIME.search(text) else 0)
+        return 3 if (_iso_date(text) or _MONTH_DAY.search(text)) else (2 if _TIME.search(text) else 0)
     if key == "incident:what":
         return 3 if _CRIME.search(text) else 0
     if key == "incident:fir":
@@ -324,6 +462,9 @@ def _fit_score(q: dict[str, Any], message: str, net: PersonNetwork) -> int:
         return 3 if re.search(r"\d{5}-?\d{7}-?\d|(?:\+?92|0)3\d{2}[\s-]?\d{7}", text) else 0
     if key == "link:why":
         return 2 if _RELATION.search(text) else 0
+    if key.startswith("confirm_lookup:"):
+        return 3 if re.match(r"^\s*(yes|y|no|haan|han|ji|jee|nahi|nahin|ok|okay|theek|ہاں|جی|نہیں)\b", text,
+                             re.IGNORECASE) else 0
     if key in ("incident:place", "incident:pin"):
         if _PLACE.search(text):
             return 3
@@ -377,9 +518,9 @@ def _take_answer(case: CaseFile, net: PersonNetwork, message: str, q: dict[str, 
     it where it belongs on the board."""
     key, text = q["key"], message.strip()
     done = [f"answer to \"{q['text'][:60]}…\": {text[:120]}"]
-    if _NO.match(text):
+    if _NO.match(text) and not key.startswith("confirm_lookup:"):
         # "Don't know" is an answer too: the question is closed, not asked again.
-        case.answer(q["id"], "not known")
+        case.answer(q["id"], "not known", status="dont_know")
         case.officer_note(f"Answer to \"{q['text']}\": not known", source="answer")
         return [f"not known: {q['text'][:60]}"]
     if q["action"] == "choose_person" or key.startswith(("roles:", "cdr_owner:")):
@@ -416,6 +557,21 @@ def _take_answer(case: CaseFile, net: PersonNetwork, message: str, q: dict[str, 
     elif key == "incident:vehicle":
         case.set_incident({"vehicle_or_weapon": text[:200]})
         done.append(f"vehicle / weapon: {text[:80]}")
+    elif key.startswith("confirm_lookup:cdr:"):
+        doc_id = key.split(":", 2)[2]
+        yes = bool(re.match(r"^\s*(yes|y|haan|han|ji|jee|ok|okay|theek|kar ?do|کر دیں|ہاں|جی)\b", text, re.IGNORECASE))
+        bucket = "confirmed_docs" if yes else "declined_docs"
+        case.dialog[bucket] = list(dict.fromkeys([*(case.dialog.get(bucket) or []), doc_id]))
+        if yes:
+            case.plan(f"cdr:enrich:{doc_id}", "the officer agreed to look up the top contacts")
+        done.append(f"top contacts of {doc_id}: {'will be looked up' if yes else 'not to be looked up'}")
+    elif key.startswith("confirm_lookup:"):
+        ident = key.split(":", 1)[1]
+        yes = bool(re.match(r"^\s*(yes|y|haan|han|ji|jee|ok|okay|theek|kar ?do|کر دیں|ہاں|جی)\b", text, re.IGNORECASE))
+        bucket = "confirmed_ids" if yes else "declined_ids"
+        case.dialog[bucket] = list(dict.fromkeys([*(case.dialog.get(bucket) or []), ident]))
+        case.dialog["unconfirmed_ids"] = [i for i in case.dialog.get("unconfirmed_ids") or [] if i != ident]
+        done.append(f"{ident}: {'may be looked up' if yes else 'not to be looked up'}")
     elif key == "suspects:other":
         from sherlocks.linkgraph.normalize import cnic13, mobile11
 
@@ -426,7 +582,15 @@ def _take_answer(case: CaseFile, net: PersonNetwork, message: str, q: dict[str, 
         if ids:
             done.append(f"to search: {', '.join(ids)} - start a search with them to add them to the graph")
     case.answer(q["id"], text)
-    case.officer_note(f"Answer to \"{q['text']}\": {text}", source="answer")
+    note_id, line = case.officer_note(f"Answer to \"{q['text']}\": {text}", source="answer")
+    topic = {"incident:when": "incident:date", "incident:place": "incident:place", "incident:what": "incident:offence",
+             "incident:fir": "incident:fir", "incident:vehicle": "incident:vehicle"}.get(key)
+    if key.startswith(("roles:", "cdr_owner:")):
+        pid = _named(net, text)
+        topic = (f"role:{pid}" if key.startswith("roles:") else f"owner:{key.split(':', 1)[1]}") if pid else None
+    if topic:
+        case.add_fact(note_id, f"Stated by the officer: {q['text']} - {text}", line, kind="officer_answer", by="officer",
+                      topic=topic, rests_on=[q["id"]])
     return done
 
 
@@ -447,15 +611,37 @@ _KNOWLEDGE_SYSTEM = (
     "[brackets] as given (e.g. [CRO], [D3], [F7]). If COMPUTED is given, its counts and lists are exact - use them. "
     "Speak of crimes by name (murder, attempted murder, rape, kidnapping, robbery, cheque bounce...), not only by "
     "section numbers, and always say the person's role in each FIR: never present an FIR where he is the "
-    "complainant, victim or witness as a charge against him. Open with the direct answer in one or two sentences, "
-    "then the supporting details. "
+    "complainant, victim or witness as a charge against him. Lay the reply out for quick reading: the first line is the "
+    "direct answer in one sentence; then short points, one fact per line, each line starting with '• ' and ending "
+    "with its source in [brackets] (e.g. '• Charges: murder (302), rioting (148) [D1]'); no long paragraphs, no "
+    "opening pleasantries. Put in bold (**like this**) the words that directly answer the question - the name, number, "
+    "date, role or finding asked for. Do not add a separate evidence list: cite sources in [brackets] and the "
+    "evidence is shown with the answer. When the officer asks for details, charges, an explanation or a summary, give them "
+    "in full: every FIR with its sections named as crimes, the person's role, date, place, complainant, what the FIR "
+    "and its documents say, and its status; for a summary, the targets, what connects them and what each document "
+    "establishes. Never answer such a question with a count alone. "
+    "When THE_ASK names asks_for (one specific fact - 'investigating officer', 'date of occurrence', 'witnesses'), "
+    "answer exactly that in the first line (e.g. 'The investigating officer is SI Zahid Iqbal [D1]'), add only what "
+    "makes it clear, and never answer with the whole case instead. "
+    "THE_ASK says what the officer wants: with depth 'detailed', explain fully - for an FIR its crimes in words, his "
+    "role, who filed it, when and where, the accused, what the complainant says happened, the evidence and the "
+    "status; with depth 'brief', answer in a line or two. Answer about the role in THE_ASK only - do not add 'he is "
+    "the complainant, not the accused' unless the officer asked whether he is accused. "
+    "Read the role a question asks about: an FIR 'on' / 'against' someone ('par', 'ke khilaf') asks where he is the "
+    "ACCUSED; 'did he file' / 'muddai' asks where he is the complainant; 'gawah' the witness. When COMPUTED has "
+    "asked_role, answer yes or no for exactly that role first (matching = his FIRs in that role), then name his FIRs "
+    "in other roles with his role and their accused - e.g. 'No, there is no FIR against him; he is the complainant "
+    "in FIR 121/25, where the accused are ...'. "
     "Never invent anything. If the knowledge does not contain the answer, say what you do know and what is missing, "
-    "and set needs_deeper_investigation only when routes between people, live lookups or new documents would answer it."
+    "and set needs_deeper_investigation only when routes between people, live lookups or new documents would answer it. "
+    + DATA_NOT_INSTRUCTIONS
 )
 
 
 def answer_from_knowledge(llm: Any, question: str, language: str, hits: list[Any], facts: dict[str, Any] | None,
-                          history: list[dict[str, Any]], case: CaseFile, net: PersonNetwork) -> tuple[str | None, bool]:
+                          history: list[dict[str, Any]], case: CaseFile, net: PersonNetwork,
+                          pack: dict[str, Any] | None = None,
+                          ask: dict[str, Any] | None = None) -> tuple[str | None, bool]:
     from sherlocks.linkgraph.conversation import LANG_NAME, render_facts
 
     payload = {
@@ -469,6 +655,19 @@ def answer_from_knowledge(llm: Any, question: str, language: str, hits: list[Any
                  "roles": {net.name(p): r for p, r in case.roles.items() if p in net.people}},
         "recent_conversation": [{"officer": t.get("q", "")[:300], "sherlock": t.get("a", "")[:400]} for t in history[-4:]],
     }
+    if ask:
+        # O0's reading: how much the officer wants, and about which role - answer exactly that.
+        payload["the_ask"] = {"wants": ask.get("type"), "asks_for": ask.get("asks_for") or "",
+                              "depth": ask.get("depth"), "role": ask.get("role") or "any",
+                              "yes_no": bool(ask.get("yes_no")), "about": [net.name(p) for p in ask.get("people") or []]}
+    if pack:
+        # O4's context pack: the case summary, Sherlock's view, what the officer said (all of
+        # the chat, older turns summarised), sources in conflict, and what the board lacks.
+        payload["context"] = {k: pack.get(k) for k in ("summary", "sherlock_view", "statements", "chat_older",
+                                                       "conflicts", "missing", "focus")}
+        if pack.get("dossiers"):
+            # A4's card of each person asked about: everything the case holds on them.
+            payload["dossiers"] = [{k: v for k, v in card.items() if k != "sig"} for card in pack["dossiers"]]
     try:
         out, _ = llm.generate_structured(prompt=json.dumps(payload, ensure_ascii=False, default=str), schema=_KnowledgeAnswer,
                                          system=_KNOWLEDGE_SYSTEM.format(lang=LANG_NAME[language]),
@@ -481,40 +680,107 @@ def answer_from_knowledge(llm: Any, question: str, language: str, hits: list[Any
 
 def run_turn(graph: dict[str, Any], question: str, *, llm: Any = None, history: list[dict] | None = None,
              case: CaseFile | None = None, agents: Any = None, backend: Any = None,
-             live_calls: int = 0) -> Iterator[dict[str, Any]]:
-    """One chat turn, as planned in docs/SHERLOCK_CONVERSATION_PLAN.md:
+             live_calls: int = 0, officer: dict[str, Any] | None = None,
+             on_late: Any = None, settings: Any = None) -> Iterator[dict[str, Any]]:
+    """One chat turn, worked by the Officer team (docs/SHERLOCK_AGENTS.md):
 
-    Conversation agent (language, dialogue state) -> Fact collector -> Understanding agent
-    -> Facts agent (exact answers) or Investigator (open questions) -> Conversation agent
-    (reply) -> Validator; the Briefing agent and the Questioner speak only when useful."""
-    from sherlocks.linkgraph import case_queries
+    corrections and statements (O3) -> O1 understands -> O4 Case briefer's context pack ->
+    the toolbox (board, Facts agent, API router, research) and Sherlock's quick view, in
+    parallel -> O1 drafts -> O2 Answer checker -> O5 Presenter; the Question desk adds at
+    most one approved question. Every step has a time budget; what finishes late is sent
+    as a follow-up (``case.followups``; ``on_late()`` is called so the board is saved)."""
+    import time as _time
+
+    from sherlocks.linkgraph import briefer, case_queries, quick_view
+    from sherlocks.linkgraph.budget import Budget, CountingLlm
     from sherlocks.linkgraph.conversation import (
         NEWS_LINE,
         briefing,
-        case_memory,
         compose,
         detect_language,
-        route,
+        status_text,
     )
-    from sherlocks.linkgraph.understanding import understand
+    from sherlocks.settings import ChatSettings
 
     case = case if case is not None else CaseFile()
     net = PersonNetwork(graph)
     message = (question or "").strip()
     language = detect_language(message)
-    intent = route(message, case.open_questions()) if message else "greeting"
+    cfg = getattr(settings or getattr(agents, "settings", None), "chat", None) or ChatSettings()
+    budget = Budget(cfg.reply_budget_s)
+    llm = CountingLlm(llm) if llm is not None else None
+    turn_no = len(case.conversation) + 1
+    pack: dict[str, Any] | None = None
+    view: dict[str, Any] | None = None
+
+    def follow(text: str, kind: str = "followup") -> None:
+        """Something finished after the reply went out: a follow-up in the same chat."""
+        if text and text.strip():
+            case.add_followup(text.strip(), turn=turn_no, kind=kind)
+            if on_late is not None:
+                on_late()
+    # O0 Question reader: what is asked (any wording - the model reads it; rules without one).
+    from sherlocks.linkgraph import question_reader
+
+    ask = question_reader.read_message(message, net, case, [p for p in case.dialog.get("focus") or []], llm) \
+        if message else {"act": "greeting"}
+    intent = ask["act"]
     focus = [p for p in case.dialog.get("focus") or [] if p in net.people]
     yield {"type": "start", "question": message, "people": len(net.people), "targets": [net.name(p) for p in net.seeds()],
            "documents": len(case.documents), "language": language, "intent": intent,
            "model": getattr(llm, "model", None) if llm else None, "findings": 0, "live_calls": live_calls}
     lang_name = {"ur": "Urdu", "roman": "Roman Urdu", "en": "English"}[language]
+
+    def status(key: str, tool: str | None = None, on: str = "") -> dict[str, Any]:
+        # The officer's waiting line: what runs next, in their language.
+        return {"type": "status", "key": key, "tool": tool, "text": status_text(key, language, tool, on)}
+
+    yield status("start")
     yield _agent("Conversation agent", f"{lang_name}; discussing {', '.join(net.name(p) for p in focus) or 'the case'}")
 
     # Fact collector: what the officer states.
     # Which of my recent questions does a non-question answer? The latest still open whose
     # kind of answer it fits (a date for "when", a person for "who"...).
-    recorded = collect(case, net, message, llm, focus=focus) if message else []
-    pending = _answering(case, net, message) if intent in ("statement", "answer") else None
+    # Corrections first: "nahi, 2 March tha" replaces what was said; it is not new information.
+    from sherlocks.linkgraph import corrections as corr_mod
+
+    corrected: list[str] = []
+    skip_topics: set[str] = set()
+    confirm_ask: str | None = None
+    consumed = False
+    waiting_fix = case.dialog.get("pending_correction")
+    if waiting_fix and message:
+        yes = corr_mod.reply_to_pending(message)
+        if yes is not None:
+            case.dialog.pop("pending_correction", None)
+            consumed, intent = True, "answer"
+            if yes:
+                done = corr_mod.apply(case, net, waiting_fix, language=language)
+                corrected.append(done["line"])
+                skip_topics.add(waiting_fix["topic"])
+                yield _agent("Statement recorder", f"correction confirmed: {waiting_fix['topic']} = {waiting_fix['new']}; "
+                                                   f"{len(done['stale'])} entr(ies) marked stale")
+    if message and not consumed and intent != "question":
+        for fix in corr_mod.detect(case, net, message):
+            if fix["sure"]:
+                done = corr_mod.apply(case, net, fix, language=language)
+                corrected.append(done["line"])
+                skip_topics.add(fix["topic"])
+                if fix["topic"].startswith("role:"):
+                    skip_topics.add("role:*")         # the correction said who is who
+                yield _agent("Statement recorder", f"correction: {fix['topic']} {fix['old']} -> {fix['new']}; "
+                                                   f"{len(done['stale'])} entr(ies) marked stale, redo: {', '.join(done['redo'])}")
+            elif confirm_ask is None:
+                case.dialog["pending_correction"] = fix
+                confirm_ask = corr_mod.confirm_text(fix, language)
+                skip_topics.add(fix["topic"])
+    if intent in ("statement", "answer"):
+        yield status("record")
+    # A question gets the collector's rules only: O1's one model call understands it.
+    recorded = (collect(case, net, message, llm if intent != "question" else None, focus=focus, skip_topics=skip_topics)
+                if message and not consumed else [])
+    pending = (_answering(case, net, message) if intent in ("statement", "answer") and not (corrected or consumed
+                                                                                          or confirm_ask) else None)
     if intent != "question" and message:
         recorded += _incident_details(case, message, skip=pending["key"] if pending else None)
     if pending is not None:
@@ -535,74 +801,248 @@ def run_turn(graph: dict[str, Any], question: str, *, llm: Any = None, history: 
     if intent == "question":
         from sherlocks.linkgraph.knowledge import knowledge
 
-        query = understand(message, net, focus, llm)
+        yield status("understand")
+        query = ask if "type" in ask else question_reader.read(message, net, case, focus)
         names = ", ".join(net.name(p) for p in query["people"]) or "the whole case"
-        yield _agent("Understanding agent", f"{query['type'].replace('_', ' ')} - about {names}")
+        plan = question_reader.plan(query, case, net)
+        yield _agent("Question reader", f"{query['depth']} {query['type'].replace('_', ' ')} - about {names}"
+                     + (f"; role asked: {query['role']}" if query.get("role") else "")
+                     + (" (yes / no)" if query.get("yes_no") else "") + f" [{query.get('by')}]")
+        # O1 asks his agents in turn: the Dossier agent (a person), the case board and the
+        # graph, then the API agent at run time - and says plainly when none of them has it.
+        from sherlocks.linkgraph import officer as chain
+
+        checked: list[str] = []
+        cards: list[dict[str, Any]] = []
+        if chain.about_person(query):
+            plan["sources"].insert(0, "dossier")
+        yield _agent("Officer agent", "plan: " + " + ".join(plan["sources"]))
+        if chain.about_person(query):
+            yield status("dossier", on=names)
+            cards = chain.dossier_step(case, net, query)
+            if cards:
+                checked.append(chain.checked_item("dossier", language, x=names))
+                yield _agent("Dossier agent", "; ".join(f"{c['name']}: {len(c.get('firs') or [])} FIR(s), "
+                                                        f"{len(c.get('links') or [])} link(s), "
+                                                        f"{len(c.get('facts') or [])} fact(s) on the board"
+                                                        for c in cards))
         # 1. Everything known that bears on the question (the live knowledge base).
+        yield status("board")
         kb = knowledge(graph, case, net)
         hits = kb.search(message, people=query["people"], k=30)
+        checked.append(chain.checked_item("board", language, f=len(case.facts), d=len(case.documents)))
+        checked.append(chain.checked_item("graph", language, n=len(net.people)))
         yield _agent("Knowledge base", f"{len(hits)} relevant entr(ies) of {len(kb.entries)}")
+        # O4 Case briefer: the context pack, cut at one board version.
+        yield status("brief")
+        started = _time.monotonic()
+        pack = briefer.build(case, graph, net, message, people=query["people"], kb=kb, chars=cfg.pack_chars,
+                             recent=cfg.recent_turns)
+        budget.record("brief", started)
+        if cards:
+            pack["dossiers"] = cards
+        yield _agent("Case briefer", f"context pack at board v{pack['board_version']}: "
+                                     f"{len(pack['matched_facts'])} matched fact(s)"
+                                     + (f"; missing: {'; '.join(pack['missing'][:2])}" if pack["missing"] else ""))
         # 2. An exact computed answer, when the question is one the Facts agent knows.
         if query["type"] == "news":
             facts = {"type": "news", "subject": None, "count": len(news_all),
                      "items": [{"text": line, "source": ""} for line in news_all], "empty": not news_all}
             case.seen = seen_now
+        elif query.get("asks_for") and not (
+                found := case_queries.fact_answer(net, case, kb, query["asks_for"], query["people"], query.get("firs"))
+        )["empty"]:
+            # One fact asked: exactly that, from the case's FIR files - not the whole case.
+            yield status("facts")
+            facts = found
+            from sherlocks.linkgraph.relevance import new_case
+
+            if query.get("this_case") and new_case(case)["known"] and not (case.incident or {}).get("fir"):
+                facts["new_case_unknown"] = True    # "this case" is the new one: its FIR is not in yet
         elif query["type"] not in ("open",):
+            query["asks_for"] = ""          # not found as one fact: the full answer instead
+            yield status("facts")
             facts = case_queries.run(query, net, case)
         if facts is not None:
             yield _agent("Facts agent", f"{facts['count']} result(s) for {facts['type'].replace('_', ' ')}")
-        # 2b. Research agent: nothing gathered answers it (or an FIR's file is unread) - call the APIs.
-        if live_calls > 0 and (agents is not None or backend is not None) and _needs_research(query, facts, hits, case, net):
+        # Sherlock's quick view runs alongside the toolbox: one model call, no tools.
+        view_future = None
+        if llm is not None and pack is not None:     # Sherlock weighs in on every question
+            yield status("view")
+            view_started = _time.monotonic()
+            view_future = budget.submit(lambda: quick_view.ask(llm, message, language, pack))
+        found_nothing_on_board = facts is None or chain.found_nothing(facts, hits)
+        if found_nothing_on_board and cards and llm is None and not query.get("topics"):
+            # The Dossier agent's card is the answer when the board search had none.
+            items = [it for card in cards for it in chain.card_items(card)]
+            if items:
+                facts = {"type": "knowledge", "subject": names, "count": len(items), "items": items, "empty": False}
+                found_nothing_on_board = False
+        # 2b. API agent: the board and the graph do not answer it (or an FIR's file is unread)
+        #     - the police systems and the FIR files are called now.
+        can_call = live_calls > 0 and (agents is not None or backend is not None)
+        api_tools: Any = None
+
+        def call_apis(unanswered: bool) -> list[dict[str, Any]]:
+            nonlocal api_tools
+            from sherlocks.linkgraph.api_router import topics_for
             from sherlocks.linkgraph.investigator import _Tools
             from sherlocks.linkgraph.researcher import facts_from, research
 
-            tools = _Tools(graph, case, agents, backend, live_calls)
-            done = research(tools, query, message, kb.topics(message))
+            if api_tools is None:
+                api_tools = _Tools(graph, case, agents, backend, live_calls, officer=officer, team="O1 Officer agent",
+                                   reason=f"officer asked: {message[:120]}")
+            rq = chain.research_query(query, net, unanswered)
+            topics = list(query.get("topics") or [])
+            if unanswered and not topics_for(topics, rq.get("type")):
+                topics = ["identity"]       # nothing asked in particular: who he is, in the systems
+            files = plan["fir_files"] or unanswered
+            systems = plan["systems"] or (unanswered and bool(rq["people"]))
+
+            def late_research(found: list[dict[str, Any]]) -> None:
+                from sherlocks.linkgraph.conversation import render_facts
+
+                useful = [d for d in found or [] if d.get("document") or any(
+                    not re.search(r"no record|nothing found|failed|not found", line, re.IGNORECASE)
+                    for line in d.get("lines") or [])]
+                if useful:                  # a follow-up only when it adds something
+                    found = useful
+                    follow(FOLLOW_HEAD[language] + "\n" + render_facts(facts_from(found, names), language), "research")
+
+            def fetch() -> list[dict[str, Any]]:
+                # One event: what the research brings onto the board wakes the Sherlock team once.
+                with case.batch("O1 Officer agent", "research"):
+                    return research(api_tools, rq, message, topics, files=files, systems=systems)
+
+            return budget.run("tools", fetch, cfg.tools_budget_s, fallback=[], on_late=late_research) or []
+
+        def take_research(done: list[dict[str, Any]]) -> None:
+            nonlocal kb, hits, facts
+            from sherlocks.linkgraph.researcher import facts_from
+
+            researched.extend(d["what"] for d in done)
+            checked.extend(d["what"] for d in done)
+            kb = knowledge(graph, case, net)
+            hits = kb.search(message, people=query["people"], k=30)
+            if query["type"] not in ("open", "news"):
+                facts = case_queries.run(query, net, case)
+            if facts is None or facts.get("empty"):
+                found = facts_from(done, names)
+                if not found["empty"]:
+                    facts = found
+
+        if can_call and ((plan["fir_files"] or plan["systems"]) and _needs_research(query, facts, hits, case, net)
+                         or found_nothing_on_board):
+            yield status("research")
+            done = call_apis(found_nothing_on_board)
             if done:
-                researched = [d["what"] for d in done]
-                yield _agent("Research agent", "called: " + ", ".join(researched))
-                kb = knowledge(graph, case, net)
-                hits = kb.search(message, people=query["people"], k=30)
-                if query["type"] not in ("open", "news"):
-                    facts = case_queries.run(query, net, case)
-                if facts is None or facts.get("empty"):
-                    found = facts_from(done, names)
-                    if not found["empty"]:
-                        facts = found
+                take_research(done)
+                yield _agent("API agent", "called at run time: " + ", ".join(d["what"] for d in done))
+            elif "tools" not in budget.late:
+                checked.append(chain.checked_item("no_call", language))
+        elif found_nothing_on_board and not can_call:
+            checked.append(chain.checked_item("offline", language))
         # 3. With the model: answer ANY question from the knowledge (and the exact facts);
         #    dig deeper with the investigation tools only when that is not enough.
         if llm is not None:
-            knowledge_answer, deeper = answer_from_knowledge(llm, message, language, hits, facts, history, case, net)
+            yield status("think")
+
+            def late_draft(out: tuple[str | None, bool]) -> None:
+                answer = out[0] if out else None
+                if answer and validate(case, net, {"answer": answer})["ok"]:
+                    from sherlocks.linkgraph.presenter import present
+
+                    follow(FOLLOW_HEAD[language] + "\n" + present(answer, language=language, case=case), "draft")
+
+            drafted = budget.run("draft", lambda: answer_from_knowledge(llm, message, language, hits, facts, history,
+                                                                        case, net, pack=pack, ask=query),
+                                 cfg.draft_budget_s, fallback=None, on_late=late_draft)
+            knowledge_answer, deeper = drafted if drafted else (None, False)
             if knowledge_answer:
                 yield _agent("Conversation agent", "answered from the knowledge base")
-            if deeper or not knowledge_answer:
+            if drafted and (deeper or not knowledge_answer) and can_call and not researched and budget.left() > 2.0:
+                # The board did not answer it: the API agent fetches at run time, then O1 redrafts.
+                yield status("research")
+                done = call_apis(True)
+                if done:
+                    take_research(done)
+                    yield _agent("API agent", "called at run time: " + ", ".join(d["what"] for d in done))
+                    yield status("think")
+                    redrafted = budget.run("draft", lambda: answer_from_knowledge(
+                        llm, message, language, hits, facts, history, case, net, pack=pack, ask=query),
+                        cfg.draft_budget_s, fallback=None, on_late=late_draft)
+                    if redrafted and redrafted[0]:
+                        knowledge_answer, deeper = redrafted
+            if drafted and (deeper or not knowledge_answer) and budget.left() > 1.0:
                 ask = message
                 if query["people"] and not _mentioned_any(net, message):
                     ask = f"{message} (about {', '.join(net.name(p) for p in query['people'])})"
-                for event in investigate(graph, ask, llm=llm, history=history, case=case, agents=agents,
-                                         backend=backend, live_calls=live_calls):
+
+                def late_investigation(final_event: dict[str, Any] | None) -> None:
+                    if final_event and final_event.get("answer"):
+                        case.set_assessment({"answer": final_event.get("answer"),
+                                             "hypotheses": final_event.get("hypotheses") or [], "question": message})
+                        from sherlocks.linkgraph.presenter import present
+
+                        follow(FOLLOW_HEAD[language] + "\n" + present(final_event["answer"], language=language, case=case),
+                               "investigation")
+
+                for event in budget.stream("investigate",
+                                           lambda: investigate(graph, ask, llm=llm, history=history, case=case,
+                                                               agents=agents, backend=backend, live_calls=live_calls,
+                                                               status=True, officer=officer),
+                                           cfg.investigate_budget_s, on_late=late_investigation):
                     if event.get("type") == "final":
                         result = event
                         break
-                    if event.get("type") != "start":
+                    if event.get("type") == "status":
+                        yield status(event.get("key") or "think", event.get("tool"), event.get("on") or "")
+                    elif event.get("type") != "start":
                         yield event
                 if result is not None:
                     yield _agent("Investigator", f"concluded ({len(result.get('hypotheses') or [])} hypothesis(es))")
                     case.set_assessment({"answer": result.get("answer"), "hypotheses": result.get("hypotheses") or [],
                                          "question": message})
                     knowledge_answer = None if deeper else knowledge_answer
+                elif "investigate" in budget.late:
+                    yield _agent("Investigator", "still working - his conclusion will follow")
         # 4. Without the model: the exact answer if there is one, else what the knowledge holds.
         elif facts is None:
             if hits:
-                facts = {"type": "knowledge", "subject": names, "count": len(hits[:10]), "empty": False,
+                unique = list({(e.title, e.text): e for e in hits}.values())[:10]     # the same entry once
+                facts = {"type": "knowledge", "subject": names, "count": len(unique), "empty": False,
                          "items": [{"text": e.text if e.title in e.text else f"{e.title}: {e.text}",
-                                    "source": e.source, "pid": (e.people or [None])[0]} for e in hits[:10]]}
+                                    "source": e.source, "pid": (e.people or [None])[0]} for e in unique]}
             elif query["people"] and kb.topics(message):
                 # A person's job / relatives... that no record holds: say so, don't guess.
                 facts = {"type": "knowledge", "subject": names, "count": 0, "items": [], "empty": True,
                          "topic": kb.topics(message)[0]}
             else:
                 facts = {"type": "not_understood", "subject": None, "count": 0, "items": [], "empty": True}
+        # 4. None of the agents has it: say so plainly, with what was checked - never a guess.
+        late_steps = {"tools", "draft", "investigate"} & set(budget.late)
+        if (not knowledge_answer and not (result or {}).get("answer") and not late_steps
+                and (facts is None or (facts.get("empty") and facts.get("type") in chain._SEARCHES))):
+            from sherlocks.linkgraph.conversation import render_facts
+
+            said = render_facts(facts, language) if facts is not None and facts.get("type") != "not_understood" else ""
+            facts = chain.not_found(checked, names, said=said)
+            yield _agent("Officer agent", "no agent found an answer - checked: " + chain.checked_line(checked))
+        if view_future is not None:
+            def late_view(v: dict[str, Any] | None) -> None:
+                if v:
+                    case.add_view(message, v["view"], turn=turn_no, people=v.get("people"))
+                    from sherlocks.linkgraph.presenter import VIEW_LABEL
+
+                    follow(f"{VIEW_LABEL[language]}: {v['view']}", "view")
+
+            view = budget.collect("view", view_future, cfg.view_budget_s, fallback=None, on_late=late_view,
+                                  started=view_started)
+            if view:
+                case.add_view(message, view["view"], turn=turn_no, people=view.get("people"))
+                yield _agent("Sherlock", "quick view given, labelled as his view")
+            elif "view" in budget.late:
+                yield _agent("Sherlock", "still thinking - his view will follow")
         if query["people"]:
             case.dialog["focus"] = query["people"][:2]
         case.dialog["last_type"] = query["type"]
@@ -632,56 +1072,91 @@ def run_turn(graph: dict[str, Any], question: str, *, llm: Any = None, history: 
         if relevant:
             yield _agent("Briefing agent", f"{len(relevant)} new finding(s) about {', '.join(focus_names)}")
 
-    # Questioner: one question per reply, throughout the chat. Answered questions never come
-    # back; one left unanswered waits while the officer asks something else, and is asked at
-    # most twice in all.
-    from sherlocks.evidence.questioner import next_question
+    # Question desk: the Questioner proposes, the Gatekeeper decides - one question per reply,
+    # never one already answered (anywhere in the chat), at most twice, never twice in a row,
+    # none while the officer is busy asking about something else.
+    from sherlocks.evidence.question_desk import Gatekeeper
 
-    ask_gaps(case, graph)
-    recent = {(t.get("checks") or {}).get("asked") for t in case.conversation[-3:]}
-    # A question asked in the last reply and not answered yet: let the officer answer it first.
+    desk = Gatekeeper(case, graph)
     last_asked = (case.conversation[-1].get("checks") or {}).get("asked") if case.conversation else None
-    waiting = last_asked in {q["key"] for q in case.open_questions()} and intent == "question"
-    to_ask = None if waiting else next_question(case, recent=recent)
-    if to_ask and intent == "question" and to_ask.get("times", 0) >= 1:
-        to_ask = None     # a question already asked once comes back only when the officer is telling, not asking
+    if message and last_asked and wants_mute(message):
+        desk.mute(last_asked)
+        recorded.append(f"will not ask again: {last_asked}")
+    ask_gaps(case, graph)
+    to_ask = desk.pick(intent=intent)
+    rule_view = None
+    if intent == "question" and not to_ask and not (view or {}).get("view"):
+        # Every question gets Sherlock's input: his assessment for the new case - or, when
+        # he has none yet, the Questioner's most needed question.
+        rule_view = quick_view.take(case, net, query, language)
+        if rule_view is None:
+            to_ask = desk.pick(intent="statement")
     if to_ask:
         yield _agent("Questioner", to_ask["text"])
+        yield _agent("Gatekeeper", f"approved {to_ask['key']} (checked again before asking)")
 
     if researched:
         from sherlocks.linkgraph.conversation import RESEARCH_LINE
 
         news_line = " ".join(x for x in (RESEARCH_LINE[language].format(x=", ".join(researched)), news_line) if x)
+    # Sources that disagree on what is being discussed: shown, never hidden (order of trust).
+    from sherlocks.evidence.trust import conflict_lines, conflicts
+
+    about = {net.name(p) for p in (query or {}).get("people") or case.dialog.get("focus") or [] if p in net.people}
+    incident_talk = bool(re.search(r"incident|waqi|wardat|occur|date|tareekh|kab|واقعہ|تاریخ", message, re.IGNORECASE))
+    shown = [c for c in conflicts(case, net)
+             if (c["topic"].startswith("incident") and incident_talk) or c.get("person") in about]
+    if shown:
+        lines = conflict_lines(shown, language)
+        news_line = "\n".join(x for x in (news_line, *lines) if x)
+        yield _agent("Answer checker", f"{len(shown)} conflict(s) between sources shown, not hidden")
+    if corrected:
+        news_line = "\n".join(x for x in (*corrected, news_line) if x)
+    if confirm_ask:          # one thing at a time: confirm the change before any other question
+        to_ask = None
+        news_line = "\n".join(x for x in (news_line, confirm_ask) if x)
     if knowledge_answer:
         reply, writer = knowledge_answer, "model"
         extras = [x for x in (("\n".join(["", *relevant]) if relevant else ""), news_line or "") if x]
-        if to_ask:
-            from sherlocks.linkgraph.conversation import QUESTIONS
-
-            extras.append(QUESTIONS.get(to_ask["key"], {}).get(language) or to_ask["text"])
         if extras:
             reply = reply + "\n\n" + "\n\n".join(x.strip() for x in extras)
     else:
+        yield status("write")
+        if llm is not None and pack is None:
+            pack = briefer.build(case, graph, net, message, people=case.dialog.get("focus"), chars=cfg.pack_chars,
+                                 recent=cfg.recent_turns)
+        if any(step in budget.late for step in ("draft", "view", "investigate", "tools")):
+            news_line = "\n".join(x for x in (news_line, STILL_WORKING[language]) if x)
+        started = _time.monotonic()
         reply, writer = compose(language=language, intent=intent, message=message, recorded=recorded, result=result,
-                                news=relevant, question=to_ask, case_summary=_case_summary(case, net), history=history,
-                                llm=llm, memory=case_memory(case, graph, net) if llm is not None else None,
+                                news=relevant, question=None, case_summary=_case_summary(case, net), history=history,
+                                llm=llm if (budget.left() > 1.0 and "draft" not in budget.late) else None, memory=pack,
                                 facts=facts, news_line=news_line)
+        budget.record("write", started)
     yield _agent("Conversation agent", "reply written by the model" if writer == "model" else "reply from templates (no model)")
 
     final = dict(result or {"type": "final", "hypotheses": [], "key_people": [], "next_steps": [], "suggestions": [],
                             "findings": [], "confident": True, "model": getattr(llm, "model", None) if llm else None})
     final.update({"type": "final", "answer": reply, "language": language, "intent": intent, "query": query,
-                  "facts": facts, "investigation": (result or {}).get("answer")})
+                  "facts": facts, "investigation": (result or {}).get("answer"),
+                  "sherlock_view": (view or {}).get("view") or rule_view})
     if facts is not None and not final.get("key_people"):
         final["key_people"] = [{"id": i["pid"], "name": net.name(i["pid"])} for i in facts["items"] if i.get("pid")][:12] \
             or [{"id": p, "name": net.name(p)} for p in (query or {}).get("people") or []]
 
-    # Validator: the numbers must be the Facts agent's; no contradiction with the board.
-    check = validate(case, net, final, llm)
-    counting = (query or {}).get("type") in ("count_cases", "criminals_near", "criminals_all", "graph_stats", "fir_status")
-    if counting and facts is not None and not facts.get("empty") and writer == "model" and str(facts["count"]) not in reply:
-        check["issues"].append(f"The reply does not give the exact count ({facts['count']}).")
-        check["ok"] = False
+    # O2 Answer checker: code first; the model only for claims no query computed.
+    yield status("check")
+    if to_ask:
+        final["asking"] = {**to_ask, "asked_text": QUESTIONS_TEXT(to_ask, language)}
+    computed = facts is not None and not facts.get("empty") and writer != "model"
+    check = budget.run("check", lambda: validate(case, net, final, None if computed else llm), cfg.check_budget_s,
+                       fallback=None)
+    if check is None:          # the model check ran over: the rules alone decide this time
+        check = {**validate(case, net, final, None), "checked": "rules (model check over budget)"}
+    if writer != "model" and not check["ok"]:
+        # A template reply carries the records as they are: only real source problems count.
+        check["issues"] = [i for i in check["issues"] if i.startswith(("Cites", "Quotes"))]
+        check["ok"] = not check["issues"]
     if not check["ok"] and llm is not None:
         fixed = None
         if facts is not None:
@@ -689,22 +1164,51 @@ def run_turn(graph: dict[str, Any], question: str, *, llm: Any = None, history: 
                                news=relevant, question=to_ask, case_summary="", history=[], llm=None, facts=facts,
                                news_line=news_line)
         else:
-            fixed = revise(final, check["issues"], llm)
+            fixed = budget.run("revise", lambda: revise(final, check["issues"], llm), cfg.revise_budget_s,
+                               fallback=None)
         if fixed:
             final["answer"] = fixed
             yield _agent("Validator", "sent the reply back once: " + "; ".join(check["issues"]))
             check = {**validate(case, net, final, None), "revised": True, "first_issues": check["issues"]}
+    bad_quotes = unverified_quotes(final.get("answer") or "", case)
+    if bad_quotes:      # never shown as evidence: dropped, whatever else the check found
+        final["answer"] = drop_quotes(final["answer"], bad_quotes)
     yield _agent("Validator", "checked: " + ("consistent with the records and your statements" if check["ok"]
                                              else "doubts remain - " + "; ".join(check["issues"])), check=check)
+    # O5 Presenter: answer first, layout that fits, evidence quoted, Sherlock's view apart,
+    # the question last - and a format guard so nothing changes in transit.
+    from sherlocks.linkgraph.presenter import asked_terms, present
+
+    yield status("present")
+    ask_line = None
+    if to_ask:             # the Questioner's question: always its own last line, in its colour
+        from sherlocks.linkgraph.conversation import _REASK
+
+        ask_line = QUESTIONS_TEXT(to_ask, language)
+        if to_ask.get("times", 0) >= 1:
+            ask_line = _REASK[language] + ask_line
+    final["answer"] = present(final["answer"], language=language, facts=facts, question=ask_line,
+                              question_priority=(to_ask or {}).get("priority") or "orange",
+                              view=final.pop("sherlock_view", None), case=case,
+                              llm=llm if writer == "model" else None, answer_first=intent == "question",
+                              highlight_terms=asked_terms(query, net))
+    yield _agent("Presenter", f"laid out in {lang_name}")
     check["asked"] = to_ask["key"] if to_ask else None
     if to_ask:
-        to_ask["times"] = to_ask.get("times", 0) + 1
+        desk.asked(to_ask)
     check["intent"] = intent
     final["checks"] = check
     final["questions"] = case.open_questions()
     final["asking"] = to_ask
     final["citations"] = case.citations_in(" ".join([final.get("answer") or ""] + [
         e for h in final.get("hypotheses") or [] for e in h.get("evidence") or []]))
+    final["timing"] = {**budget.timing, "total": int((_time.monotonic() - budget.started) * 1000)}
+    final["model_calls"] = llm.calls if llm is not None else 0
+    final["late"] = list(dict.fromkeys(budget.late))
+    final["followup_pending"] = bool(budget.late)
+    final["board_version"] = (pack or {}).get("board_version", case.version)
+    logger.info("Chat turn: %s ms, %d model call(s), steps %s%s", final["timing"]["total"], final["model_calls"],
+                budget.timing, f", late: {final['late']}" if final["late"] else "")
     case.add_turn(message, final["answer"], check)
     yield final
 

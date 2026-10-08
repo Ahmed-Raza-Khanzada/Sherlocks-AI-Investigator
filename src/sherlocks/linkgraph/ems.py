@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -1158,24 +1159,51 @@ class EmsBackend:
     # -- complaint ------------------------------------------------------------------
 
     def _igp_cms(self, cnic: str | None, phone: str | None) -> dict[str, Any]:
-        headers = {"X-API-KEY": CONF["igp_key"], "Content-Type": "application/x-www-form-urlencoded"}
-        probes = self._both(cnic and Req("POST", CONF["igp_url"], headers=headers, data={"cnic": dashed_cnic(cnic)}),
-                            phone and Req("POST", CONF["igp_url"], headers=headers, data={"contact": dashed_mobile(phone)}))
+        """IGP complaint management: every complaint the person filed and every complaint
+        filed against them. The current endpoint (``.../api/search-complaints-by-cnic``)
+        takes ``cnic`` or ``phone`` as query parameters and answers with the complaints
+        split by role (``as_complainant``, ``as_complain_against``); the older
+        ``.../api/complaint-details`` (form fields, ``complaints``) is still read."""
+        url = CONF["igp_url"]
+        if "search-complaints" in url:
+            headers = {"X-API-KEY": CONF["igp_key"], "Accept": "application/json"}
+            # One endpoint for both: only the parameter changes (13 bare digits / 03XXXXXXXXX).
+            probes = self._both(cnic and Req("POST", url, headers=headers, params={"cnic": cnic13(cnic)}),
+                                phone and Req("POST", url, headers=headers, params={"phone": mobile11(phone)}))
+        else:
+            headers = {"X-API-KEY": CONF["igp_key"], "Content-Type": "application/x-www-form-urlencoded"}
+            probes = self._both(cnic and Req("POST", url, headers=headers, data={"cnic": dashed_cnic(cnic)}),
+                                phone and Req("POST", url, headers=headers, data={"contact": dashed_mobile(phone)}))
         if probes is None:
             return _result("igp_cms", "invalid_input", "CNIC or mobile required")
-        complaints, seen = [], set()
+        complaints, seen, failures = [], set(), []
         for _branch, code, body in probes:
             if code == 404 or not (isinstance(body, dict) and body.get("success")):
+                message = str((body or {}).get("message") or "") if isinstance(body, dict) else str(body)[:200]
+                # "No records found for the provided cnic" is an answer; anything else (a bad
+                # key, a server error) is a failure, not "nothing on record".
+                if code >= 500 or (code not in (200, 404) and not re.search(r"no (?:record|complaint)", message, re.I)) \
+                        or (code == 200 and message and not re.search(r"no (?:record|complaint)", message, re.I)):
+                    failures.append(f"HTTP {code}: {message[:160]}")
                 continue
-            for c in _rows(body.get("complaints")):
-                ident = str(c.get("complaint_no") or c.get("id") or c)
+            data = body.get("data") if isinstance(body.get("data"), dict) else {}
+            rows = [*(_rows(data.get("as_complainant"))), *(_rows(data.get("as_complain_against"))),
+                    *(_rows(data.get("all_complaints"))), *(_rows(body.get("complaints")))]
+            for c in rows:
+                if not isinstance(c, dict):
+                    continue
+                ident = str(c.get("tracking_id") or c.get("complaint_no") or c.get("id") or c)
                 if ident not in seen:
                     seen.add(ident)
                     complaints.append(c)
         if not complaints:
+            if failures and len(failures) == len(probes):
+                return _err("igp_cms", "IGP CMS failed: " + "; ".join(failures))
             return _no("igp_cms")
-        return _result("igp_cms", "success", f"{len(complaints)} IGP CMS complaint(s)", hit=True,
-                       raw={"complaints": complaints}, data={})
+        filed = sum(1 for c in complaints if str(c.get("cnic_role") or "complainant") == "complainant")
+        against = len(complaints) - filed
+        return _result("igp_cms", "success", f"{len(complaints)} IGP CMS complaint(s): {filed} filed, {against} against",
+                       hit=True, raw={"complaints": complaints}, data={"filed": filed, "against": against})
 
     def _pfc(self, cnic: str | None, phone: str | None) -> dict[str, Any]:
         headers = {"x-api-key": CONF["pfc_key"], "Content-Type": "application/x-www-form-urlencoded"}

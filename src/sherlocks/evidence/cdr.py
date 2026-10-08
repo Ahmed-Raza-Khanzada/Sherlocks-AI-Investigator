@@ -165,14 +165,16 @@ class _Mapping(BaseModel):
     imei: str | None = None
 
 
-def load_table(content: bytes) -> tuple[list[str], list[list[Any]], str]:
-    """The biggest sheet of a workbook: header row (found within the first rows), data rows."""
+def load_sheet(content: bytes) -> tuple[list[str], list[list[Any]], str, list[int]]:
+    """R1 Intake: the biggest sheet of a workbook - header row (found within the first
+    rows), data rows, the sheet's name, and each data row's number in the sheet (as Excel
+    shows it), so every finding can cite the rows it rests on."""
     import pandas as pd
 
     sheets = pd.read_excel(io.BytesIO(content), sheet_name=None, header=None, dtype=object)
     best_name, best = max(sheets.items(), key=lambda kv: kv[1].size, default=("", None))
     if best is None or best.empty:
-        return [], [], best_name
+        return [], [], best_name, []
     frame = best.dropna(how="all").dropna(axis=1, how="all")
     header_at = 0
     for i in range(min(25, len(frame))):
@@ -182,8 +184,16 @@ def load_table(content: bytes) -> tuple[list[str], list[list[Any]], str]:
             break
     headers = [str(v).strip() if v is not None and str(v) != "nan" else f"col{j + 1}"
                for j, v in enumerate(frame.iloc[header_at].tolist())]
-    rows = [[None if (v is None or str(v) == "nan") else v for v in r] for r in frame.iloc[header_at + 1:].values.tolist()]
-    return headers, rows, best_name
+    body = frame.iloc[header_at + 1:]
+    rows = [[None if (v is None or str(v) == "nan") else v for v in r] for r in body.values.tolist()]
+    numbers = [int(i) + 1 for i in body.index.tolist()]
+    return headers, rows, best_name, numbers
+
+
+def load_table(content: bytes) -> tuple[list[str], list[list[Any]], str]:
+    """The biggest sheet of a workbook: header row (found within the first rows), data rows."""
+    headers, rows, name, _numbers = load_sheet(content)
+    return headers, rows, name
 
 
 def map_columns(headers: list[str], rows: list[list[Any]], llm: Any = None) -> dict[str, int]:
@@ -254,23 +264,29 @@ def _fmt(when: datetime | None) -> str:
 
 
 def analyse(content: bytes, *, phones_on_graph: dict[str, str], incident: dict[str, Any] | None = None,
-            llm: Any = None, owner_hint: str | None = None, radius_km: float = 2.0) -> dict[str, Any]:
-    """Analyse an uploaded CDR / tower dump. Returns ``{kind, lines, subject, matches,
-    near_incident, columns, rows}``; ``lines`` is the quotable analysis text."""
-    headers, rows, sheet = load_table(content)
+            llm: Any = None, owner_hint: str | None = None, radius_km: float = 2.0,
+            keep_events: bool = False) -> dict[str, Any]:
+    """The CDR team's analysis of an uploaded CDR / tower dump (``cdr_team.py`` has the
+    team). Returns ``{kind, lines, findings, subject, matches, near_incident, columns,
+    rows, sheet, top_contacts, imeis}``; ``lines`` is the quotable analysis text and each
+    of ``findings`` cites its rows. ``keep_events`` adds the cleaned records (for R5)."""
+    from sherlocks.evidence import cdr_team
+    from sherlocks.evidence.cdr_team import finding
+
+    headers, rows, sheet, numbers = load_sheet(content)
     if not rows:
-        return {"kind": "empty", "lines": ["The workbook has no data rows."], "rows": 0}
+        return {"kind": "empty", "lines": ["The workbook has no data rows."], "rows": 0, "findings": []}
     cols = map_columns(headers, rows, llm)
     if not ({"a_party", "b_party"} & set(cols)):
         return {"kind": "table", "lines": [f"Sheet {sheet}: {len(rows)} rows, columns: {', '.join(headers[:30])}."],
-                "rows": len(rows), "columns": {}}
+                "rows": len(rows), "columns": {}, "findings": [], "sheet": sheet}
 
     events = []
-    for r in rows:
+    for r, number in zip(rows, numbers, strict=False):
         a = _number(r[cols["a_party"]]) if "a_party" in cols else None
         b = _number(r[cols["b_party"]]) if "b_party" in cols else None
         events.append({
-            "a": a, "b": b, "when": _when(r, cols),
+            "a": a, "b": b, "when": _when(r, cols), "row": number,
             "dir": str(r[cols["direction"]]).strip() if "direction" in cols and r[cols["direction"]] is not None else "",
             "site": str(r[cols["site"]]).strip() if "site" in cols and r[cols["site"]] is not None else "",
             "addr": str(r[cols["address"]]).strip() if "address" in cols and r[cols["address"]] is not None else "",
@@ -282,11 +298,20 @@ def analyse(content: bytes, *, phones_on_graph: dict[str, str], incident: dict[s
     distinct_a = len(a_counts)
     kind = "tower_dump" if distinct_a > 25 and distinct_a > len(events) * 0.05 else "cdr"
     times = sorted(e["when"] for e in events if e["when"])
-    lines = [f"{'Tower dump / geofence' if kind == 'tower_dump' else 'CDR'} file: {len(events)} records, sheet "
-             f"{sheet}, period {_fmt(times[0] if times else None)} to {_fmt(times[-1] if times else None)}."]
-    lines.append("Columns recognised: " + ", ".join(f"{role}={headers[i]}" for role, i in cols.items()) + ".")
+    lines: list[str] = []
+    findings: list[dict[str, Any]] = []
+
+    def say(text: str, rows_of: list[dict[str, Any]] | None = None, *, fact: bool = True,
+            rests_on: list[str] | None = None) -> None:
+        lines.append(text)
+        if fact:
+            findings.append(finding(text, [e["row"] for e in rows_of or []], rests_on=rests_on))
+
+    say(f"{'Tower dump / geofence' if kind == 'tower_dump' else 'CDR'} file: {len(events)} records, sheet "
+        f"{sheet}, period {_fmt(times[0] if times else None)} to {_fmt(times[-1] if times else None)}.", fact=False)
+    say("Columns recognised: " + ", ".join(f"{role}={headers[i]}" for role, i in cols.items()) + ".", fact=False)
     out: dict[str, Any] = {"kind": kind, "rows": len(events), "columns": {r: headers[i] for r, i in cols.items()},
-                           "matches": [], "near_incident": []}
+                           "matches": [], "near_incident": [], "sheet": sheet}
 
     matches: dict[str, dict[str, Any]] = {}
     if kind == "cdr":
@@ -298,40 +323,48 @@ def analyse(content: bytes, *, phones_on_graph: dict[str, str], incident: dict[s
             if other and other != subject:
                 others[other] += 1
         if subject:
-            lines.append(f"Subscriber of this CDR: {subject}"
-                         + (f" ({phones_on_graph[subject]} on the graph)" if subject in phones_on_graph else "") + ".")
+            say(f"Subscriber of this CDR: {subject}"
+                + (f" ({phones_on_graph[subject]} on the graph)" if subject in phones_on_graph else "") + ".",
+                [e for e in events if e["a"] == subject])
+        out["top_contacts"] = [num for num, _n in others.most_common(15)]
         for i, (num, n) in enumerate(others.most_common(15), 1):
-            seen = [e["when"] for e in events if num in (e["a"], e["b"]) and e["when"]]
+            mine = [e for e in events if num in (e["a"], e["b"])]
+            seen = [e["when"] for e in mine if e["when"]]
             name = phones_on_graph.get(num)
-            lines.append(f"Top contact {i}: {num}{f' ({name})' if name else ''} - {n} call(s)/SMS, first "
-                         f"{_fmt(min(seen) if seen else None)}, last {_fmt(max(seen) if seen else None)}.")
+            say(f"Top contact {i}: {num}{f' ({name})' if name else ''} - {n} call(s)/SMS, first "
+                f"{_fmt(min(seen) if seen else None)}, last {_fmt(max(seen) if seen else None)}.", mine)
         for num, n in others.items():
             if num in phones_on_graph:
                 matches[num] = {"phone": num, "name": phones_on_graph[num], "events": n}
     else:
         out["subject"] = None
+        out["top_contacts"] = []
         for num, n in a_counts.most_common():
             if num in phones_on_graph:
                 matches[num] = {"phone": num, "name": phones_on_graph[num], "events": n}
-        lines.append(f"{distinct_a} distinct numbers used the tower(s).")
+        say(f"{distinct_a} distinct numbers used the tower(s).", fact=False)
         for num, n in a_counts.most_common(10):
-            lines.append(f"Frequent number: {num}{f' ({phones_on_graph[num]})' if num in phones_on_graph else ''} - {n} record(s).")
+            say(f"Frequent number: {num}{f' ({phones_on_graph[num]})' if num in phones_on_graph else ''} - {n} record(s).",
+                [e for e in events if e["a"] == num])
     for m in sorted(matches.values(), key=lambda m: -m["events"]):
-        seen = sorted(e["when"] for e in events if m["phone"] in (e["a"], e["b"]) and e["when"])
+        mine = [e for e in events if m["phone"] in (e["a"], e["b"])]
+        seen = sorted(e["when"] for e in mine if e["when"])
         m["first"], m["last"] = _fmt(seen[0] if seen else None), _fmt(seen[-1] if seen else None)
-        lines.append(f"On the graph: {m['phone']} is {m['name']} - {m['events']} record(s) in this file, "
-                     f"{m['first']} to {m['last']}.")
+        say(f"On the graph: {m['phone']} is {m['name']} - {m['events']} record(s) in this file, "
+            f"{m['first']} to {m['last']}.", mine)
     out["matches"] = list(matches.values())
 
     sites = Counter((e["addr"] or e["site"]) for e in events if (e["addr"] or e["site"]))
     for place, n in sites.most_common(6):
-        lines.append(f"Frequent location: {place} - {n} record(s).")
+        say(f"Frequent location: {place} - {n} record(s).", fact=False)
     imeis = Counter(e["imei"] for e in events if len(e["imei"]) >= 14)
+    out["imeis"] = [i for i, _n in imeis.most_common(5)]
     if imeis:
-        lines.append("Device IMEI(s): " + ", ".join(f"{i} ({n})" for i, n in imeis.most_common(5)) + ".")
+        say("Device IMEI(s): " + ", ".join(f"{i} ({n})" for i, n in imeis.most_common(5)) + ".",
+            [e for e in events if e["imei"] in dict(imeis.most_common(5))][:40])
     if times:
         night = sum(1 for t in times if t.hour < 5)
-        lines.append(f"Night activity (00:00-05:00): {night} of {len(times)} records.")
+        say(f"Night activity (00:00-05:00): {night} of {len(times)} records.", fact=False)
 
     inc = incident or {}
     if inc.get("date"):
@@ -339,13 +372,13 @@ def analyse(content: bytes, *, phones_on_graph: dict[str, str], incident: dict[s
         that_day = [e for e in events if e["when"] and e["when"].strftime("%Y-%m-%d") == day]
         if that_day:
             that_day.sort(key=lambda e: e["when"])
-            lines.append(f"Incident day {day}: {len(that_day)} record(s), first {_fmt(that_day[0]['when'])}, "
-                         f"last {_fmt(that_day[-1]['when'])}.")
+            say(f"Incident day {day}: {len(that_day)} record(s), first {_fmt(that_day[0]['when'])}, "
+                f"last {_fmt(that_day[-1]['when'])}.", that_day, rests_on=["incident:date"])
             for e in that_day[:12]:
-                lines.append(f"Incident day record: {_fmt(e['when'])} {e['dir']} {e['a'] or ''}->{e['b'] or ''} at "
-                             f"{e['addr'] or e['site'] or '-'}.")
+                say(f"Incident day record: {_fmt(e['when'])} {e['dir']} {e['a'] or ''}->{e['b'] or ''} at "
+                    f"{e['addr'] or e['site'] or '-'}.", [e], rests_on=["incident:date"])
         else:
-            lines.append(f"Incident day {day}: no records in this file.")
+            say(f"Incident day {day}: no records in this file.", rests_on=["incident:date"])
     if inc.get("lat") is not None and inc.get("lon") is not None and ("lat" in cols and "lon" in cols):
         near = []
         for e in events:
@@ -356,11 +389,22 @@ def analyse(content: bytes, *, phones_on_graph: dict[str, str], incident: dict[s
                 near.append((d, e))
         near.sort(key=lambda x: (x[1]["when"] or datetime.min))
         out["near_incident"] = [{"km": round(d, 2), "when": _fmt(e["when"]), "number": e["a"] or e["b"],
-                                 "place": e["addr"] or e["site"]} for d, e in near[:200]]
-        lines.append(f"Towers within {radius_km:g} km of the incident point: {len(near)} record(s).")
+                                 "place": e["addr"] or e["site"], "row": e["row"]} for d, e in near[:200]]
+        say(f"Towers within {radius_km:g} km of the incident point: {len(near)} record(s). A tower covers roughly "
+            "0.5-5 km: this shows a connection near the scene, not presence at it.", [e for _d, e in near][:60],
+            rests_on=["incident:place"])
         for d, e in near[:10]:
             who = e["a"] if kind == "tower_dump" else (e["b"] or e["a"])
-            lines.append(f"Near the incident: {_fmt(e['when'])}, {d:.2f} km, {who or '-'}"
-                         f"{f' ({phones_on_graph[who]})' if who in phones_on_graph else ''} at {e['addr'] or e['site'] or '-'}.")
+            say(f"Near the incident: {_fmt(e['when'])}, connected to a tower {d:.2f} km from the pin, {who or '-'}"
+                f"{f' ({phones_on_graph[who]})' if who in phones_on_graph else ''} ({e['addr'] or e['site'] or '-'}).",
+                [e], rests_on=["incident:place", "incident:date"])
+    # R3 and R4: patterns and places over the whole file.
+    if kind == "cdr":
+        for f in cdr_team.patterns(events, out.get("subject"), inc) + cdr_team.location(events, inc):
+            lines.append(f["text"])
+            findings.append(f)
     out["lines"] = lines
+    out["findings"] = findings
+    if keep_events:
+        out["events"] = events
     return out

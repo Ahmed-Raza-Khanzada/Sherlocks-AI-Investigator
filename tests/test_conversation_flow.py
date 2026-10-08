@@ -53,19 +53,20 @@ def test_the_failing_session_now_answers_each_question(demo_case):
 
     count = say("ye kitni firs ma involve ha ?")                 # "ye" = Kamran, from the last turn
     assert count["query"]["type"] == "count_cases" and count["facts"]["count"] == 2
-    assert count["answer"].startswith("Kamran Ahmed ka naam 2 FIRs mein hai: 2 mein mulzim")
+    assert count["answer"].lstrip("*").startswith("Kamran Ahmed ka naam 2 FIRs mein hai: 2 mein mulzim")
     assert "dakaiti" in count["answer"]                      # 395/34 PPC, said in words
     assert "pattern(s) found by rule" not in count["answer"]
 
     near = say("total no of criminals found in his connections ?")
     assert near["query"]["type"] == "criminals_near" and near["facts"]["subject"] == "Kamran Ahmed"
-    assert near["answer"].startswith("1 of the people linked to Kamran Ahmed have a criminal record")
+    assert near["answer"].lstrip("*").startswith("1 of the people linked to Kamran Ahmed have a criminal record")
 
     everyone = say("total criminal in whole graphs ?")
     assert everyone["query"]["type"] == "criminals_all" and everyone["facts"]["count"] == 2
 
     # Findings about the person discussed are told once, not in every reply.
-    told = [ref for ref in ("[D5]", "[L2]") if ref in first["answer"]]
+    # (Document ids depend on the order the evidence threads finish: take them from the reply.)
+    told = [f"[{ref}]" for ref in __import__("re").findall(r"\[([DL]\d+)\]", first["answer"])]
     assert told and not any(ref in everyone["answer"] for ref in told)
 
 
@@ -155,7 +156,7 @@ def test_fir_status_questions_and_reading_documents_of_an_older_graph():
     s.evidence.enabled = False                       # an older graph: nothing read while it was built
     mgr = memory_manager(s)
     handle = mgr.start(GraphRunParams(cnic="9999900000011", depth=2, max_persons=15, backend="demo"), wait=True)
-    assert not handle.case.documents
+    assert not [d for d in handle.case.documents.values() if d["kind"] != "graph"]   # nothing read (A1 aside)
     s.evidence.enabled = True                        # today's Sherlocks
 
     first = list(mgr.investigate(handle.graph(), "kamran ka fir status batao ?", run_id=handle.id))[-1]
@@ -271,3 +272,59 @@ def test_the_io_report_is_read_from_the_fir_file():
     assert "in 1 (11/22) the IO did not hold him guilty" in reply
     assert "SUB INSPECTOR Test Officer".title().split()[0] in reply and "قابل چالان شہادتیں" in reply
     assert case_queries.outcome("اخراج رپورٹ") == "disposed / closed"
+
+
+def test_target_charges_explain_and_a_full_summary(demo_case):
+    """A real session: "the target" was not resolved, "charges" got a count, "explain
+    that" lost the subject, and the summary said nothing of the documents."""
+    from sherlocks.linkgraph.sherlock_team import run_turn
+
+    graph, case = demo_case
+
+    def say(message):
+        return list(run_turn(graph, message, case=case))[-1]
+
+    summary = say("Summarise this case: who are the targets, what connects them, and what do the documents establish?")
+    assert summary["query"]["type"] == "summary"
+    text = summary["answer"]
+    assert "FIR 45/2023" in text and "dacoity" in text                     # the target's FIRs, crimes in words
+    assert "is linked to" in text and "Sajid Mehmood" in text                # what connects him
+    assert "FIR 45/2023 · PS Gulshan-e-Iqbal:" in text                      # what the documents establish
+    charges = say("what are the charges on target ?")
+    assert charges["query"]["type"] == "fir_details" and charges["query"]["people"] == ["p1"]
+    assert "dacoity" in charges["answer"] and "Complainant's account" in charges["answer"]
+    explain = say("what si that explain")                                    # the same subject, deeper
+    assert explain["query"]["type"] == "documents" and explain["query"]["people"] == ["p1"]
+    assert explain["query"]["by"] == "follow-up"
+
+
+def test_the_role_a_question_asks_about(demo_case):
+    """"Is there any FIR on X?" asks where X is the accused. A complainant is told "no",
+    then his FIRs in other roles with their accused - for any role, in any language."""
+    from sherlocks.linkgraph.sherlock_team import run_turn, validate
+    from sherlocks.linkgraph.understanding import asked_role
+
+    graph, case = demo_case
+
+    def say(message):
+        return list(run_turn(graph, message, case=case))[-1]
+
+    on_complainant = say("is there any fir on Waqas Javed ?")
+    assert on_complainant["facts"]["asked_role"] == "accused" and on_complainant["facts"]["count"] == 0
+    text = on_complainant["answer"].replace("**", "")
+    assert text.startswith("No - no FIR names Waqas Javed as accused.")
+    assert "as the complainant - the accused: Kamran Ahmed and Sajid Mehmood" in text
+    roman = say("Waqas Javed par koi fir hai?")["answer"].replace("**", "")
+    assert roman.startswith("Nahi - kisi FIR mein Waqas Javed mulzim nahi.") and "muddai" in roman
+    on_accused = say("is there any fir on Kamran Ahmed ?")["answer"].replace("**", "")
+    assert on_accused.startswith("Yes - Kamran Ahmed is accused in 2 FIR(s)")
+    filed = say("did Waqas Javed file any case?")["answer"].replace("**", "")
+    assert filed.startswith("Yes - Waqas Javed is the complainant in 1 FIR(s): FIR 45/2023 (accused:")
+    # Neutral questions keep every role; the map's "par" is not a role.
+    assert asked_role("kamran kitni firs ma involve ha") is None and asked_role("map par pin karo") is None
+    assert asked_role("ڈاڈ پر کوئی ایف آئی آر ہے؟") == "accused"
+    # The checker stops a "yes" when no FIR names him in the role asked.
+    final = {**on_complainant, "answer": "Yes, there is one FIR on Waqas Javed: FIR 45/2023, where he is the complainant."}
+    from sherlocks.linkgraph.network import PersonNetwork
+
+    assert validate(case, PersonNetwork(graph), final)["rules"]["answered"] is False

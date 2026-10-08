@@ -21,6 +21,16 @@ from typing import Any
 from sherlocks.evidence.case_file import CaseFile
 
 MAX_OPEN = 3
+# How much the case needs each answer: red - the investigation is blocked without it (what,
+# where, when, who); orange - important; green - helpful. Shown as the question's colour.
+PRIORITY = {"incident:what": "red", "incident:when": "red", "incident:place": "red", "roles:main": "red",
+            "cdr_owner": "red", "incident:pin": "orange", "incident:fir": "orange", "roles:victim": "orange",
+            "cdr_of": "orange", "confirm_lookup": "orange", "incident:vehicle": "green", "link:why": "green",
+            "suspects:other": "green"}
+
+
+def priority_of(key: str) -> str:
+    return PRIORITY.get(key) or PRIORITY.get(key.split(":", 1)[0]) or "orange"
 
 
 def _people(graph: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -85,6 +95,27 @@ def gaps(case: CaseFile, graph: dict[str, Any]) -> list[dict[str, Any]]:
         a, b = people[seeds[0]].get("label"), people[seeds[1]].get("label")
         out.append({"key": "link:why", "action": "text",
                     "text": f"What do you believe ties {a} and {b} together - family, business, a past crime?"})
+    # A CNIC or number the agents wanted to look up that appears only in a document.
+    confirmed = set(case.dialog.get("confirmed_ids") or []) | set(case.dialog.get("declined_ids") or [])
+    for ident in (case.dialog.get("unconfirmed_ids") or [])[:2]:
+        if ident not in confirmed:
+            out.insert(0, {"key": f"confirm_lookup:{ident}", "action": "text",
+                           "text": f"A document mentions {ident}, who is not on the case graph. Shall I look this "
+                                   "number up in the police systems? (yes / no)"})
+    # R2 Enricher: owners of a CDR's top contacts not on the graph - only if the officer agrees.
+    decided = set(case.dialog.get("confirmed_docs") or []) | set(case.dialog.get("declined_docs") or [])
+    for doc in case.documents.values():
+        analysis = (doc.get("data") or {}).get("analysis") or {}
+        if doc["kind"] != "cdr" or doc["id"] in decided or not analysis.get("top_contacts"):
+            continue
+        on_graph = {p for n in people.values() for p in n["data"].get("phones") or []}
+        unknown = [c for c in analysis["top_contacts"][:5] if c not in on_graph]
+        if unknown:
+            out.append({"key": f"confirm_lookup:cdr:{doc['id']}", "action": "text", "about": doc["id"],
+                        "text": f"{doc['data'].get('name') or doc['title']}: shall I look up who owns its top "
+                                f"{len(unknown)} contact(s) ({', '.join(unknown[:3])}{'…' if len(unknown) > 3 else ''}) "
+                                "in the SIMs database? (yes / no)"})
+            break
     out.append({"key": "suspects:other", "action": "text",
                 "text": "Is there anyone else you suspect who is not on the graph yet? Give me a name with a CNIC "
                         "or number and I will tell you what is known."})
@@ -116,15 +147,20 @@ def ask_gaps(case: CaseFile, graph: dict[str, Any]) -> list[dict[str, Any]]:
     """Ask the most useful open gaps (keeping at most ``MAX_OPEN`` open). Returns the new
     questions. Open questions whose answer has reached the board another way (stated in
     chat, pinned on the map) are closed first."""
+    from sherlocks.evidence.question_desk import Gatekeeper
+
     current = {g["key"] for g in gaps(case, graph)}
     for q in case.open_questions():
-        if q["key"] not in current:
+        if q["key"] not in current and not q["key"].startswith("free:"):
             case.close_question(q["key"], "known from the case board")
     asked = []
+    desk = Gatekeeper(case, graph)
     for gap in gaps(case, graph):
         if len(case.open_questions()) >= MAX_OPEN:
             break
-        q = case.ask(gap["key"], gap["text"], action=gap["action"], about=gap.get("about"), options=gap.get("options"))
+        if any(q["key"] == gap["key"] for q in case.questions):
+            continue
+        q = desk.admit({**gap, "priority": gap.get("priority") or priority_of(gap["key"])}, by="Questioner")
         if q:
             asked.append(q)
     return asked

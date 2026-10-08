@@ -126,9 +126,15 @@ def _firs(net: PersonNetwork, pid: str, case: Any = None) -> list[dict[str, Any]
 def cases(net: PersonNetwork, pid: str, case: Any = None) -> dict[str, Any]:
     rows = _firs(net, pid, case)
     rows = sorted(rows, key=lambda r: -r["severity"])
+    for r in rows:
+        # Who else is accused in it: the co-accused, when he is accused too.
+        r["co_accused"] = [n for n in accused_of(net, r["label"], case, exclude=pid)
+                           if n != net.name(pid)] if r["role_kind"] == "accused" else []
+    _relate_to_new_case(rows, net, pid, case)
     items = [_item(f"FIR {r['label']} at {r['ps'] or '-'}: {', '.join(r['roles'])}"
                    + (f" - {r['offence']}" if r["offence"] else ""), ", ".join(r["sources"]),
-                   crimes=r["crimes"], fir=r["label"], role=r["role_kind"], ps=r["ps"], occurred=r["occurred"]) for r in rows]
+                   crimes=r["crimes"], fir=r["label"], role=r["role_kind"], ps=r["ps"], occurred=r["occurred"],
+                   co_accused=r["co_accused"], relevance=r.get("relevance")) for r in rows]
     accused = sum(1 for r in rows if any(x in " ".join(r["roles"]).lower() for x in ("accused", "suspect")))
     return _result("cases", net.name(pid), items, extra={"accused_in": accused, "rows": rows})
 
@@ -264,6 +270,7 @@ def fir_details(net: PersonNetwork, pid: str, case: Any = None, only: list[str] 
     keys = {fir_key(x) for x in only or []}
     rows = [r for r in _firs(net, pid, case) if not keys or fir_key(r["label"]) in keys]
     rows.sort(key=lambda r: (r["role_kind"] != "accused", -r["severity"]))
+    _relate_to_new_case(rows, net, pid, case)
     statuses = _fir_statuses(net, pid, case)
     items = []
     for r in rows:
@@ -288,7 +295,8 @@ def fir_details(net: PersonNetwork, pid: str, case: Any = None, only: list[str] 
                 + (f"; accused: {', '.join(detail['accused'])}" if detail["accused"] else "")
                 + (f" - \"{detail['story']}…\"" if detail["story"] else ""))
         items.append(_item(text, ", ".join(filter(None, [*r["sources"], f"FIR file {doc['id']}" if doc else ""])),
-                           crimes=r["crimes"], fir=r["label"], role=r["role_kind"], detail=detail))
+                           crimes=r["crimes"], fir=r["label"], role=r["role_kind"], detail=detail,
+                           relevance=r.get("relevance")))
     return _result("fir_details", net.name(pid), items, extra={"rows": rows})
 
 
@@ -398,11 +406,44 @@ def connection(net: PersonNetwork, a: str, b: str, case: Any = None) -> dict[str
                    extra={"routes": told, "a": net.name(a), "b": net.name(b)})
 
 
-def hotels(net: PersonNetwork, pid: str) -> dict[str, Any]:
+def _day(value: Any) -> str | None:
+    from sherlocks.linkgraph.sherlock_team import _iso_date
+
+    return _iso_date(str(value or "")) if value else None
+
+
+def stays_at(stays: list[dict[str, Any]], day: str) -> list[dict[str, Any]]:
+    """The stays that cover ``day`` (check-in to check-out; a stay with no check-out, the
+    check-in day and the day after)."""
+    from datetime import date, timedelta
+
+    out = []
+    for s in stays:
+        start = _day(s.get("check_in"))
+        if not start:
+            continue
+        end = _day(s.get("check_out")) or (date.fromisoformat(start) + timedelta(days=1)).isoformat()
+        if start <= day <= end:
+            out.append(s)
+    return out
+
+
+def hotels(net: PersonNetwork, pid: str, case: Any = None) -> dict[str, Any]:
+    """The person's hotel stays - and, for each moment that matters (the date of each of
+    his FIRs, the new case's incident), whether a stay covers it."""
+    stays = net.data(pid).get("stays") or []
     items = [_item(f"{s.get('hotel')} ({s.get('district') or '-'}), room {s.get('room') or '-'}, "
                    f"{s.get('check_in') or '-'} → {s.get('check_out') or '-'}", "Hotel Eye")
-             for s in net.data(pid).get("stays") or []]
-    return _result("hotels", net.name(pid), items)
+             for s in stays]
+    moments = [{"what": f"FIR {r['label']}", "day": _day(r.get("occurred")), "doc": r.get("doc"),
+                "sources": r.get("sources") or []} for r in _firs(net, pid, case)]
+    inc = (case.incident or {}) if case is not None else {}
+    if inc.get("date"):
+        moments.append({"what": "the new case", "day": _day(inc["date"]), "doc": None, "sources": ["officer"]})
+    at_times = [{**m, "stays": [f"{s.get('hotel')} ({s.get('district') or '-'}), {s.get('check_in') or '-'} → "
+                                f"{s.get('check_out') or '-'}" for s in stays_at(stays, m["day"])] if m["day"] else []}
+                for m in moments]
+    return _result("hotels", net.name(pid), items, extra={"at_times": at_times, "stays_known": bool(stays)})
 
 
 def phones(net: PersonNetwork, pid: str) -> dict[str, Any]:
@@ -433,26 +474,64 @@ def graph_stats(net: PersonNetwork, case: Any = None) -> dict[str, Any]:
 
 
 def summary(net: PersonNetwork, case: Any = None, findings: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Where the case stands, in full: who the targets are and their FIRs (crimes in
+    words, their role in each), what connects them (or their main associates), what each
+    document read establishes, Sherlock's assessment, the strongest patterns, the incident."""
+    from sherlocks.linkgraph.offences import labels
+
     items = []
-    for pid in net.seeds():
-        rows = _firs(net, pid)
-        role = case.roles.get(pid) if case is not None else None
-        items.append(_item(f"Target {net.name(pid)}" + (f" ({role})" if role else "") + f": {len(rows)} FIR(s)"
-                           + (", criminal record" if net.criminal(pid) else "")
-                           + f", {net.G.degree(pid) if pid in net.G else 0} direct link(s)", None, pid))
     seeds = net.seeds()
+    # 1. The targets and their FIRs.
+    for pid in seeds:
+        rows = sorted(_firs(net, pid, case), key=lambda r: -r["severity"])
+        role = case.roles.get(pid) if case is not None else None
+        firs = "; ".join(f"FIR {r['label']}" + (f" at {r['ps']}" if r["ps"] else "")
+                         + f" ({labels(r['crimes']) if r['crimes'] else (r['offence'] or 'offence not recorded')}"
+                         f", {r['role_kind']})" for r in rows[:6])
+        items.append(_item(f"Target {net.name(pid)}" + (f" ({role})" if role else "")
+                           + f": named in {len(rows)} FIR(s)" + (f" - {firs}" if firs else "")
+                           + (". Has a criminal record." if net.criminal(pid) else "."),
+                           ", ".join(dict.fromkeys(src for r in rows for src in r["sources"])) or None, pid))
+    # 2. What connects them: routes between targets, else each target's main associates.
     for i, a in enumerate(seeds):
         for b in seeds[i + 1:]:
             for r in net.paths(a, b, k=1):
-                items.append(_item(f"{net.name(a)} ↔ {net.name(b)}: " + " → ".join(h["relation"] for h in r["hops"])))
-    criminals = sum(1 for p in net.people if net.criminal(p))
-    items.append(_item(f"{len(net.people)} people on the graph, {criminals} with a criminal record"
-                       + (f", {len(case.documents)} case document(s) read" if case is not None else "")))
-    for f in [f for f in findings or [] if f["tier"] in ("stated", "corroborated")][:4]:
+                items.append(_item(f"{net.name(a)} ↔ {net.name(b)}: " + " → ".join(h["relation"] for h in r["hops"]),
+                                   ", ".join(dict.fromkeys(h["via"] for h in r["hops"] if h["via"]))))
+    if len(seeds) == 1 and seeds[0] in net.G:
+        close = [c for c in net.neighbours(seeds[0]) if c["stated"]][:5]
+        if close:
+            items.append(_item(f"{net.name(seeds[0])} is linked to: " + "; ".join(
+                f"{c['name']} ({c['relation']}" + (", criminal record" if c["criminal"] else "") + ")" for c in close),
+                ", ".join(dict.fromkeys(c["via"] for c in close if c["via"]))))
+    # 3. What the documents establish.
+    if case is not None:
+        live = {f["id"]: f for f in case.live_facts()} if hasattr(case, "live_facts") else dict(case.facts)
+        for doc in case.documents.values():
+            if doc["kind"] in ("notes", "graph"):
+                continue
+            facts = [live[f] for f in doc.get("facts") or [] if f in live]
+            facts.sort(key=lambda f: ({"ai": 0, "rule": 1, "cdr": 2}.get(f.get("by"), 3), f.get("trust") or 4))
+            what = (doc.get("ai_summary") or doc.get("summary") or "").strip()
+            points = "; ".join(f"{f['statement'][:180]} [{f['id']}]" for f in facts[:3])
+            if what or points:
+                items.append(_item(f"{doc['title']}: " + (what[:240] + (". " if points else "") if what else "")
+                                   + points, doc["id"]))
+    # 4. Sherlock's assessment.
+    for h in sorted((h for h in getattr(case, "hypotheses", {}).values() if not h.get("stale")),
+                    key=lambda h: {"supported": 0, "open": 1, "weakened": 2, "ruled out": 3}.get(h["status"], 4))[:3]:
+        items.append(_item(f"Sherlock's assessment: {h['statement']} ({h['status']}, {h['confidence']} confidence)",
+                           h["id"]))
+    # 5. The strongest patterns the rules found.
+    for f in [f for f in findings or [] if f["tier"] in ("stated", "corroborated")][:3]:
         items.append(_item(f"{f['title']}: {f['summary']}"))
     inc = (case.incident or {}) if case is not None else {}
     if inc:
-        items.append(_item(f"Incident: {inc.get('place') or ''} {inc.get('date') or ''}".strip(), "officer"))
+        items.append(_item("Incident: " + ", ".join(f"{k} {v}" for k, v in inc.items()
+                                                    if k in ("offence", "place", "date", "time", "fir") and v), "officer"))
+    criminals = sum(1 for p in net.people if net.criminal(p))
+    docs = len([d for d in case.documents.values() if d["kind"] not in ("notes", "graph")]) if case is not None else 0
+    items.append(_item(f"{len(net.people)} people on the graph, {criminals} with a criminal record, {docs} case document(s) read"))
     return _result("summary", None, items)
 
 
@@ -565,6 +644,109 @@ def fir_file_details(net: PersonNetwork, case: Any, labels: list[str]) -> dict[s
     return _result("fir_details", None, items)
 
 
+def _relate_to_new_case(rows: list[dict[str, Any]], net: PersonNetwork, pid: str, case: Any) -> None:
+    """Each previous FIR row gets ``relevance``: how it bears on the new case (when the
+    officer has described the new case)."""
+    if case is None:
+        return
+    from sherlocks.linkgraph.relevance import fir_relevance, new_case
+
+    new = new_case(case)
+    if not new["known"]:
+        return
+    targets = list(net.seeds())
+    linked = {net.name(p) for t in targets if t in net.G for p in [t, *[c["id"] for c in net.neighbours(t)]]}
+    me = net.name(pid).lower()
+    for r in rows:
+        others = [n for n in accused_of(net, r["label"], case, exclude=pid) if n.lower() != me]   # not himself
+        r["relevance"] = fir_relevance(r, new, linked=linked, people_in=others)
+
+
+def fact_answer(net: PersonNetwork, case: Any, kb: Any, asks_for: str, people: list[str] | None = None,
+                firs: list[str] | None = None) -> dict[str, Any]:
+    """One specific fact asked ("investigating officer", "date of occurrence", "witnesses",
+    "weapon used"...): searched in the case's own FIR files and their facts - the FIRs of
+    the people asked about, the FIRs named, the incident's FIR, else every FIR file read -
+    so the answer is that fact, not the whole case."""
+    from sherlocks.linkgraph.knowledge import _expand, tokens
+
+    docs: set[str] = set()
+    for pid in people or []:
+        docs |= {r["doc"] for r in _firs(net, pid, case) if r.get("doc")}
+    for label in [*(firs or []), *([str((case.incident or {}).get("fir"))] if (case.incident or {}).get("fir") else [])]:
+        doc = fir_document(case, label)
+        if doc:
+            docs.add(doc["id"])
+    if not docs:
+        docs = {d["id"] for d in case.documents.values() if d["kind"] in ("fir", "lab", "cro")}
+    doc_of = {fid: f["doc"] for fid, f in case.facts.items()}
+    want = {t for t in _expand(tokens(asks_for)) if not t.startswith("s:")}
+    stems = {w[:5] for w in tokens(asks_for) if len(w) > 2 and w not in ("the", "who", "what", "this", "case")}
+
+    def closeness(text: str) -> int:
+        # The entry's own label ("investigating officer: ...", "occurred: ...") counts double.
+        label, _, body = text.partition(":")
+        in_label = sum(1 for st in stems if any(w.startswith(st) for w in tokens(label)))
+        in_body = sum(1 for st in stems if any(w.startswith(st) for w in tokens(body)))
+        return 2 * in_label + in_body
+
+    scored, seen = [], set()
+    for rank, e in enumerate(kb.search(asks_for, k=80)):
+        doc = e.source if e.source in docs else doc_of.get(e.source)
+        if doc not in docs or not (want & {t for t in _expand(tokens(e.text)) if not t.startswith("s:")}):
+            continue
+        key = e.text.lower()[:160]
+        if key in seen:
+            continue
+        seen.add(key)
+        scored.append((closeness(e.text), rank, e, doc))
+    best = max((x[0] for x in scored), default=0)
+    items = []
+    for _score, _rank, e, doc in sorted((x for x in scored if x[0] >= best - 1), key=lambda x: (-x[0], x[1]))[:4]:
+        title = case.documents[doc]["title"] if doc in case.documents else ""
+        text = re.sub(r"\s*\(quote: [^)]*\)", "", e.text).strip()     # the evidence block shows the quote
+        label, sep, value = text.partition(": ")
+        closest = sep and any(label.lower().startswith(st) or st in label.lower() for st in stems)
+        items.append(_item(text, e.source, doc=title, value=value if closest else text))
+    subject = asks_for[:1].upper() + asks_for[1:]
+    return _result("fact", subject, items, extra={"asks_for": asks_for, "docs": sorted(docs)})
+
+
+def accused_of(net: PersonNetwork, label: str, case: Any = None, exclude: str | None = None) -> list[str]:
+    """Who is accused in an FIR: from its file when read, else everyone the records name
+    as accused in it."""
+    doc = fir_document(case, label) if case is not None else None
+    names = _names(((doc or {}).get("data") or {}).get("nominated_suspects"))
+    if names:
+        return names
+    key = fir_key(label)
+    out = []
+    for pid in net.people:
+        if pid == exclude:
+            continue
+        for f in net.data(pid).get("firs") or []:
+            if fir_key(str(f.get("label") or "")) == key and role_kind([str(f.get("role") or "")]) == "accused":
+                out.append(net.name(pid))
+                break
+    return out
+
+
+def frame_by_role(result: dict[str, Any], net: PersonNetwork, pid: str, case: Any, role: str,
+                  yes_no: bool) -> dict[str, Any]:
+    """A question about FIRs in one role ("FIR on him" = accused, "did he file" =
+    complainant...): which of the person's FIRs match it, and the others - each with its
+    accused - so the answer says yes or no for that role and mentions the rest."""
+    rows = result.get("rows") or _firs(net, pid, case)
+    for r in rows:
+        r.setdefault("accused", accused_of(net, r["label"], case, exclude=pid))
+    matching = [r for r in rows if r["role_kind"] == role]
+    others = [r for r in rows if r["role_kind"] != role]
+    framed = {**result, "asked_role": role, "yes_no": yes_no, "matching": matching, "others": others, "rows": rows}
+    if result.get("type") in ("cases", "count_cases"):
+        framed["count"] = len(matching)          # the count asked for is the count in that role
+    return framed
+
+
 def run(query: dict[str, Any], net: PersonNetwork, case: Any = None) -> dict[str, Any] | None:
     """Answer a structured query from the Understanding agent; ``None`` for types the
     Facts agent does not answer (open questions go to the Investigator)."""
@@ -594,8 +776,12 @@ def run(query: dict[str, Any], net: PersonNetwork, case: Any = None) -> dict[str
         "fir_details": lambda: fir_details(net, first, case, query.get("firs") or []),
         "criminals_near": lambda: criminals_near(net, first, int(query.get("hops") or 1)),
         "profile": lambda: profile(net, first, case), "associates": lambda: associates(net, first),
-        "hotels": lambda: hotels(net, first), "phones": lambda: phones(net, first),
+        "hotels": lambda: hotels(net, first, case), "phones": lambda: phones(net, first),
         "vehicles": lambda: vehicles(net, first), "documents": lambda: documents(net, first, case),
     }
     handler = handlers.get(kind)
-    return handler() if handler else None
+    result = handler() if handler else None
+    if result is not None and query.get("role") and kind in ("cases", "count_cases", "fir_status", "serious_cases",
+                                                             "fir_details", "io_report"):
+        result = frame_by_role(result, net, first, case, query["role"], bool(query.get("yes_no")))
+    return result

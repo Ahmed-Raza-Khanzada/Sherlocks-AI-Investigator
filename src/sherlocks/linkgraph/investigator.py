@@ -40,6 +40,7 @@ from pydantic import BaseModel, Field
 
 from sherlocks.linkgraph.compare import compare_people
 from sherlocks.linkgraph.dossier import person_facts
+from sherlocks.evidence.guard import DATA_NOT_INSTRUCTIONS
 from sherlocks.linkgraph.network import PersonNetwork
 from sherlocks.linkgraph.normalize import name_key, sound_key, sound_shape
 from sherlocks.linkgraph.scenarios import SCENARIOS, TIERS, find_scenarios
@@ -49,12 +50,13 @@ logger = logging.getLogger(__name__)
 
 MAX_STEPS = 6
 MAX_STEPS_WITH_EVIDENCE = 9
-_LIVE_TOOLS = {"fetch_fir", "fetch_lab_reports", "fetch_cro", "lookup", "cdr_lookup"}
+_LIVE_TOOLS = {"fetch_fir", "fetch_lab_reports", "fetch_cro", "lookup", "cdr_lookup", "api_router"}
 # Which agent of the team a tool belongs to (shown with each step).
 AGENT_OF = {"fetch_fir": "API agent", "fetch_lab_reports": "API agent", "fetch_cro": "API agent",
             "lookup": "API agent", "cdr_lookup": "API agent", "evidence": "Document agent",
             "read_document": "Document agent", "search_evidence": "Document agent", "incident": "Case board",
-            "uploads": "CDR agent"}
+            "uploads": "CDR agent", "board": "Board reader", "dossier": "A4 Dossier agent", "chat_memory": "Chat memory",
+            "cdr_query": "CDR query", "api_router": "API router"}
 _RESULT_CHARS = 3500
 
 
@@ -65,7 +67,8 @@ _RESULT_CHARS = 3500
 
 class _Tools:
     def __init__(self, graph: dict[str, Any], case: Any = None, agents: Any = None, backend: Any = None,
-                 live_calls: int = 0) -> None:
+                 live_calls: int = 0, *, officer: dict[str, Any] | None = None, team: str = "Officer team",
+                 reason: str = "") -> None:
         self.graph = graph
         self.net = PersonNetwork(graph)
         self.findings = find_scenarios(graph, net=self.net)
@@ -73,6 +76,14 @@ class _Tools:
         self.agents = agents if agents is not None and getattr(agents, "enabled", False) else None
         self.backend = backend
         self.live_left = live_calls if (self.agents is not None or backend is not None) else 0
+        # Who the calls are made for, by which team and why - for the guard and the audit log.
+        self.officer = officer
+        self.team = team
+        self.reason = reason
+        self.settings = getattr(agents, "settings", None)
+        import threading
+
+        self._spend_lock = threading.Lock()      # calls may run in parallel
 
     def _who(self, args: dict[str, str], key: str = "who") -> str:
         pid = self.net.resolve(args.get(key))
@@ -186,10 +197,28 @@ class _Tools:
 
     # -- live tools ---------------------------------------------------------------------
 
-    def _spend(self) -> None:
+    def _spend(self, system: str, identifier: str | None = None) -> None:
+        """One live call: within this question's budget, the case's limits, the officer's
+        systems, and only for an identifier on the case. Logged either way."""
+        from sherlocks.evidence import guard
+
+        with self._spend_lock:
+            self._spend_locked(system, identifier, guard)
+
+    def _spend_locked(self, system: str, identifier: str | None, guard: Any) -> None:
         if self.live_left <= 0:
             raise ValueError("No live calls left for this question - answer from what is known, or suggest the call")
+        try:
+            guard.check_limits(self.case, self.settings)
+            guard.check_system(system, self.officer)
+            guard.check_identifier(identifier, self.graph, self.case)
+        except guard.GuardError:
+            guard.log_call(self.case, system=system, identifier=identifier, agent=self.team, reason=self.reason,
+                           officer=self.officer, status="refused")
+            raise
         self.live_left -= 1
+        guard.log_call(self.case, system=system, identifier=identifier, agent=self.team, reason=self.reason,
+                       officer=self.officer, status="called")
 
     def _fir_ref(self, args: dict[str, str]) -> tuple[str, str, str]:
         """FIR number/year and police-station id, from the args or the graph."""
@@ -221,7 +250,7 @@ class _Tools:
             raise ValueError("Documents cannot be fetched here")
         no, year, ps_id = self._fir_ref(args)
         if self.case.doc_for(f"fir:{no.lstrip('0')}/{year[-2:]}/{ps_id}") is None:
-            self._spend()
+            self._spend("psrms_file")
         found = self.agents.fetch_fir(no, year, ps_id)
         if "error" in found:
             return found
@@ -231,7 +260,7 @@ class _Tools:
         if self.agents is None:
             raise ValueError("Documents cannot be fetched here")
         no, year, ps_id = self._fir_ref(args)
-        self._spend()
+        self._spend("labs")
         found = self.agents.fetch_lab_reports(no, year, ps_id)
         return {"documents": [self._digest(d, text_chars=1200) for d in found.get("documents") or []],
                 "message": found.get("message")}
@@ -248,7 +277,7 @@ class _Tools:
                            for f in (n.get("data") or {}).get("fields") or [] if str(f.get("label", "")).startswith("CRO No")), "")
         if not cro_no:
             raise ValueError("No CRO number known; give cro_no")
-        self._spend()
+        self._spend("safe")
         found = self.agents.fetch_cro(cro_no, pid)
         return found if "error" in found else self._digest(found["document"])
 
@@ -267,7 +296,7 @@ class _Tools:
             cnic, phone = d.get("cnic"), (d.get("phones") or [None])[0]
         if not (cnic or phone):
             raise ValueError("Give who, cnic or phone")
-        self._spend()
+        self._spend(system, cnic or phone)
         payload = self.backend.lookup(system, cnic, phone)
         rec = extract_record(system, payload, PersonRef(cnic=cnic, phones=[phone] if phone else []), MemoryImageStore())
         return {"system": system_label(system), "status": payload.get("status"), "summary": payload.get("summary"),
@@ -310,6 +339,21 @@ class _Tools:
                                    "police provider by cnic/phone. args: provider, imei?, lat?, lon?, cnic?, phone?",
                                    self.cdr_lookup)
         if self.case is not None:
+            tools.update({
+                "board": ("Board reader: what the case board holds on a question - facts with tier and source, the "
+                          "officer's statements, Sherlock's hypotheses. args: query, who?", self.board),
+                "dossier": ("Everything the case holds on one person in one card: identity, role, FIRs, links, documents, "
+                            "statements, CDRs, open hypotheses. args: who", self.dossier),
+                "chat_memory": ("What the officer said in this chat about something, with the turn. args: query",
+                                self.chat_memory),
+                "cdr_query": ("The CDR team's facts for a person or a number: calls, towers, distances, IMEIs, with row "
+                              "references. args: who | number", self.cdr_query),
+            })
+        if self.backend is not None and self.live_left > 0:
+            tools["api_router"] = ("LIVE: ask the police systems that hold a topic about one person - the catalog picks "
+                                   "the systems (identity, work, vehicle, phone, address, family, record, complaint, "
+                                   "hotel). args: who, topic", self.api_router)
+        if self.case is not None:
             tools["incident"] = ("The incident as the officer gave it (place pinned on the map, date, time, FIR), the "
                                  "nearest police station, and what the uploaded CDRs show near it. args: none",
                                  self.incident)
@@ -340,7 +384,7 @@ class _Tools:
             "longitude": float(args["lon"]) if args.get("lon") else None}.items() if v}
         if not (provider and subject):
             raise ValueError("Give provider and an identifier (imei, cnic, phone or lat+lon)")
-        self._spend()
+        self._spend(f"cdr:{provider}", subject.get("cnic") or subject.get("mobile"))
         out = server.provider(provider, subject)
         return {"provider": provider, "status": out.get("status"), "summary": out.get("summary"),
                 "data": _trim(out.get("data"))}
@@ -361,6 +405,70 @@ class _Tools:
                                            if line.startswith(("Subscriber", "On the graph", "Near the incident",
                                                                "Top contact 1", "Top contact 2", "Top contact 3"))][:12]}
                             for d in docs]}
+
+    # -- the shared toolbox --------------------------------------------------------------
+
+    def board(self, args: dict[str, str]) -> dict:
+        from sherlocks.linkgraph.knowledge import knowledge
+
+        query = str(args.get("query") or args.get("text") or "")
+        people = [self._who(args)] if args.get("who") else None
+        kb = knowledge(self.graph, self.case, self.net)
+        hits = kb.search(query, people=people, k=20)
+        return {"entries": [e.as_dict() for e in hits],
+                "missing": [] if hits else [f"the board holds nothing on: {query}"]}
+
+    def dossier(self, args: dict[str, str]) -> dict:
+        from sherlocks.evidence.dossiers import dossier
+
+        if self.case is None:
+            raise ValueError("No case board here")
+        return dossier(self.case, self.net, self._who(args))
+
+    def chat_memory(self, args: dict[str, str]) -> dict:
+        words = [w for w in re.findall(r"[\w؀-ۿ]+", str(args.get("query") or "").lower()) if len(w) > 2]
+        said = []
+        for i, t in enumerate(self.case.conversation if self.case is not None else [], 1):
+            q = str(t.get("q") or "")
+            if not words or any(w in q.lower() for w in words):
+                said.append({"turn": t.get("turn") or i, "officer": q[:400]})
+        answered = [{"question": q["text"], "answer": q.get("answer"), "turn": q.get("answer_turn"), "status": q["status"]}
+                    for q in (self.case.questions if self.case is not None else []) if q["status"] != "open"]
+        return {"said": said[-12:], "answered_questions": answered[-12:]}
+
+    def cdr_query(self, args: dict[str, str]) -> dict:
+        from sherlocks.linkgraph.normalize import mobile11
+
+        numbers: set[str] = set()
+        if args.get("who"):
+            numbers |= set(self.net.data(self._who(args)).get("phones") or [])
+        if mobile11(args.get("number")):
+            numbers.add(mobile11(args.get("number")))
+        facts = [f for f in (self.case.live_facts() if self.case is not None else [])
+                 if f.get("by") == "cdr" and (not numbers or any(n in f["statement"] for n in numbers))]
+        return {"numbers": sorted(numbers), "facts": [{"id": f["id"], "doc": f["doc"], "fact": f["statement"],
+                                                       "tier": f.get("tier"), "rows": f.get("rows")} for f in facts[:30]],
+                "note": None if facts else "No CDR on the board covers this - ask the officer for one."}
+
+    def api_router(self, args: dict[str, str]) -> dict:
+        from sherlocks.linkgraph import api_router as router
+
+        pid = self._who(args)
+        topic = str(args.get("topic") or "").strip().lower()
+        planned = router.plan(self.net, self.case, pid, [topic], allowed=(self.officer or {}).get("systems"))
+        if planned["unheld"]:
+            return {"topic": topic, "result": f"No connected system holds {topic} information."}
+        out = []
+        for call in planned["calls"]:
+            if self.live_left <= 0:
+                break
+            res = self.lookup({"system": call["system"], "who": self.net.name(pid)})
+            found = bool(res.get("fields") or res.get("firs") or res.get("vehicles") or res.get("stays")
+                         or res.get("organisations"))
+            router.remember(self.case, pid, call["system"], "found" if found else "nothing found")
+            out.append({**res, "checked": call["system"], "found": found})
+        return {"topic": topic, "results": out, "already_searched": planned["skipped"],
+                "result": None if any(r["found"] for r in out) else "checked, nothing found"}
 
     def _graph_tools(self, scenarios: str) -> dict[str, tuple[str, Callable[[dict[str, str]], dict]]]:
         return {
@@ -386,7 +494,7 @@ class _Tools:
 ToolName = Literal["findings", "person", "neighbours", "paths", "compare", "network", "hidden_associates",
                    "criminal_proximity", "leads", "timeline", "evidence", "read_document", "search_evidence",
                    "fetch_fir", "fetch_lab_reports", "fetch_cro", "lookup", "cdr_lookup", "incident", "uploads",
-                   "final"]
+                   "board", "dossier", "chat_memory", "cdr_query", "api_router", "final"]
 
 
 class _Step(BaseModel):
@@ -427,7 +535,7 @@ _SYSTEM = (
     "needs a document or check that is not in the case file yet. Use 'incident' and 'uploads' for where and when "
     "it happened and what the officer's CDRs, tower dumps and files show; 'cdr_lookup' resolves an IMEI or the "
     "police station nearest a point. The officer's own statements are in the case file as 'Officer's statements' - "
-    "treat them as the officer's account, to be checked against the records."
+    "treat them as the officer's account, to be checked against the records. " + DATA_NOT_INSTRUCTIONS
 )
 
 _FINAL_SYSTEM = (
@@ -505,15 +613,18 @@ def _summary(tool: str, result: dict) -> str:
 
 def investigate(graph: dict[str, Any], question: str, llm: Any = None, *,
                 history: list[dict] | None = None, max_steps: int | None = None, case: Any = None,
-                agents: Any = None, backend: Any = None, live_calls: int = 0) -> Iterator[dict[str, Any]]:
+                agents: Any = None, backend: Any = None, live_calls: int = 0,
+                status: bool = False, officer: dict[str, Any] | None = None) -> Iterator[dict[str, Any]]:
     """Work ``question`` against ``graph``. Yields events:
 
     ``{"type": "start", ...}``, then ``{"type": "step", tool, args, thought, summary, result}``
     per tool call, then ``{"type": "final", answer, hypotheses, key_people, next_steps,
-    suggestions, findings, model}``.
+    suggestions, findings, model}``. With ``status``, a ``{"type": "status", key | tool, on}``
+    comes before each planning call and each tool call, for the chat's waiting line.
     """
     question = (question or "").strip() or "What are the most important links and patterns in this graph?"
-    tools = _Tools(graph, case=case, agents=agents, backend=backend, live_calls=live_calls)
+    tools = _Tools(graph, case=case, agents=agents, backend=backend, live_calls=live_calls, officer=officer,
+                   team="S1 Sherlock (in chat)", reason=f"officer asked: {question[:120]}")
     registry = tools.registry()
     net = tools.net
     seeds = [net.name(s) for s in net.seeds()]
@@ -545,6 +656,8 @@ def investigate(graph: dict[str, Any], question: str, llm: Any = None, *,
         if case is not None and case.documents:
             plan.append(("evidence", {"who": named[0]} if named else {}))
         for tool, args in plan:
+            if status:
+                yield {"type": "status", "tool": tool, "on": _args_text(net, args)}
             result = run(tool, args)
             transcript.append({"tool": tool, "args": args, "result": result})
             yield {"type": "step", "tool": tool, "agent": AGENT_OF.get(tool, "Sherlock"), "args": args,
@@ -572,6 +685,8 @@ def investigate(graph: dict[str, Any], question: str, llm: Any = None, *,
                   + f"\n\nOfficer's question: {question}"
                   + (f"\n\nTool calls so far:\n{done}" if done else "")
                   + "\n\nChoose the next step as JSON.")
+        if status:
+            yield {"type": "status", "key": "think"}
         try:
             step, _ = llm.generate_structured(prompt=prompt, schema=_Step, system=_SYSTEM,
                                               cache_kind="investigate_step", prompt_version="v1")
@@ -586,6 +701,8 @@ def investigate(graph: dict[str, Any], question: str, llm: Any = None, *,
         if key in seen:
             break  # going round in circles: answer from what it has
         seen.add(key)
+        if status:
+            yield {"type": "status", "tool": step.action, "on": _args_text(net, step.args)}
         result = run(step.action, step.args)
         transcript.append({"tool": step.action, "args": step.args, "result": result})
         yield {"type": "step", "index": index + 1, "tool": step.action, "agent": AGENT_OF.get(step.action, "Sherlock"),

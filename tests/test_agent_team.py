@@ -187,7 +187,7 @@ def test_a_chat_turn_runs_through_the_team():
                 "_Revision": {"answer": "Kamran and Sajid are co-accused in FIR 45/2023 [PSRMS]."}})
     turn2 = list(run_turn(graph, "How are Kamran and Sajid connected?", llm=llm, case=case))
     final = turn2[-1]
-    assert {"Understanding agent", "Facts agent", "Validator"} <= {e["agent"] for e in turn2 if e["type"] == "agent"}
+    assert {"Question reader", "Officer agent", "Facts agent", "Validator"} <= {e["agent"] for e in turn2 if e["type"] == "agent"}
     # The model's draft cited a fact that does not exist and left out the count: the
     # Validator replaced it with the Facts agent's exact answer.
     assert final["checks"]["revised"] and "directly linked" in final["answer"]

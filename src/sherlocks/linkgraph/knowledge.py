@@ -43,7 +43,8 @@ CONCEPTS: dict[str, tuple[str, ...]] = {
     "complainant": ("complainant", "muddai", "mudai", "applicant", "filed", "darj", "مدعی", "مستغیث", "درخواست"),
     "accused": ("accused", "mulzim", "mujrim", "suspect", "nominated", "criminal", "ملزم", "مجرم", "نامزد"),
     "witness": ("witness", "witnesses", "gawah", "gawahan", "گواہ", "گواہان"),
-    "police": ("thana", "thane", "station", "ps", "police", "io", "investigating", "officer", "تھانہ", "تفتیشی"),
+    "police": ("thana", "thane", "station", "ps", "police", "io", "investigating", "investigator", "investigators",
+               "investigation", "officer", "tafteeshi", "afsar", "تھانہ", "تفتیشی", "افسر"),
     "status": ("status", "faisla", "outcome", "convicted", "acquitted", "bari", "saza", "trial", "challan", "position",
                "bail", "zamanat", "result", "pending", "پوزیشن", "چالان", "فیصلہ", "سزا", "بری", "ضمانت", "نتیجہ"),
     "hotel": ("hotel", "hotels", "stay", "stays", "stayed", "thehra", "room", "check", "ہوٹل"),
@@ -220,7 +221,7 @@ class KnowledgeBase:
         def people_in(text: str) -> list[str]:
             return list(dict.fromkeys(pid for k, pid in ids.items() if k in text))
 
-        for doc in case.documents.values():
+        for doc in list(case.documents.values()):      # a snapshot: readers may still be adding
             data = doc.get("data") or {}
             title = doc["title"]
             owners = list(doc.get("owners") or [])
@@ -260,14 +261,19 @@ class KnowledgeBase:
                 for dia in data.get("case_diaries") or []:
                     self.add("fir", title, f"case diary {dia.get('no')} ({dia.get('date')}, {dia.get('officer')}): "
                              f"{dia.get('remarks')}", doc["id"], people_in(str(dia.get("remarks"))), ["diary"])
-            for fid in doc.get("facts") or []:
+            for fid in list(doc.get("facts") or []):
                 fact = case.facts.get(fid)
-                if fact:
-                    self.add("fact", title, f"{fact['statement']} (quote: {fact['quote'][:160]})", fid,
+                if fact and not fact.get("replaced_by") and not fact.get("stale"):   # corrected / out of date: left out
+                    tier = f" [{fact['tier']}]" if fact.get("tier") and fact["tier"] != "fact" else ""
+                    self.add("fact", title, f"{fact['statement']}{tier} (quote: {fact['quote'][:160]})", fid,
                              people_in(fact["statement"] + fact["quote"]))
-        for link in case.links.values():
+        for link in list(case.links.values()):
             self.add("link", link["name"], f"found in {case.documents[link['doc']]['title']}: {link['how']}", link["id"],
                      [link["pid"]])
+        for h in list(getattr(case, "hypotheses", {}).values()):
+            if not h.get("stale"):
+                self.add("finding", "Sherlock's hypothesis", f"{h['statement']} ({h['status']}, {h['confidence']}, "
+                         f"{h['tier']})", h["id"], [p for p in h.get("people") or [] if p in net.people])
         inc = case.incident or {}
         if inc:
             self.add("incident", "Incident", ", ".join(f"{k} {v}" for k, v in inc.items() if k != "at" and v), "officer",

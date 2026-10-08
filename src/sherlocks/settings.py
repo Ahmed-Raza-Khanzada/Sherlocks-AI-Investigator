@@ -238,6 +238,22 @@ class AuthSettings(BaseModel):
     secret: str | None = None            # signs session tokens; random per boot if unset
 
 
+class ChatSettings(BaseModel):
+    """How long each step of a chat reply may take (seconds), and how big the context
+    pack may be. A step over budget falls back (templates, the board, rules only) and
+    what finishes late is sent as a follow-up message - partial beats late."""
+
+    reply_budget_s: float = 40.0      # the whole reply, never longer
+    draft_budget_s: float = 10.0      # O1 understanding + drafting (one model call)
+    tools_budget_s: float = 10.0      # toolbox / live calls, together, in parallel
+    view_budget_s: float = 10.0       # Sherlock's quick view (one model call, no tools)
+    investigate_budget_s: float = 25.0  # the investigator's tool loop in a reply
+    check_budget_s: float = 6.0       # the Answer checker's model check
+    revise_budget_s: float = 6.0      # O1 fixing a draft once
+    pack_chars: int = 14000           # the context pack, all parts together
+    recent_turns: int = 4             # chat turns given word for word; older ones summarised
+
+
 class EvidenceSettings(BaseModel):
     """Case evidence read while a graph builds: the FIR document of every FIR found
     (PSRMS file report), the forensic lab reports filed against it (DNA, chemical,
@@ -263,6 +279,18 @@ class EvidenceSettings(BaseModel):
     # The chat may call police systems itself (FIR document, lab reports, CRO dossier,
     # one system lookup) to check a lead - at most this many live calls per question.
     chat_live_calls: int = 6
+    # Live calls one case may make in all, and per hour (every agent, every team). Over the
+    # limit the calls stop and the officer is told; near the hourly limit admins are warned.
+    case_live_calls: int = 120
+    case_live_calls_per_hour: int = 40
+    # Live calls the Sherlock team may make in one background run.
+    background_live_calls: int = 4
+    # Background runs of the Sherlock team per case (the report and the officer can always
+    # ask for one more).
+    sherlock_runs_per_case: int = 20
+    # On a report download, how long Sherlock may take to bring his assessment up to date
+    # first; past it the report is built from his last assessment and says "as of".
+    report_wait_s: float = 90.0
     # Uploads (image, PDF, Word, Excel) per file.
     max_upload_mb: int = 25
     # Send an uploaded CDR / BTS file to the CDR server for its analysis (its report also
@@ -285,6 +313,7 @@ class Settings(BaseModel):
     api: ApiSettings = Field(default_factory=ApiSettings)
     auth: AuthSettings = Field(default_factory=AuthSettings)
     evidence: EvidenceSettings = Field(default_factory=EvidenceSettings)
+    chat: ChatSettings = Field(default_factory=ChatSettings)
     config_path: str | None = None
     env_file: str | None = None
 

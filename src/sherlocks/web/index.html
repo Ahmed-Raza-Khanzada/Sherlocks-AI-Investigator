@@ -125,6 +125,7 @@
           <button id="reportBtn2" class="ghost small" type="button" disabled title="Available when the graph finishes or is stopped">📑 Case report</button></div>
         <div id="evidenceCounts" class="evcounts"></div>
         <div id="reportStatus" class="muted small"></div>
+        <div id="sherlockWork" class="shwork" hidden></div>
         <ul id="evidenceList" class="evlist"></ul>
       </section>
 
@@ -191,6 +192,7 @@
         <label class="tog"><input type="checkbox" id="showWeak" checked> Weak links</label>
         <label class="tog range">min <input type="range" id="minWeak" min="0" max="100" value="35"><span id="minWeakVal">0.35</span></label>
         <div class="connfilter"><button id="connBtn" type="button" title="Choose which kinds of connection are drawn">Connections ▾</button><div id="connPanel" class="connpanel" hidden></div></div>
+        <button id="boardBtn" class="boardbtn" title="Open the detective's case board">🕵 Case board</button>
         <button id="reportBtn" class="reportbtn" title="Download the case report (PDF) - available when the graph finishes or is stopped" disabled>📑 Case report</button>
         <button id="pngBtn" title="Save picture">PNG</button>
         <button id="jsonBtn" title="Save data">JSON</button>
@@ -247,6 +249,11 @@
   <dialog id="historyDlg">
     <form method="dialog" class="dlghead"><b>Previous graphs</b><button class="ghost">Close</button></form>
     <div id="historyList" class="history"></div>
+  </dialog>
+
+  <dialog id="boardDlg" class="boarddlg">
+    <form method="dialog" class="dlghead boardhead"><b>🕵 Case board</b><span id="boardMeta" class="muted small"></span><button class="ghost">Close</button></form>
+    <div id="boardBody" class="cork"></div>
   </dialog>
 
   <dialog id="docDlg" class="docdlg">

@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from sherlocks.evidence.board_store import BoardStore, MemoryBoardStore, PostgresBoardStore, merge_posted
 from sherlocks.evidence.case_file import CaseFile
 from sherlocks.linkgraph.backends import LookupBackend, build_backend
 from sherlocks.linkgraph.cache import MemoryProviderCache, PostgresProviderCache, ProviderCache
@@ -38,8 +39,12 @@ _CHECKPOINT_SECONDS = 3.0
 # A finished run stays in memory this long (for viewers still streaming it), then is
 # served from the store.
 _KEEP_FINISHED_SECONDS = 1800
+# How often the Graph analyst reads the growing graph.
+_ANALYSE_SECONDS = 10.0
 # LLM explanations and briefs kept for instant re-opening, newest last.
 _MAX_CACHED_ANSWERS = 500
+# Boards of runs no longer in memory, kept open while the officer works on them.
+_MAX_OPEN_BOARDS = 64
 
 
 def _now() -> datetime:
@@ -68,6 +73,7 @@ class RunHandle:
         # The case file (documents, quoted facts, evidence links, the case report) and
         # the team filling it while the run builds.
         self.case = CaseFile()
+        self.case.run_id = self.id
         self.agents: Any = None
         ids = [s.cnic or s.phone or s.email for s in params.seeds if (s.cnic or s.phone or s.email)]
         self.seed_label = (f"{len(ids)} people: " + ", ".join(ids)) if ids else (params.cnic or params.phone or params.email or "?")
@@ -217,10 +223,14 @@ class RunManager:
         images: ImageStore | None = None,
         backends: dict[str, LookupBackend] | None = None,
         llm_factory: Any = None,
+        boards: BoardStore | None = None,
     ) -> None:
         self.settings = settings
         ttl = settings.linkgraph.cache_ttl_hours * 3600
         self.store = store or PostgresRunStore(settings)
+        self.boards = boards or PostgresBoardStore(settings)
+        self._open_boards: OrderedDict[str, CaseFile] = OrderedDict()
+        self._boards_lock = threading.RLock()
         self.cache = cache or PostgresProviderCache(settings, ttl)
         image_dir = Path(settings.linkgraph.image_dir)
         self.images = images or DiskImageStore(image_dir if image_dir.is_absolute() else PROJECT_ROOT / image_dir)
@@ -234,6 +244,10 @@ class RunManager:
         from concurrent.futures import ThreadPoolExecutor
 
         self._jobs = ThreadPoolExecutor(max_workers=3, thread_name_prefix="case")
+        # The Sherlock team in the background, one scheduler for every board.
+        from sherlocks.linkgraph.casework import Casework
+
+        self.casework = Casework(settings, self._llm)
 
     # -- configuration --------------------------------------------------------------
 
@@ -279,8 +293,11 @@ class RunManager:
             "max_persons": max(1, min(params.max_persons, lg.hard_max_persons)),
         })
         handle = RunHandle(params, self.backend_kind(params.backend), created_by)
+        if created_by:
+            handle.case.dialog["officer"] = {"user": created_by, "systems": None}
         self._evict_finished()
         self._runs[handle.id] = handle
+        self._attach(handle.id, handle.case, handle.graph, handle.backend)
         handle.emit("info", f"Run created · backend={handle.backend} · depth={params.depth} · "
                             f"max persons={params.max_persons}")
         self.store.save(handle.to_dict())
@@ -293,10 +310,17 @@ class RunManager:
     def _execute(self, handle: RunHandle) -> None:
         last_save = [0.0]
 
+        analysed = [time.monotonic(), -1]       # first read one interval in; always at the end
+
         def checkpoint(force: bool = False) -> None:
             if force or time.monotonic() - last_save[0] >= _CHECKPOINT_SECONDS:
                 last_save[0] = time.monotonic()
                 self.store.save(handle.to_dict())
+                self.boards.save(handle.id, handle.case.to_dict())
+            # A1 Graph analyst: the graph's new patterns onto the board while it builds.
+            if handle.builder.version != analysed[1] and time.monotonic() - analysed[0] >= _ANALYSE_SECONDS:
+                analysed[0], analysed[1] = time.monotonic(), handle.builder.version
+                self._jobs.submit(self._graph_analyst, handle)
 
         def progress(pct: int, message: str) -> None:
             handle.progress, handle.message, handle.updated_at = pct, message, _now()
@@ -320,6 +344,8 @@ class RunManager:
                     handle.emit("info", "Graph complete - finishing the case documents being read")
                     self._drain(handle)
                 handle.status = "completed"
+                self._graph_analyst(handle)
+                handle.case.plan("sherlock", "the graph phase finished")      # wakes the Sherlock team
                 stats = handle.builder.stats()
                 progress(100, f"Done · {stats['persons']} people · {stats['records']} records · "
                               f"{stats['strong_links']} strong · {stats['weak_links']} weak links")
@@ -372,26 +398,118 @@ class RunManager:
             handle.agents.stop()
 
     def build_report(self, handle: RunHandle) -> dict[str, Any] | None:
-        """Write the case report for a finished (or stopped) run."""
-        from sherlocks.evidence.case_report import assemble
-
+        """Write the case report for a finished (or stopped) run: Sherlock's assessment,
+        brought up to date first."""
         handle.case.set_report(handle.case.report, "building")
-        handle.emit("info", "🕵 Sherlock is writing the case report")
+        handle.emit("info", "🕵 Sherlock is finishing his assessment for the case report")
         try:
-            report = assemble(handle.builder.snapshot(), handle.case, llm=self._llm(), run=handle.to_dict(graph=False))
+            report = self._write_report(handle.builder.snapshot(), handle.case, handle.id, handle.to_dict(graph=False))
         except Exception as exc:
             logger.exception("Case report for %s failed", handle.id)
             handle.case.set_report(None, "failed")
             handle.emit("error", f"Case report failed: {type(exc).__name__}: {exc}")
             return None
-        handle.case.set_report(report, "ready")
         handle.emit("hit", f"📑 Case report ready: {len(report['assessments'])} assessment(s), "
                            f"{len(report['cited'])} reference(s) - download it from the toolbar")
         return report
 
+    # -- the case board: one shared board per run ---------------------------------------
+
+    def board(self, run_id: str, graph: dict[str, Any] | None = None) -> CaseFile | None:
+        """The run's case board - the same object for every caller, so two requests on a
+        finished run cannot each load a copy and overwrite the other's work. The live
+        run's board, else one already open, else the stored board, else the copy saved
+        with the run's graph."""
+        handle = self._runs.get(run_id)
+        if handle is not None:
+            return handle.case
+        with self._boards_lock:
+            case = self._open_boards.get(run_id)
+            if case is None:
+                data = self.boards.load(run_id)
+                if data is None:
+                    if graph is None:
+                        run = self.store.load(run_id)
+                        graph = (run or {}).get("graph")
+                    if graph is None:
+                        return None
+                    data = graph.get("case")
+                case = CaseFile.from_dict(data)
+                case.run_id = run_id
+                self._open_boards[run_id] = case
+                self._opened(case)
+            self._open_boards.move_to_end(run_id)
+            while len(self._open_boards) > _MAX_OPEN_BOARDS:
+                old_id, old = self._open_boards.popitem(last=False)
+                self.boards.save(old_id, old.to_dict())
+            return case
+
+    def _opened(self, case: CaseFile) -> None:
+        """A board just loaded: the Sherlock team listens to it (and does any work left on
+        its agenda from before a restart)."""
+        run_id = case.run_id
+        if not run_id:
+            return
+        run = self.store.load(run_id) or {}
+        self._attach(run_id, case, lambda: (self.store.load(run_id) or {}).get("graph") or {"nodes": [], "edges": []},
+                     self.backend_kind(run.get("backend")))
+
+    def _attach(self, run_id: str, case: CaseFile, graph: Callable[[], dict[str, Any]], backend_kind: str) -> None:
+        from sherlocks.linkgraph.investigator import _Tools
+
+        def save() -> None:
+            handle = self._runs.get(run_id)
+            if handle is not None:
+                self.store.save(handle.to_dict())
+            self.save_board(run_id, case)
+
+        def tools() -> Any:
+            # The Sherlock team's own budget, for the officer whose case it is.
+            backend = self.backend(backend_kind)
+            handle = self._runs.get(run_id)
+            agents = handle.agents if handle is not None and handle.agents is not None else self._agents(
+                case, backend, graph=graph())
+            return _Tools(graph(), case, agents, backend, self.settings.evidence.background_live_calls,
+                          officer=case.dialog.get("officer"), team="Sherlock team", reason="background casework")
+
+        self.casework.attach(run_id, case, graph, save, tools)
+
+    def _graph_analyst(self, handle: RunHandle) -> None:
+        from sherlocks.evidence.graph_analyst import analyse, link_co_accused
+
+        try:
+            link_co_accused(handle.builder, handle.case)      # accused in the same FIR: linked
+            analyse(handle.case, handle.builder.snapshot())
+        except Exception:  # noqa: BLE001 - the run goes on without it
+            logger.exception("Graph analyst on %s failed", handle.id)
+
+    def save_board(self, run_id: str, case: CaseFile) -> bool:
+        """Store the board (refused when older than what is stored) and keep the copy in
+        the run's graph current, for exports and for hosts that read it there."""
+        ok = self.boards.save(run_id, case.to_dict())
+        if not ok:
+            logger.warning("Case board of %s not saved: the stored board is newer (v%s)", run_id, case.version)
+        return ok
+
     def case_of(self, graph: dict[str, Any], run_id: str | None = None) -> CaseFile:
-        handle = self._runs.get(run_id) if run_id else None
-        return handle.case if handle is not None else CaseFile.from_dict(graph.get("case"))
+        """The board for a run held here, or for a graph the host posted back. A posted
+        board that belongs to a stored run and is older than it does not replace it:
+        only the officer's own edits in it are merged."""
+        if run_id:
+            case = self.board(run_id, graph)
+            if case is not None:
+                return case
+        posted = graph.get("case") if isinstance(graph.get("case"), dict) else None
+        owner = (posted or {}).get("run_id")
+        if owner:
+            stored = self.board(str(owner))
+            if stored is not None and int((posted or {}).get("version") or 0) <= stored.version:
+                merged = merge_posted(stored, posted)
+                if merged:
+                    logger.info("Merged %d edit(s) from an older posted board into %s", len(merged), owner)
+                    self.save_board(str(owner), stored)
+                return stored
+        return CaseFile.from_dict(posted)
 
     def document(self, run_id: str, doc_id: str) -> dict[str, Any] | None:
         graph = self.graph_for(run_id)
@@ -399,21 +517,44 @@ class RunManager:
             return None
         return self.case_of(graph, run_id).document(doc_id)
 
+    def _write_report(self, graph: dict[str, Any], case: CaseFile, run_id: str | None,
+                      run: dict[str, Any] | None) -> dict[str, Any]:
+        """S3: bring Sherlock's assessment up to date (within ``report_wait_s``), lay the
+        board out, check it, keep it with the board version it was built from."""
+        from sherlocks.evidence.case_report import assemble, check_report
+
+        board = self.casework.boards.get(run_id) if run_id else None
+        if board is not None and board.case is case:
+            self.casework.bring_up_to_date(board, timeout=self.settings.evidence.report_wait_s)
+        report = assemble(graph, case, llm=self._llm(), run=run)
+        report["checked"] = check_report(report, case)
+        with case.acting("S3 Report writer"):
+            case.set_report(report, "ready")
+        report["saved_at_version"] = case.version
+        return report
+
+    @staticmethod
+    def _report_current(case: CaseFile) -> bool:
+        """The stored report still matches the board (nothing but the report changed since)."""
+        report = case.report or {}
+        at = report.get("saved_at_version")
+        return at is not None and not [c for c in case.changes if c["version"] > at and c["entry"] not in (
+            "report", "followup", "view", "call", "desk")]
+
     def report_pdf(self, graph: dict[str, Any], run_id: str | None = None, *, rebuild: bool = False) -> bytes:
-        """The case report PDF: the report written at the end of the run, or written now
-        (a graph posted back by the host, or ``rebuild``)."""
-        from sherlocks.evidence.case_report import assemble
+        """The case report PDF: Sherlock's full, current assessment. Kept per board
+        version - a newer board means a new report (``rebuild`` forces one)."""
         from sherlocks.evidence.report_pdf import render
 
         case = self.case_of(graph, run_id)
-        report = None if rebuild else case.report
+        report = case.report if (not rebuild and self._report_current(case)) else None
         if report is None:
             run = self.get(run_id) if run_id else None
-            report = assemble(graph, case, llm=self._llm(), run=run)
-            case.set_report(report, "ready")
+            report = self._write_report(graph, case, run_id, run)
             if run_id and run_id not in self._runs and run is not None:
                 run.setdefault("graph", graph)["case"] = case.to_dict()
                 self.store.save(run)
+                self.save_board(run_id, case)
         return render(report, case, graph, self.images)
 
     def live(self, run_id: str) -> RunHandle | None:
@@ -426,6 +567,10 @@ class RunManager:
         cutoff = time.time() - _KEEP_FINISHED_SECONDS
         for run_id, handle in list(self._runs.items()):
             if handle.finished_at is not None and handle.finished_at.timestamp() < cutoff:
+                # The board stays open (same object) for whoever is still working on it.
+                with self._boards_lock:
+                    self._open_boards[run_id] = handle.case
+                self.save_board(run_id, handle.case)
                 self._runs.pop(run_id, None)
 
     def get(self, run_id: str) -> dict[str, Any] | None:
@@ -552,7 +697,7 @@ class RunManager:
         return {"a": pa, "b": pb, "routes": net.paths(pa, pb, k=k) if pa and pb else []}
 
     def investigate(self, graph: dict[str, Any], question: str, history: list[dict] | None = None,
-                    run_id: str | None = None) -> Any:
+                    run_id: str | None = None, officer: dict[str, Any] | None = None) -> Any:
         """The AI investigator's events for one question (an iterator). It reads the
         case file and may fetch documents or run a lookup itself; what it fetches joins
         the case file (saved with the run, or returned as ``case`` on the final event
@@ -570,12 +715,24 @@ class RunManager:
 
         # A graph with FIRs but no documents read yet (built before document reading): read them now.
         reading = 0
-        if run_id and not case.documents and not (handle is not None and handle.status in ("queued", "running")):
+        read_any = any(d["kind"] not in ("graph", "notes") for d in case.documents.values())
+        if run_id and not read_any and not (handle is not None and handle.status in ("queued", "running")):
             reading = self.read_documents(run_id)
 
         def events() -> Any:
+            if officer and officer.get("user"):
+                case.dialog["officer"] = officer      # whose case it is, for background calls
+            board_id = run_id or case.run_id
+
+            def saved_late() -> None:
+                # A follow-up written after the reply went out: keep it.
+                if board_id:
+                    self.save_board(board_id, case)
+
             for event in run_turn(graph, question, llm=self._llm(), history=history, case=case, agents=agents,
-                                  backend=backend, live_calls=self.settings.evidence.chat_live_calls):
+                                  backend=backend, live_calls=self.settings.evidence.chat_live_calls,
+                                  officer=officer or case.dialog.get("officer"), on_late=saved_late,
+                                  settings=self.settings):
                 if event.get("type") == "final" and reading:
                     from sherlocks.linkgraph.conversation import READING_LINE
 
@@ -583,12 +740,14 @@ class RunManager:
                     event["reading_documents"] = reading
                 if event.get("type") == "final" and handle is not None:
                     self.store.save(handle.to_dict())
+                    self.save_board(handle.id, case)
                 if event.get("type") == "final" and case.version != before and handle is None:
                     event["case"] = case.to_dict()
                     run = self.store.load(run_id) if run_id else None
                     if run is not None:
                         run.setdefault("graph", graph)["case"] = case.to_dict()
                         self.store.save(run)
+                        self.save_board(run_id, case)
                 yield event
 
         return events()
@@ -603,18 +762,23 @@ class RunManager:
             # Fresh agents: the run's own may be stopped, and a stopped run still takes uploads.
             agents = self._agents(handle.case, backend, handle=handle)
             agents.cancelled = lambda: False
+            def save_live() -> None:
+                self.store.save(handle.to_dict())
+                self.save_board(handle.id, handle.case)
+
             return {"case": handle.case, "agents": agents, "graph": handle.builder.snapshot, "emit": handle.emit,
-                    "save": lambda: self.store.save(handle.to_dict())}
+                    "save": save_live}
         run = self.store.load(run_id)
         if run is None:
             return None
         graph = run.setdefault("graph", {"nodes": [], "edges": []})
-        case = CaseFile.from_dict(graph.get("case"))
+        case = self.board(run_id, graph) or CaseFile.from_dict(graph.get("case"))
         agents = self._agents(case, self.backend(self.backend_kind(run.get("backend"))), graph=graph)
 
         def save() -> None:
             graph["case"] = case.to_dict()
             self.store.save(run)
+            self.save_board(run_id, case)
 
         return {"case": case, "agents": agents, "graph": lambda: graph, "emit": lambda level, message: None, "save": save}
 
@@ -670,7 +834,8 @@ class RunManager:
             f"Incident location: {where}" + (f", date {inc['date']}" if inc.get("date") else "")
             + (f" {inc['time']}" if inc.get("time") else "") + (f", FIR {inc['fir']}" if inc.get("fir") else ""), source="map")
         case.add_fact(doc_id, f"Stated by the officer: the incident took place at {where}"
-                      + (f" on {inc['date']}" if inc.get("date") else ""), line, kind="officer_incident_place", by="officer")
+                      + (f" on {inc['date']}" if inc.get("date") else ""), line, kind="officer_incident_place", by="officer",
+                      topic="incident:place")
         if inc.get("lat") is not None:
             case.close_question("incident:place", where or "")
             case.close_question("incident:pin", where or "")
@@ -699,11 +864,20 @@ class RunManager:
         if inc.get("lat") is not None and getattr(agents.source, "name", "") != "demo":
             server = cdr_agent.CdrServer(getattr(agents.source, "http", None))
             if server.ready:
+                from sherlocks.evidence import guard
+
+                guard.log_call(case, system="cdr:nearest_ps", identifier=None, agent="R2 Enricher",
+                               reason="the officer pinned the incident", officer=case.dialog.get("officer"),
+                               status="called")
                 out = server.provider("nearest_ps", {"latitude": float(inc["lat"]), "longitude": float(inc["lon"])})
                 if out.get("hit") or out.get("status") == "success":
                     case.set_incident({"nearest_ps": out.get("summary")})
                     emit("info", f"📍 Nearest police station to the incident: {out.get('summary')}")
+        from sherlocks.evidence.cdr_team import rerun
+
         phones = {p: n for p, (_pid, n) in graph_phones(session["graph"]()).items()}
+        # R4 again, for the pinned point: findings for the old point go stale.
+        rerun(case, session["graph"](), "cdr:location", radius_km=self.settings.evidence.cdr_radius_km)
         for doc in list(case.documents.values()):
             path = Path((doc.get("data") or {}).get("path") or "")
             if doc["kind"] != "cdr" or not path.is_file():
@@ -713,9 +887,6 @@ class RunManager:
             lines = [line for line in analysis.get("lines", [])
                      if line.startswith(("Incident day", "Near the incident", "Towers within"))]
             if lines:
-                case.append_text(doc["id"], "\n".join(["Against the pinned incident:", *lines]))
-                for line in lines:
-                    case.add_fact(doc["id"], line, line, kind="telecom", by="cdr")
                 data = doc.setdefault("data", {}).setdefault("analysis", {})
                 data["near_incident"] = analysis.get("near_incident") or []
                 emit("hit", f"📶 {doc['title']} against the incident: {lines[0]} [{doc['id']}]")
@@ -817,4 +988,4 @@ def memory_manager(settings: Settings, **kwargs: Any) -> RunManager:
 
     return RunManager(settings, store=MemoryRunStore(),
                       cache=MemoryProviderCache(settings.linkgraph.cache_ttl_hours * 3600),
-                      images=MemoryImageStore(), **kwargs)
+                      images=MemoryImageStore(), boards=kwargs.pop("boards", None) or MemoryBoardStore(), **kwargs)

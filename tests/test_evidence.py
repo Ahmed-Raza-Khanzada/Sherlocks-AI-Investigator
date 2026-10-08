@@ -156,7 +156,7 @@ def test_a_run_reads_the_fir_file_its_lab_reports_and_the_cro_dossier(ems_run):
     fir_calls = [body for path, body in http.asked if path.endswith("/firfilereport")]
     assert len(fir_calls) == 1 and fir_calls[0]["fir_year"] == "25" and fir_calls[0]["ps_id"] == "544"
     assert [body for path, body in http.asked if path.endswith("/show-reports")] == [{"ps_id": 544, "fir_no": "321", "fir_year": "25"}]
-    kinds = {d["kind"]: d for d in handle.case.documents.values()}
+    kinds = {d["kind"]: d for d in handle.case.documents.values() if d["kind"] != "graph"}   # A1's own analysis aside
     assert set(kinds) == {"fir", "lab", "cro"}
     assert "matches the reference sample" in kinds["lab"]["text"] and http.downloads == ["https://labs.test/r1.pdf"]
     assert kinds["cro"]["images"], "the dossier's pictures are kept"
@@ -191,25 +191,30 @@ def test_the_chat_reads_and_fetches_documents_within_a_budget(ems_run):
         tools.fetch_cro({"cro_no": "778"})
 
 
-def test_case_report_drops_assessments_without_evidence():
-    from sherlocks.evidence.case_report import assemble
+def test_case_report_is_sherlocks_assessment_and_drops_what_rests_on_nothing():
+    from sherlocks.evidence.case_report import assemble, check_report
     from sherlocks.evidence.report_pdf import render
+    from sherlocks.linkgraph.casework import assess
+    from sherlocks.linkgraph.network import PersonNetwork
 
     case = CaseFile()
     did = case.add_document(kind="lab", key="k", title="DNA report", source="Lab", text="Result: the DNA matches Kamran.")
     fid = case.add_fact(did, "The DNA matches Kamran.", "the DNA matches Kamran")
     graph = {"nodes": [{"id": "a", "kind": "person", "label": "Kamran", "data": {"seed": True, "flags": [], "firs": []}}],
              "edges": []}
-    llm = _Llm({"_Written": {"executive_summary": f"Kamran is tied to the scene by DNA [{fid}].", "assessments": [
-        {"statement": "Kamran was at the scene.", "confidence": "high", "basis": [fid, did]},
-        {"statement": "Kamran leads a gang.", "confidence": "low", "basis": ["Z9"]}],
-        "open_questions": [], "recommendations": ["Record Kamran's statement."]}})
-    report = assemble(graph, case, llm=llm)
-    assert [a["statement"] for a in report["assessments"]] == ["Kamran was at the scene."]
-    assert fid in report["cited"] and report["model"] == "scripted"
+    llm = _Llm({"_Assessment": {"conclusion": f"Kamran is tied to the scene by DNA [{fid}].", "hypotheses": [
+        {"statement": "Kamran's DNA was at the scene.", "status": "supported", "confidence": "high", "support": [fid, did]},
+        {"statement": "Kamran leads a gang.", "confidence": "low", "support": ["Z9"]}],
+        "next_steps": ["Record Kamran's statement."]}})
+    assess(case, graph, PersonNetwork(graph), llm)                    # S1, on the board
+    report = assemble(graph, case)                                    # S3 lays it out: no new judgment
+    assert [a["statement"] for a in report["assessments"]] == ["Kamran's DNA was at the scene."]
+    assert fid in report["cited"] and report["model"] == "scripted" and report["status"] == "current"
+    assert report["recommendations"] == ["Record Kamran's statement."]
+    assert check_report(report, case) == []
     assert render(report, case, graph).startswith(b"%PDF")
-    rule = assemble(graph, case)
-    assert rule["model"] is None and "Kamran" in rule["executive_summary"]
+    rule = assemble(graph, CaseFile())                                 # before any assessment: the rules' sections
+    assert rule["model"] is None and "Kamran" in rule["executive_summary"] and rule["status"] == "as_of"
 
 
 def test_case_file_round_trips():

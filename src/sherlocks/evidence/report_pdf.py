@@ -341,6 +341,7 @@ def render(report: dict[str, Any], case: CaseFile, graph: dict[str, Any], images
     _findings(pdf, n, report)
     n += 1
     _assessment(pdf, n, report)
+    n = _board_sections(pdf, n, report)
     if report.get("timeline"):
         n += 1
         pdf.section(n, "Timeline")
@@ -349,7 +350,7 @@ def render(report: dict[str, Any], case: CaseFile, graph: dict[str, Any], images
     n += 1
     _evidence(pdf, n, case, images)
     n += 1
-    pdf.section(n, "Open questions and recommendations")
+    pdf.section(n, "Open questions and next steps")
     for q in report.get("open_questions") or ["None recorded."]:
         pdf.para(f"?  {q}", size=9.5)
     pdf.ln(2)
@@ -357,7 +358,23 @@ def render(report: dict[str, Any], case: CaseFile, graph: dict[str, Any], images
         pdf.para(f"→  {r}", size=9.5)
     n += 1
     _references(pdf, n, report, case)
+    _audit(pdf, n, report)
     return bytes(pdf.output())
+
+
+def _status_line(report: dict[str, Any]) -> str:
+    """Whether the assessment covers the board this report was built from."""
+    version = report.get("board_version")
+    if report.get("status") == "current":
+        line = f"Assessment current (board v{version})"
+    elif report.get("as_of"):
+        line = (f"Assessment as of {str(report['as_of'])[:16].replace('T', ' ')} (board v{report.get('assessment_version')}); "
+                f"{len(report.get('not_covered') or [])} newer entr(ies) not yet assessed - see the appendix")
+    else:
+        line = "Sherlock has not assessed this case yet - sections from the records"
+    if not report.get("model"):
+        line += " · built without the AI model"
+    return line
 
 
 def _cover(pdf: _Pdf, report: dict[str, Any], images: Any) -> None:
@@ -379,7 +396,7 @@ def _cover(pdf: _Pdf, report: dict[str, Any], images: Any) -> None:
     pdf.badge("CONFIDENTIAL — FOR OFFICIAL USE ONLY", RED, x=16, y=92)
     pdf.set_xy(16, 100)
     pdf.font(8.5, "", (214, 222, 235))
-    pdf.cell(0, 5, pdf.t(f"Generated {report.get('generated_at')}"))
+    pdf.cell(0, 5, pdf.t(f"Generated {report.get('generated_at')}  ·  {_status_line(report)}"))
 
     targets = report.get("targets") or []
     y = 124
@@ -541,9 +558,13 @@ def _findings(pdf: _Pdf, n: int, report: dict[str, Any]) -> None:
 
 def _assessment(pdf: _Pdf, n: int, report: dict[str, Any]) -> None:
     pdf.section(n, "Sherlock's assessment")
+    if report.get("conclusion"):
+        pdf.para(report["conclusion"], size=10, h=5.4)
+        pdf.ln(2)
     items = report.get("assessments") or []
     if not items:
         pdf.para("No assessment could be supported by the evidence gathered.", colour=GREY)
+    against = {h["id"]: h.get("against") or [] for h in report.get("hypotheses") or []}
     for i, a in enumerate(items, 1):
         if pdf.get_y() > pdf.h - 30:
             pdf.add_page()
@@ -559,8 +580,94 @@ def _assessment(pdf: _Pdf, n: int, report: dict[str, Any]) -> None:
         pdf.badge(f"{a['confidence'].upper()} CONFIDENCE", CONF.get(a["confidence"], GREY), x=pdf.w - 16 - 34, y=y)
         pdf.set_xy(24, end)
         pdf.font(8, "B", NAVY)
-        pdf.cell(0, 4.6, "Basis: " + "  ".join(f"[{b}]" for b in a["basis"]), new_x="LMARGIN", new_y="NEXT")
+        status = f"{a['id']} · {a['status']} · " if a.get("id") else ""
+        pdf.cell(0, 4.6, pdf.t(status + "For: " + "  ".join(f"[{b}]" for b in a["basis"])), new_x="LMARGIN", new_y="NEXT")
+        if against.get(a.get("id")):
+            pdf.set_x(24)
+            pdf.font(8, "B", RED)
+            pdf.cell(0, 4.6, "Against: " + "  ".join(f"[{b}]" for b in against[a["id"]]), new_x="LMARGIN", new_y="NEXT")
         pdf.ln(2.5)
+    if report.get("concerns"):
+        pdf.para("Concerns: " + "; ".join(report["concerns"]), size=9, colour=GREY)
+
+
+def _board_sections(pdf: _Pdf, n: int, report: dict[str, Any]) -> int:
+    """The sections laid out from the Sherlock team's work on the case board."""
+    if report.get("contradictions"):
+        n += 1
+        pdf.section(n, "Contradictions and conflicts")
+        _table(pdf, ["Topic", "Sources say", "Leads (order of trust)", "What would settle it"],
+               [[c["topic"] or "-", "; ".join(c["values"]) or "-", c["leads"] or "-", c["settle"]]
+                for c in report["contradictions"]], (24, 62, 34, 58))
+    if report.get("suspicions"):
+        n += 1
+        pdf.section(n, "Suspicions (not evidence)")
+        pdf.para("Sherlock's suspicions: leads to check, never evidence. None of them is a finding.", size=8.5,
+                 colour=RED, style="I")
+        for sp in report["suspicions"]:
+            pdf.para(f"?  {sp['statement']}" + (f"  [{', '.join(sp['for'])}]" if sp.get("for") else ""), size=9.5)
+        pdf.ln(2)
+    if report.get("history") or report.get("replaced"):
+        n += 1
+        pdf.section(n, "How the assessment changed")
+        _table(pdf, ["Id", "Hypothesis", "Before", "After", "Because of"],
+               [[h["id"], h.get("statement", "")[:120], h.get("before") or "-", h.get("after") or "-", h.get("cause") or "-"]
+                for h in report.get("history") or []][-60:], (12, 70, 26, 26, 44))
+        if report.get("replaced"):
+            pdf.para("Corrected by the officer (kept, not used):", size=9, style="B")
+            _table(pdf, ["Id", "Statement", "Replaced by"],
+                   [[r["id"], r["statement"][:160], r["replaced_by"]] for r in report["replaced"]], (14, 140, 24))
+    if report.get("cdrs"):
+        n += 1
+        pdf.section(n, "CDR analysis")
+        for c in report["cdrs"]:
+            if pdf.get_y() > pdf.h - 50:
+                pdf.add_page()
+            pdf.para(f"{c['title']} [{c['id']}] - subscriber {c.get('subject') or 'unknown'}"
+                     + (f", owner {c['owner']}" if c.get("owner") else ", owner not confirmed: filed under the number"),
+                     size=9.5, style="B")
+            if c.get("summary"):
+                pdf.para(c["summary"], size=8.5, colour=GREY)
+            _table(pdf, ["Id", "Finding", "Tier", "Rows"],
+                   [[f["id"], f["text"][:220], f["tier"], f.get("rows") or "-"] for f in c["findings"]], (12, 116, 18, 32))
+    if report.get("statements") or report.get("qa"):
+        n += 1
+        pdf.section(n, "The officer's statements and questions")
+        for st in report.get("statements") or []:
+            pdf.para(f"•  {st['statement']}  [{st['id']}]", size=9)
+        pdf.ln(1)
+        _table(pdf, ["Id", "Question", "Status", "Answer", "Asked in turns"],
+               [[q["id"], q["question"][:140], q["status"], (q.get("answer") or "-")[:100],
+                 ", ".join(map(str, q.get("turns") or [])) or "-"] for q in report.get("qa") or []], (12, 70, 20, 50, 26))
+    if report.get("views"):
+        n += 1
+        pdf.section(n, "Asked of Sherlock in the chat")
+        _table(pdf, ["Turn", "Question", "Sherlock's view then", "Later"],
+               [[v.get("turn") or "-", v["question"][:120], v["view"][:200],
+                 v["status"] + (f": {v['note']}" if v.get("note") else "")] for v in report["views"]], (12, 50, 80, 36))
+    if report.get("nothing_found"):
+        n += 1
+        pdf.section(n, "Checked, nothing found")
+        for line in report["nothing_found"]:
+            pdf.para(f"–  {line}", size=8.5, colour=GREY)
+        pdf.ln(2)
+    return n
+
+
+def _audit(pdf: _Pdf, n: int, report: dict[str, Any]) -> int:
+    audit = report.get("audit") or {}
+    n += 1
+    pdf.section(n, "Appendix: live calls made for this case")
+    pdf.para(f"{audit.get('total', 0)} call(s) made, {audit.get('refused', 0)} refused by the safety rules; "
+             f"officer(s): {', '.join(audit.get('officers') or []) or '-'}.", size=9)
+    rows = [[k, v] for k, v in sorted((audit.get("by_system") or {}).items(), key=lambda kv: -kv[1])]
+    _table(pdf, ["System", "Calls"], rows, (120, 30))
+    if report.get("status") == "as_of" and report.get("not_covered"):
+        n += 1
+        pdf.section(n, "Appendix: newer entries not yet assessed")
+        for line in report["not_covered"]:
+            pdf.para(f"–  {line}", size=8.5, colour=GREY)
+    return n
 
 
 def _table(pdf: _Pdf, headings: list[str], rows: list[list[Any]], widths: tuple[float, ...]) -> None:

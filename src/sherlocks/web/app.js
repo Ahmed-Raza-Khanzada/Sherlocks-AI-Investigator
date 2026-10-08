@@ -417,6 +417,7 @@
     state.caseIndex = null;
     state.caseFull = null;
     state.sherlockTurns = [];
+    state.followupsSeen = null;
     state.shownQuestions = new Set();
     $('sherlockLog').innerHTML = '';
     if (!$('sherlockPanel').hidden) {
@@ -832,8 +833,37 @@
     }
   }
 
+  /* Follow-ups: what Sherlock sends after a reply went out - a slow lookup, his view, the
+     rest of an answer that ran over its time budget. Shown once each, in the chat. */
+  function showFollowups() {
+    const list = state.caseIndex?.followups || [];
+    if (!state.followupsSeen) {
+      // Opening a case: earlier follow-ups belong to earlier sessions (unless one was asked for now).
+      state.followupsSeen = new Set(state.sherlockTurns?.length ? [] : list.map((f) => f.id));
+    }
+    for (const f of list) {
+      if (state.followupsSeen.has(f.id)) continue;
+      state.followupsSeen.add(f.id);
+      const box = sherlockSay('bot', `<div class="shans followup" dir="auto"><div class="shreply">${replyHtml(f.text)}</div></div>`);
+      wireCites(box);
+    }
+  }
+
+  function watchFollowups() {
+    clearTimeout(state.followTimer);
+    let polls = 0;
+    const tick = async () => {
+      polls += 1;
+      const before = (state.caseIndex?.followups || []).length;
+      await refreshCase();
+      if ((state.caseIndex?.followups || []).length === before && polls < 30) state.followTimer = setTimeout(tick, 2500);
+    };
+    state.followTimer = setTimeout(tick, 1500);
+  }
+
   function renderEvidence() {
     const c = state.caseIndex;
+    showFollowups();
     const counts = c?.counts || { documents: 0, facts: 0, links: 0, pending: 0 };
     $('evidenceCounts').innerHTML = [['Documents', counts.documents], ['Quoted facts', counts.facts],
       ['People in documents', counts.links]].map(([k, v]) => `<div class="stat"><b>${v ?? 0}</b><span>${k}</span></div>`).join('')
@@ -857,9 +887,156 @@
     $('fabBadge').hidden = !counts.documents;
     $('fabBadge').textContent = counts.documents;
     renderQuestions();
+    renderSherlockWork();
+    if ($('boardDlg')?.open) renderBoard();
     notifyCaseChanged();
     $('sherlockCtx').textContent = `${state.nodes.size ? [...state.nodes.values()].filter((n) => n.kind === 'person').length : 0} people · ${counts.documents} documents`;
     renderReportButtons();
+  }
+
+  // ------------------------------------------------------------------ Sherlock's work and the case board
+
+  const STATUS_COLOR = { supported: 'ok', open: 'open', weakened: 'weak', 'ruled out': 'out' };
+  const AGENDA_TEXT = {
+    sherlock: 'Re-assessing the case', summary: 'Updating the summary and timeline', gaps: 'Ranking what to ask next',
+    dossiers: 'Refreshing the dossiers', 'cdr:location': 'Re-reading the CDRs against the incident',
+    'cdr:patterns': 'Re-reading CDR patterns', 'cdr:cross': 'Linking the CDRs to each other', 'incident:ps': 'Finding the nearest police station',
+  };
+
+  /* What Sherlock is doing on the case right now - in the case panel. */
+  function renderSherlockWork() {
+    const box = $('sherlockWork');
+    const c = state.caseIndex;
+    if (!box || !c) return;
+    const a = c.assessment || {};
+    const hyps = (c.hypotheses || []).filter((h) => !h.stale);
+    const agenda = (c.agenda || []).map((x) => AGENDA_TEXT[x.task] || AGENDA_TEXT[x.task.split(':').slice(0, 2).join(':')] || x.task);
+    const qs = (c.questions || []).filter((q) => q.status === 'open');
+    box.innerHTML = `<div class="runhead"><b>🕵 Sherlock's work</b><button id="boardBtn2" class="ghost small" type="button">Open case board</button></div>
+      ${agenda.length ? `<div class="shworking"><span class="shimmer">${esc(agenda[0])}…</span>${agenda.length > 1 ? `<span class="muted small"> +${agenda.length - 1} more</span>` : ''}</div>` : ''}
+      ${a.answer ? `<p class="small">${citeHtml(a.answer)}</p>` : '<p class="muted small">Sherlock assesses the case as documents, records and your answers arrive.</p>'}
+      ${hyps.length ? `<ul class="hyplist">${hyps.slice(0, 6).map((h) => `<li><span class="hstat ${STATUS_COLOR[h.status] || 'open'}">${esc(h.status)}</span>${citeHtml(h.statement)} <a href="#" class="cite srchyp" data-ref="${esc(h.id)}">${esc(h.id)}</a></li>`).join('')}</ul>` : ''}
+      ${qs.length ? `<div class="leadgroup">Sherlock needs to know</div><ul class="asklist">${qs.slice(0, 5).map((q) => `<li class="askitem ${esc(q.priority || 'orange')}"><span class="askdot"></span>${esc(q.text)}</li>`).join('')}</ul>` : ''}
+      ${a.at ? `<div class="muted small">Assessed ${esc(String(a.at).replace('T', ' ').slice(0, 16))}</div>` : ''}`;
+    box.hidden = false;
+    wireCites(box);
+    $('boardBtn2').onclick = () => openBoard();
+  }
+
+  /* A host page (the Laravel tab) carries its own copy of the markup, possibly from before
+     the case board: add what it lacks, so an older page never breaks the app. */
+  function ensureBoardMarkup() {
+    if (!$('boardDlg')) {
+      const dlg = document.createElement('dialog');
+      dlg.id = 'boardDlg';
+      dlg.className = 'boarddlg';
+      dlg.innerHTML = '<form method="dialog" class="dlghead boardhead"><b>🕵 Case board</b><span id="boardMeta" class="muted small"></span>'
+        + '<button class="ghost">Close</button></form><div id="boardBody" class="cork"></div>';
+      document.body.appendChild(dlg);
+    }
+    if (!$('boardBtn') && $('reportBtn')) {
+      const btn = document.createElement('button');
+      btn.id = 'boardBtn';
+      btn.className = 'boardbtn';
+      btn.type = 'button';
+      btn.title = "Open the detective's case board";
+      btn.textContent = '🕵 Case board';
+      $('reportBtn').before(btn);
+    }
+    if (!$('sherlockWork') && $('evidenceList')) {
+      const box = document.createElement('div');
+      box.id = 'sherlockWork';
+      box.className = 'shwork';
+      box.hidden = true;
+      $('evidenceList').before(box);
+    }
+  }
+
+  function openBoard(focus = null) {
+    ensureBoardMarkup();
+    if (!$('boardDlg').open) $('boardDlg').showModal();
+    renderBoard(focus);
+  }
+
+  /* The detective's case board: the new case in the middle, the people pinned around it,
+     Sherlock's hypotheses as sticky notes, the documents' facts on index cards, the
+     officer's notes, the questions still open, the timeline - and red string from each
+     person to every note about them. Built from the case board; every card opens its source. */
+  function renderBoard(focus = null) {
+    const c = state.caseIndex;
+    const body = $('boardBody');
+    if (!c) { body.innerHTML = '<p class="note">The case board fills as the search and Sherlock work.</p>'; return; }
+    const tilt = (i) => `transform: rotate(${((i * 37) % 7) - 3}deg)`;
+    const people = new Map();
+    for (const n of state.nodes.values()) {
+      if (n.kind === 'person' && (n.data?.seed || c.roles?.[n.id])) people.set(n.id, n);
+    }
+    for (const h of c.hypotheses || []) for (const pid of h.people || []) if (state.nodes.has(pid)) people.set(pid, state.nodes.get(pid));
+    const inc = c.incident || {};
+    const live = (c.facts || []).filter((f) => !f.replaced_by && !f.stale);
+    const docs = (c.documents || []).filter((d) => !['notes', 'graph'].includes(d.kind));
+    const notes = live.filter((f) => f.by === 'officer').slice(-8);
+    const patterns = live.filter((f) => f.by === 'graph').slice(0, 6);
+    const qs = (c.questions || []).filter((q) => q.status === 'open');
+    const line = (c.summary?.timeline || []).slice(-14);
+    const personCard = ([pid, n], i) => {
+      const img = (n.data?.images || [])[0];
+      const role = c.roles?.[pid];
+      return `<div class="bcard bperson ${role === 'main suspect' ? 'main' : ''}" data-pid="${esc(pid)}" data-node="${esc(pid)}" style="${tilt(i)}">
+        <span class="bpin"></span>${img ? `<img src="${imageUrl(img.id || img)}" alt="">` : `<div class="binit">${esc((n.label || '?').split(/\s+/).map((w) => w[0]).join('').slice(0, 2))}</div>`}
+        <b>${esc(n.label)}</b>${role ? `<span class="brole">${esc(role)}</span>` : n.data?.seed ? '<span class="brole">target</span>' : ''}
+        ${(n.data?.flags || []).length ? `<span class="muted small">${esc((n.data.flags || []).slice(0, 2).join(', ').replace(/_/g, ' '))}</span>` : ''}</div>`;
+    };
+    body.innerHTML = `<svg class="bstrings" aria-hidden="true"></svg>
+      <div class="bzone bpeople"><h3>The people</h3>${[...people.entries()].slice(0, 10).map(personCard).join('') || '<p class="muted small">Targets appear here.</p>'}</div>
+      <div class="bzone bcase">
+        <div class="bcard bnew"><span class="bpin red"></span><h3>The new case</h3>
+          ${inc.offence || inc.place || inc.date ? `<p><b>${esc(inc.offence || 'Offence not given')}</b></p>
+            <p>${esc(inc.place || (inc.lat != null ? `${inc.lat}, ${inc.lon}` : 'Place not given'))}${inc.date ? ` · ${esc(inc.date)} ${esc(inc.time || '')}` : ''}</p>
+            ${inc.fir ? `<p>FIR ${esc(inc.fir)}</p>` : ''}${inc.nearest_ps ? `<p class="muted small">Nearest PS: ${esc(inc.nearest_ps)}</p>` : ''}`
+            : '<p class="muted">Not described yet - tell Sherlock what happened, where and when.</p>'}
+          ${c.assessment?.answer ? `<div class="bverdict">🕵 ${citeHtml(c.assessment.answer)}</div>` : ''}</div>
+        <div class="bhyps">${(c.hypotheses || []).filter((h) => !h.stale).map((h, i) => `<div class="bcard bsticky ${STATUS_COLOR[h.status] || 'open'} ${focus === h.id ? 'bfocus' : ''}" data-pids="${esc((h.people || []).join(' '))}" data-hyp="${esc(h.id)}" style="${tilt(i + 3)}">
+            <span class="bpin"></span><span class="hstat ${STATUS_COLOR[h.status] || 'open'}">${esc(h.id)} · ${esc(h.status)}</span><p>${esc(h.statement)}</p>
+            <span class="muted small">${esc(h.confidence)} confidence · for ${(h.for || []).length}, against ${(h.against || []).length}</span></div>`).join('')
+            || '<p class="muted small">Sherlock\'s hypotheses are pinned here as he forms them.</p>'}</div>
+      </div>
+      <div class="bzone bfacts"><h3>What the records say</h3>
+        ${docs.map((d, i) => { const fs = live.filter((f) => f.doc === d.id).slice(0, 3); return `<div class="bcard bindex" data-doc="${esc(d.id)}" data-pids="${esc([...new Set(fs.flatMap((f) => f.pids || []))].join(' '))}" style="${tilt(i + 1)}">
+          <span class="bpin blue"></span><b>${KIND_ICON[d.kind] || '📄'} ${esc(d.title)}</b>
+          ${fs.map((f) => `<p class="bfact"><span class="btier ${esc(f.tier || 'fact')}">${esc(f.tier || 'fact')}</span>${esc(f.statement.slice(0, 140))}</p>`).join('') || `<p class="muted small">${esc((d.summary || '').slice(0, 120))}</p>`}</div>`; }).join('')}
+        ${patterns.length ? `<div class="bcard bindex bpattern" data-pids="${esc([...new Set(patterns.flatMap((f) => f.pids || []))].join(' '))}" style="${tilt(9)}"><span class="bpin"></span><b>🔗 Patterns in the graph</b>
+          ${patterns.map((f) => `<p class="bfact">${esc(f.statement.slice(0, 120))}</p>`).join('')}</div>` : ''}</div>
+      <div class="bzone bnotes"><h3>Officer's notes</h3>${notes.map((f, i) => `<div class="bcard bnote" data-fact="${esc(f.id)}" style="${tilt(i + 5)}"><span class="bpin"></span>${esc(f.statement.replace(/^Stated by the officer(?: \(correction\))?: /, ''))}</div>`).join('') || '<p class="muted small">What you tell Sherlock is pinned here.</p>'}</div>
+      <div class="bzone bquestions"><h3>Open questions</h3>${qs.map((q, i) => `<div class="bcard bq ${esc(q.priority || 'orange')}" style="${tilt(i + 7)}"><span class="bpin ${esc(q.priority || 'orange')}"></span>${esc(q.text)}</div>`).join('') || '<p class="muted small">Nothing open.</p>'}</div>
+      <div class="bzone btimeline"><h3>Timeline</h3><div class="btrack">${line.map((r) => `<div class="btick" title="${esc(r.what)}"><b>${esc(String(r.when).slice(0, 16))}</b><span>${esc(r.what.slice(0, 80))}</span></div>`).join('') || '<p class="muted small">Dates appear as documents are read.</p>'}</div></div>`;
+    $('boardMeta').textContent = `${people.size} people · ${docs.length} documents · ${live.length} facts · ${(c.hypotheses || []).length} hypotheses`;
+    body.querySelectorAll('[data-doc]').forEach((el) => { el.onclick = () => openDocument(el.dataset.doc); });
+    body.querySelectorAll('[data-fact]').forEach((el) => { el.onclick = () => { const d = docOfRef(el.dataset.fact); if (d) openDocument(d, el.dataset.fact); }; });
+    body.querySelectorAll('[data-node]').forEach((el) => { el.onclick = () => { $('boardDlg').close(); if (state.nodes.has(el.dataset.node)) focusNode(el.dataset.node); }; });
+    wireCites(body);
+    requestAnimationFrame(() => drawStrings(body));
+  }
+
+  /* Red string from each person to every card about them. */
+  function drawStrings(body) {
+    const svg = body.querySelector('.bstrings');
+    if (!svg) return;
+    const box = body.getBoundingClientRect();
+    svg.setAttribute('width', body.scrollWidth);
+    svg.setAttribute('height', body.scrollHeight);
+    const centre = (el) => { const r = el.getBoundingClientRect(); return [r.left - box.left + body.scrollLeft + r.width / 2, r.top - box.top + body.scrollTop + 10]; };
+    const paths = [];
+    body.querySelectorAll('.bperson').forEach((p) => {
+      const [x1, y1] = centre(p);
+      body.querySelectorAll('[data-pids]').forEach((card) => {
+        if (!(card.dataset.pids || '').split(' ').includes(p.dataset.pid)) return;
+        const [x2, y2] = centre(card);
+        const sag = Math.min(80, Math.abs(x2 - x1) / 4 + 20);
+        paths.push(`<path d="M${x1},${y1} Q${(x1 + x2) / 2},${Math.max(y1, y2) + sag} ${x2},${y2}"/>`);
+      });
+    });
+    svg.innerHTML = paths.join('');
   }
 
   // After a run has finished, the case keeps growing (uploads, the incident pin, answers,
@@ -940,6 +1117,10 @@
     if (!reportAvailable()) return;
     const buttons = [$('reportBtn'), $('reportBtn2')];
     buttons.forEach((b) => { b.disabled = true; b.textContent = '✍ Preparing PDF…'; });
+    // The report is Sherlock's assessment: if new work is on the board he finishes it first.
+    const note = sherlockSay('bot', '<div class="shans" dir="auto"><div class="shstatus" role="status" aria-live="polite">'
+      + '<span class="shimmer">Sherlock is finishing his assessment for the report…</span><span class="shelapsed"></span></div></div>');
+    const waiting = statusLine(note.querySelector('.shstatus'));
     try {
       const response = state.offline
         ? await fetch(`${API}/graph/report`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ graph: currentGraph(), explain: rebuild }) })
@@ -953,23 +1134,73 @@
       const url = URL.createObjectURL(blob);
       download(`Sherlocks_case_report_${(state.runId || 'graph').slice(0, 8)}.pdf`, url);
       setTimeout(() => URL.revokeObjectURL(url), 60000);
+      note.querySelector('.shans').innerHTML = '<div class="shreply"><p>Case report ready - downloaded.</p></div>';
     } catch (err) {
       logLocal('error', `Case report: ${err.message}`);
+      note.querySelector('.shans').innerHTML = `<div class="shreply"><p>Case report failed: ${esc(err.message)}</p></div>`;
     } finally {
+      waiting.stop();
       renderReportButtons();
     }
   }
 
   // ------------------------------------------------------------------ Sherlock (chat bubble)
 
+  /* Every source in brackets is clickable: case ids ([D2], [F7], "FIR file D1") open the
+     document at the quoted line; system names ([PSRMS], [CRO]) open that system's records. */
   function citeHtml(text) {
-    return esc(text).replace(/\n/g, '<br>').replace(/\[([DFL]\d{1,4})\]/g, '<a href="#" class="cite" data-ref="$1">$1</a>');
+    return esc(text).replace(/\n/g, '<br>')
+      .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+      .replace(/\[([^\]<>]{1,80})\]/g, (all, inner) => {
+        const parts = inner.split(/,\s*/).map((part) => {
+          const id = part.match(/\b([DFLHQ]\d{1,4})\b/);
+          if (id) return part.replace(id[1], `<a href="#" class="cite ${sourceKind(id[1])}" data-ref="${id[1]}">${id[1]}</a>`);
+          if (/^[A-Za-z][\w .&#/-]{1,30}$/.test(part) && !/^\d+$/.test(part)) {
+            return `<a href="#" class="cite srcapi" data-sys="${part}" title="Open the ${part} records">${part}</a>`;
+          }
+          return part;
+        });
+        return `[${parts.join(', ')}]`;
+      });
+  }
+
+  /* What a case id is: a document, the officer's own words (chat), or Sherlock's work. */
+  function sourceKind(ref) {
+    const c = state.caseIndex;
+    if (!c) return '';
+    if (ref[0] === 'F') {
+      const f = (c.facts || []).find((x) => x.id === ref);
+      if (f?.by === 'officer') return 'srcchat';
+      if (f?.by === 'graph') return 'srcgraph';
+      return 'srcdoc';
+    }
+    if (ref[0] === 'D') return (c.documents || []).find((d) => d.id === ref)?.kind === 'notes' ? 'srcchat' : 'srcdoc';
+    return ref[0] === 'H' ? 'srchyp' : '';
+  }
+
+  /* An API source: the records that system returned, for the people of the answer, with
+     the values the answer used highlighted. */
+  function openSystemSource(label, context) {
+    const want = String(label || '').toLowerCase();
+    const ctx = String(context || '').toLowerCase();
+    const nodes = [...state.nodes.values()].filter((n) => n.kind === 'system'
+      && [(n.data?.system_label || ''), (n.data?.system || ''), (n.label || '')].some((x) => x.toLowerCase() === want));
+    $('docTitle').textContent = `🔌 ${label} - records from the police system`;
+    const owner = (n) => state.nodes.get(String(n.id).split(':').pop())?.label || '';
+    const hl = (v) => { const t = String(v ?? '').toLowerCase().trim(); return t.length >= 3 && ctx.includes(t); };
+    $('docBody').innerHTML = nodes.length ? nodes.map((n) => `<div class="leadgroup">${esc(owner(n) || n.label)} · ${esc(n.data?.summary || '')}</div>
+        <table class="facts"><tbody>${(n.data?.fields || []).map((f) => `<tr class="${hl(f.value) ? 'hl' : ''}"><td><b>${esc(f.label)}</b></td><td dir="auto">${esc(f.value)}</td></tr>`).join('')}</tbody></table>`).join('')
+      : `<p class="note">${esc(label)} is a police system. Its answer was used directly (for example a live lookup in the chat); no stored record of it is on the graph.</p>`;
+    if (!$('docDlg').open) $('docDlg').showModal();
+    $('docBody').querySelector('tr.hl')?.scrollIntoView({ block: 'center' });
   }
 
   function wireCites(box) {
     box.querySelectorAll('.cite').forEach((a) => {
       a.onclick = (e) => {
         e.preventDefault();
+        if (a.dataset.sys) { openSystemSource(a.dataset.sys, box.textContent); return; }
+        if (a.dataset.ref?.[0] === 'H') { openBoard(a.dataset.ref); return; }
         const doc = docOfRef(a.dataset.ref);
         if (doc) openDocument(doc, a.dataset.ref[0] === 'D' ? null : a.dataset.ref);
       };
@@ -1002,23 +1233,50 @@
   }
 
   // A reply as readable text: "• " lines become a list, a line ending in ":" a lead-in.
+  /* The Presenter's layout: **bold** answer first, bullets, | table | rows, > quotes from
+     the records, and Sherlock's view (a "VIEW:" line) in its own labelled block. */
   function replyHtml(text) {
     const out = [];
-    let list = null;
+    let group = null;
+    const push = (kind, line) => {
+      if (!group || group.kind !== kind) { group = { kind, lines: [] }; out.push(group); }
+      group.lines.push(line);
+    };
     for (const raw of String(text || '').split('\n')) {
       const line = raw.trim();
-      if (/^[•\-*]\s+/.test(line)) {
-        if (!list) { list = []; out.push(list); }
-        list.push(line.replace(/^[•\-*]\s+/, ''));
-        continue;
-      }
-      list = null;
+      if (/^[•\-*]\s+/.test(line) && !/^\*\*/.test(line)) { push('list', line.replace(/^[•\-*]\s+/, '')); continue; }
+      if (/^\|.*\|$/.test(line)) { push('table', line); continue; }
+      if (/^>\s?/.test(line)) { push('quote', line.replace(/^>\s?/, '')); continue; }
+      group = null;
       if (!line) continue;
-      out.push(line);
+      if (/^VIEW:\s*/.test(line)) { out.push({ kind: 'view', lines: [line.replace(/^VIEW:\s*/, '')] }); continue; }
+      const ask = line.match(/^ASK:(red|orange|green):\s*(.*)$/);
+      if (ask) { out.push({ kind: 'ask', level: ask[1], lines: [ask[2]] }); continue; }
+      if (/^SOURCES:\s*/.test(line)) { out.push({ kind: 'sources', lines: [line.replace(/^SOURCES:\s*/, '')] }); continue; }
+      out.push({ kind: 'p', lines: [line] });
     }
-    return out.map((part) => (Array.isArray(part)
-      ? `<ul class="shbul">${part.map((li) => `<li dir="${lineDir(li)}">${citeHtml(li)}</li>`).join('')}</ul>`
-      : `<p dir="${lineDir(part)}" class="${/:$/.test(part) ? 'shlead' : ''}">${citeHtml(part)}</p>`)).join('');
+    return out.map((g) => {
+      if (g.kind === 'list') return `<ul class="shbul">${g.lines.map((li) => `<li dir="${lineDir(li)}">${citeHtml(li)}</li>`).join('')}</ul>`;
+      if (g.kind === 'quote') return `<blockquote class="shquote" dir="auto">${g.lines.map(citeHtml).join('<br>')}</blockquote>`;
+      if (g.kind === 'view') return `<p class="shview" dir="${lineDir(g.lines[0])}">${citeHtml(g.lines[0])}</p>`;
+      if (g.kind === 'ask') {
+        const what = { red: 'Needed to move the case', orange: 'Important', green: 'Helpful' }[g.level];
+        return `<p class="shask ${g.level}" dir="${lineDir(g.lines[0])}" title="Sherlock's question - ${what}"><span class="askdot"></span>${citeHtml(g.lines[0])}</p>`;
+      }
+      if (g.kind === 'sources') {
+        const chips = g.lines[0].replace(/^\s*\[|\]\s*$/g, '').split(/\]\s*\[/)
+          .map((x) => citeHtml(`[${x}]`).replace(/^\[|\]$/g, '')).join(' ');
+        return `<p class="shsources"><span class="muted small">Sources</span> ${chips}</p>`;
+      }
+      if (g.kind === 'table') {
+        const rows = g.lines.map((l) => l.replace(/^\||\|$/g, '').split('|').map((c) => c.trim()));
+        const [head, ...body] = rows;
+        return `<div class="shtablewrap"><table class="shtable" dir="${lineDir(g.lines.join(' '))}"><thead><tr>${head.map((c) => `<th>${citeHtml(c)}</th>`).join('')}</tr></thead>`
+          + `<tbody>${body.map((r) => `<tr>${r.map((c) => `<td>${citeHtml(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+      }
+      const part = g.lines[0];
+      return `<p dir="${lineDir(part)}" class="${/:$/.test(part.replace(/\*\*$/, '')) ? 'shlead' : ''}">${citeHtml(part)}</p>`;
+    }).join('');
   }
 
   function openSherlock() {
@@ -1035,6 +1293,39 @@
     $('sherlockInput').focus();
   }
 
+  /* The waiting line: what Sherlock is doing right now, as shimmering text. Each line
+     stays up at least MIN_MS so quick steps don't flicker; after 8 s the seconds show. */
+  function statusLine(el) {
+    const MIN_MS = 450;
+    const text = el.querySelector('.shimmer');
+    const time = el.querySelector('.shelapsed');
+    const started = Date.now();
+    let shownAt = Date.now();
+    let pending = null;
+    let swap = null;
+    const show = (line) => {
+      text.textContent = line;
+      text.dir = /[\u0600-\u06FF]/.test(line) ? 'rtl' : 'ltr';
+      text.style.animation = 'none';
+      void text.offsetWidth;          // restart the sweep from the first character
+      text.style.animation = '';
+      shownAt = Date.now();
+    };
+    const clock = setInterval(() => {
+      const secs = Math.round((Date.now() - started) / 1000);
+      time.textContent = secs >= 8 ? `${secs}s` : '';
+    }, 1000);
+    return {
+      set(line) {
+        if (!line) return;
+        pending = line;
+        if (swap) return;
+        swap = setTimeout(() => { swap = null; show(pending); }, Math.max(0, MIN_MS - (Date.now() - shownAt)));
+      },
+      stop() { clearInterval(clock); clearTimeout(swap); },
+    };
+  }
+
   async function askSherlock(question) {
     if (!question || state.sherlockBusy) return;
     if (!state.runId) {
@@ -1044,15 +1335,19 @@
     state.sherlockBusy = true;
     $('sherlockSend').disabled = true;
     sherlockSay('you', `<b>You</b>${esc(question)}`);
-    // The agents' internal steps are not shown to the officer - only the reply.
-    const box = sherlockSay('bot', '<div class="shans" dir="auto"><span class="typing" title="Sherlock is working on it"><i></i><i></i><i></i></span></div>');
+    // The agents' internal steps are not shown to the officer - only what runs now, then the reply.
+    const box = sherlockSay('bot', '<div class="shans" dir="auto"><div class="shstatus" role="status" aria-live="polite">'
+      + '<span class="shimmer">Sherlock is on it</span><span class="shelapsed"></span></div></div>');
     const steps = document.createElement('ol');
     const ans = box.querySelector('.shans');
+    const waiting = statusLine(ans.querySelector('.shstatus'));
     const source = state.offline ? { graph: currentGraph() } : { run_id: state.runId };
     try {
       for await (const { event, data } of sseFetch('/graph/investigate', { ...source, question, history: state.sherlockTurns.slice(-4) })) {
         if (event === 'start') {
-          /* the typing dots keep showing until the reply arrives */
+          /* the waiting line keeps showing until the reply arrives */
+        } else if (event === 'status') {
+          waiting.set(data.text);
         } else if (event === 'agent') {
           const li = document.createElement('li');
           li.className = 'agentstep';
@@ -1066,6 +1361,7 @@
           steps.appendChild(li);
           $('sherlockLog').scrollTop = $('sherlockLog').scrollHeight;
         } else if (event === 'final') {
+          waiting.stop();
           if (data.case) setCaseFull(data.case);
           state.sherlockTurns.push({ q: question, a: data.answer });
           ans.className = `shans${data.confident === false ? ' unsure' : ''}`;
@@ -1094,12 +1390,14 @@
           if ((data.key_people || []).length) highlightPeople(data.key_people.map((p) => p.id));
           if (data.questions && state.caseIndex) { state.caseIndex.questions = data.questions; }
           if (data.reading_documents) watchCase(); else refreshCase();
+          if (data.followup_pending) watchFollowups();   // part of the answer is still being worked out
         }
       }
     } catch (err) {
       ans.className = 'shans unsure';
       ans.textContent = `Could not answer: ${err.message}`;
     } finally {
+      waiting.stop();
       state.sherlockBusy = false;
       $('sherlockSend').disabled = false;
       $('sherlockLog').scrollTop = $('sherlockLog').scrollHeight;
@@ -2565,6 +2863,9 @@
     if (panel && !panel.hidden && document.contains(e.target) && !e.target.closest('.connfilter')) panel.hidden = true;
   });
   $('reportBtn').onclick = (e) => downloadReport(e.shiftKey);
+  ensureBoardMarkup();
+  $('boardBtn').onclick = () => openBoard();
+  window.addEventListener('resize', () => { if ($('boardDlg')?.open) drawStrings($('boardBody')); });
   $('reportBtn2').onclick = (e) => downloadReport(e.shiftKey);
   $('sherlockFab').onclick = () => ($('sherlockPanel').hidden ? openSherlock() : ($('sherlockPanel').hidden = true, $('sherlockFab').classList.remove('open')));
   $('sherlockClose').onclick = () => { $('sherlockPanel').hidden = true; $('sherlockFab').classList.remove('open'); };

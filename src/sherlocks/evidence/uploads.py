@@ -173,17 +173,18 @@ def process_upload(agents: Any, *, name: str, content: bytes, note: str = "", ow
         text=f"{head}\n{body}".strip(), summary=_summary(kind, analysis, body, unread),
         owners=[owner] if owner else [], images=pictures, unread_pages=unread,
         data={"path": str(path), "name": name, "file_kind": kind, "mime": _MIME[kind], "note": note,
-              "analysis": {k: v for k, v in (analysis or {}).items() if k != "lines"}})
+              "analysis": {k: v for k, v in (analysis or {}).items() if k not in ("lines", "findings", "events")}})
     say("hit", f"📎 Read upload {name}: {_summary(kind, analysis, body, unread)} [{doc_id}]")
     if note:
         case.officer_note(f"About {name}: {note}", source="upload")
 
-    # Facts: the CDR agent's lines are facts as they stand; other files are read by the model.
-    if analysis and analysis.get("lines"):
-        for line in analysis["lines"]:
-            if line.startswith(("Subscriber", "Top contact", "On the graph", "Near the incident", "Incident day",
-                                "Device IMEI", "Towers within", "Frequent number")):
-                case.add_fact(doc_id, line, line, kind="telecom", by="cdr")
+    # Facts: the CDR team's findings, each with its rows (R6); other files are read by the model.
+    if analysis and analysis.get("findings"):
+        from sherlocks.evidence.cdr_team import write_facts
+
+        write_facts(case, doc_id, analysis, owner=owner)
+        if sum(1 for d in case.documents.values() if d["kind"] == "cdr" and (d.get("data") or {}).get("path")) >= 2:
+            case.plan("cdr:cross", f"a second CDR: {name}")          # R5 links the CDRs
     elif agents.llm() is not None and body.strip():
         try:
             ai_read(case, doc_id, agents.llm())
@@ -272,6 +273,10 @@ def _cdr_server(agents: Any, doc_id: str, name: str, content: bytes, analysis: d
                                   "bts_id": str(inspected.get("inferred_bts_id") or ""), "label": name}],
                        "include_cross_bts_common": True, "include_b_as_a": True, "include_movement": True}
         say("info", f"📶 CDR server is analysing {name} ({job_kind.upper()}) - this can take a few minutes")
+        from sherlocks.evidence import guard
+
+        guard.log_call(case, system=f"cdr_server:{job_kind}", identifier=analysis.get("subject"), agent="R1 Intake",
+                       reason=f"officer uploaded {name}", officer=case.dialog.get("officer"), status="called")
         job = server.start(job_kind, name, content, request)
         pdf = server.wait(job_kind, job, cancelled=agents.cancelled)
         read = read_pdf(pdf, vision=agents.vision())
@@ -290,6 +295,9 @@ def _cdr_server(agents: Any, doc_id: str, name: str, content: bytes, analysis: d
         else:
             report_facts(case, server_doc)
         link_people(case, server_doc, agents.graph())
+        from sherlocks.evidence.cdr_team import compare_with_server
+
+        compare_with_server(case, doc_id, server_doc)          # the server is a second opinion
         say("hit", f"📶 CDR server report for {name} read [{server_doc}]")
     except Exception as exc:  # noqa: BLE001 - the CDR agent's own analysis stands
         logger.info("CDR server analysis of %s failed: %s", name, exc)

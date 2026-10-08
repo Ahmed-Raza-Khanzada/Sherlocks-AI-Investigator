@@ -174,6 +174,13 @@ class CaseAgents:
             hit = self.cache.get(full)
             if hit is not None:
                 return hit
+        from sherlocks.evidence import guard
+
+        guard.log_call(self.case, system={"fir": "psrms_file", "labs": "labs", "cro": "safe"}.get(key.split(":", 1)[0],
+                                                                                                  key.split(":", 1)[0]),
+                       identifier=key.split(":", 1)[-1], agent=self.case.current_agent() if self.case else "A2",
+                       reason="reading the case documents", officer=self.case.dialog.get("officer") if self.case else None,
+                       status="called")
         try:
             value = make()
         except LookupError as exc:          # the system answered: nothing there

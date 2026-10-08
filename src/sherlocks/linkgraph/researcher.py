@@ -7,7 +7,10 @@ It looks at what the question needs and what is missing, then calls the APIs for
 * lab / DNA / medical reports for an FIR -> the Labs reports;
 * a CRO dossier, photos, fingerprints -> SAFE;
 * a person's job, vehicles, phones, hotel stays, weapons, criminal record... -> the police
-  systems that hold it, skipping the ones already searched for that person.
+  systems that hold it, chosen by the API router's catalog (``api_router.py``): CNIC-only
+  systems after the CNIC is known, skipping systems already searched for that person -
+  including the ones that found nothing - and saying so when no system holds the topic.
+  These calls run in parallel.
 
 Every call is within the per-question budget (``evidence.chat_live_calls``) and audited.
 Fetched documents go onto the case board (the knowledge base picks them up); system
@@ -24,33 +27,15 @@ from sherlocks.linkgraph.systems import system_label
 
 logger = logging.getLogger(__name__)
 
-# Topic (knowledge-base concept) -> the systems that hold it, most useful first.
-SYSTEMS_FOR = {
-    "work": ["evs", "hope", "hrmis", "prvs"],
-    "vehicle": ["excise", "avlc", "tracs", "dls"],
-    "phone": ["simsdb", "subscriber", "caller_id"],
-    "hotel": ["hotel_eye"],
-    "weapon": ["arms"],
-    "address": ["prvs", "old_tenant", "dls", "subscriber"],
-    "family": ["prvs", "old_tenant"],
-    "property": ["old_tenant", "prvs"],
-    "accused": ["psrms", "cro", "watchlist"],
-    "fir": ["psrms", "cro"],
-    "status": ["psrms", "cro"],
-    "cro": ["cro"],
-}
-_TYPE_TOPIC = {"hotels": "hotel", "phones": "phone", "vehicles": "vehicle", "cases": "fir", "count_cases": "fir",
-               "fir_status": "status", "serious_cases": "fir", "criminals_near": "accused"}
 _LAB = re.compile(r"\blab|dna|chemical|medical|medico|forensic|fsl|mlo|report|لیب|میڈیکل", re.IGNORECASE)
 _CRO = re.compile(r"\bcro\b|dossier|fingerprint|photo|tasveer|تصویر", re.IGNORECASE)
 
 
-def _searched(net: Any, pid: str) -> set[str]:
-    return {str(r.get("system") or "") for r in net.data(pid).get("records") or []}
-
-
-def research(tools: Any, query: dict[str, Any], message: str, topics: list[str]) -> list[dict[str, Any]]:
-    """Make the calls the question needs; returns what was done, one dict per call:
+def research(tools: Any, query: dict[str, Any], message: str, topics: list[str], *, files: bool = True,
+             systems: bool = True) -> list[dict[str, Any]]:
+    """Make the calls the question needs - only the kinds the Officer agent's plan allows
+    (``files``: FIR files, lab reports, CRO dossiers; ``systems``: the API router's police
+    systems for ``topics``). Returns what was done, one dict per call:
     ``{what, source, lines, document}``."""
     from sherlocks.linkgraph.case_queries import _firs, fir_document
 
@@ -76,8 +61,9 @@ def research(tools: Any, query: dict[str, Any], message: str, topics: list[str])
         return out
 
     # 1. FIRs whose file has not been read: named in the question, or the person's own.
-    wanted = list(query.get("firs") or [])
-    if not wanted and people and query.get("type") in ("fir_details", "fir_status", "io_report", "serious_cases", "open"):
+    wanted = list(query.get("firs") or []) if files else []
+    if files and not wanted and people and (query.get("unanswered") or query.get("type") in (
+            "fir_details", "fir_status", "io_report", "serious_cases", "open", "hotels")):
         wanted = [r["label"] for r in _firs(net, people[0], case) if not r.get("doc")][:3]
     for label in wanted:
         if case is not None and fir_document(case, label) is None:
@@ -94,21 +80,38 @@ def research(tools: Any, query: dict[str, Any], message: str, topics: list[str])
                              "lines": [str(d.get("summary") or d.get("title") or "")[:240] for d in docs]
                              or [str(out.get("message") or "no report found")], "document": None})
     # 2. A CRO dossier.
-    if people and _CRO.search(message):
+    if files and people and _CRO.search(message):
         out = call("CRO dossier", tools.fetch_cro, {"who": net.name(people[0])}, "SAFE")
         if out:
             done.append({"what": "CRO dossier", "source": out.get("id") or "SAFE",
                          "lines": [str(out.get("summary") or "")[:300]], "document": out.get("id")})
-    # 3. The police systems that hold what is asked, not yet searched for this person.
-    want_topics = [t for t in topics if t in SYSTEMS_FOR]
-    if not want_topics and query.get("type") in _TYPE_TOPIC:
-        want_topics = [_TYPE_TOPIC[query["type"]]]
-    for pid in people[:1]:
-        searched = _searched(net, pid)
-        systems = [s for t in want_topics for s in SYSTEMS_FOR[t] if s not in searched]
-        for system in list(dict.fromkeys(systems))[:3]:
-            out = call(f"{system_label(system)} lookup for {net.name(pid)}", tools.lookup,
-                       {"system": system, "who": net.name(pid)}, system_label(system))
+    # 3. The police systems that hold what is asked - chosen by the API router's catalog.
+    from concurrent.futures import ThreadPoolExecutor
+
+    from sherlocks.linkgraph import api_router
+
+    want_topics = api_router.topics_for(topics, query.get("type")) if systems else []
+    for pid in people[:1] if want_topics else []:
+        planned = api_router.plan(net, case, pid, want_topics, allowed=(getattr(tools, "officer", None) or {}).get("systems"))
+        for topic in planned["unheld"]:
+            done.append({"what": f"{topic} lookup", "source": "API router",
+                         "lines": [f"No connected system holds {topic} information."], "document": None})
+        calls = planned["calls"]
+        # A SIMs lookup that finds the CNIC runs first; the rest together.
+        first = [c for c in calls if c["system"] == "simsdb" and c["topic"] == "identity"]
+        rest = [c for c in calls if c not in first]
+
+        def one(c: dict[str, Any], _pid: str = pid) -> tuple[dict[str, Any], dict[str, Any] | None]:
+            system = c["system"]
+            return c, call(f"{system_label(system)} lookup for {net.name(_pid)}", tools.lookup,
+                           {"system": system, "who": net.name(_pid)}, system_label(system))
+
+        results = [one(c) for c in first]
+        if rest:
+            with ThreadPoolExecutor(max_workers=min(3, len(rest)), thread_name_prefix="research") as pool:
+                results += list(pool.map(one, rest))
+        for c, out in results:
+            system = c["system"]
             if not out:
                 continue
             lines = [*(f"employer / organisation: {o}" for o in out.get("organisations") or []),
@@ -120,15 +123,21 @@ def research(tools: Any, query: dict[str, Any], message: str, topics: list[str])
             seen: set[str] = set()
             lines = [x for x in lines if not ((k := re.sub(r"\W+", " ", x.split(":", 1)[-1]).strip().lower()) in seen
                                               or seen.add(k))]
+            api_router.remember(case, pid, system, "found" if lines else "nothing found")
             done.append({"what": f"{system_label(system)} lookup", "source": system_label(system),
                          "lines": lines or [str(out.get("summary") or f"nothing found ({out.get('status')})")],
                          "document": None})
     return done
 
 
+_NOTHING = re.compile(r"no record|nothing found|not found|no report found|failed|no connected system", re.IGNORECASE)
+
+
 def facts_from(done: list[dict[str, Any]], subject: str | None) -> dict[str, Any]:
     """What the calls brought back, as a Facts-agent answer (``type: research``)."""
-    items = [{"text": line, "source": d["source"], "pid": None} for d in done for line in d["lines"] if line]
+    # "no record" / "nothing found" is where it looked, not an answer: the Officer agent lists it.
+    items = [{"text": line, "source": d["source"], "pid": None} for d in done for line in d["lines"]
+             if line and not _NOTHING.search(line)]
     return {"type": "research", "subject": subject or "", "count": len(done), "items": items, "empty": not items,
             "calls": [d["what"] for d in done]}
 

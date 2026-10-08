@@ -469,19 +469,40 @@ table.facts tr.hl td, .docbody li.hl { background: rgba(251,191,36,.12); }
 .shreply p { margin: 0 0 6px; }
 .shreply p:last-child { margin-bottom: 0; }
 .shreply p.shlead { font-weight: 600; color: #fde68a; }
+.shreply b { color: #fde68a; }
+.shquote { margin: 4px 0 8px; padding: 6px 10px; border-inline-start: 3px solid #fbbf24; background: rgba(251,191,36,.06);
+  font-size: 12.5px; color: var(--muted); border-radius: 4px; }
+.shans.followup { border-inline-start: 2px solid #38bdf8; padding-inline-start: 8px; }
+.shview { margin: 6px 0; padding: 6px 10px; border-inline-start: 3px solid #a78bfa; background: rgba(167,139,250,.08);
+  color: #c4b5fd; border-radius: 4px; }
+.shtablewrap { overflow-x: auto; margin: 4px 0 8px; }
+.shtable { border-collapse: collapse; font-size: 12px; min-width: 100%; }
+.shtable th, .shtable td { border-top: 1px solid var(--line); padding: 4px 6px; text-align: start; vertical-align: top; }
+.shtable th { color: var(--muted); font-weight: 600; font-size: 11px; }
 .shbul { margin: 2px 0 8px; padding-left: 18px; }
 .shbul li { margin: 3px 0; }
 .shbul li::marker { color: #fbbf24; }
 .shans.urdu .shreply { font-family: "Noto Naskh Arabic", "Segoe UI", system-ui, sans-serif; font-size: 15px; line-height: 1.9; }
-.typing { display: inline-flex; gap: 4px; padding: 4px 2px; }
-.typing i { width: 7px; height: 7px; border-radius: 50%; background: #9fb0cf; opacity: .4; }
+/* The waiting line: what Sherlock is doing now. A white band sweeps across the words,
+   first character to last (right to left for Urdu). Still text when motion is reduced. */
+.shstatus { display: flex; align-items: baseline; gap: 8px; padding: 2px 0; min-height: 22px; }
+.shimmer { display: inline-block; font-size: 13.5px; font-weight: 500; color: #9fb0cf; }
+.shimmer[dir="rtl"] { font-family: "Noto Naskh Arabic", "Segoe UI", system-ui, sans-serif; font-size: 15px; line-height: 1.7; }
+.shelapsed { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 @media (prefers-reduced-motion: no-preference) {
-  .typing i { animation: shblink 1.2s infinite ease-in-out; }
-  .typing i:nth-child(2) { animation-delay: .15s; }
-  .typing i:nth-child(3) { animation-delay: .3s; }
+  .shimmer {
+    color: transparent;
+    background: linear-gradient(90deg, #6f7d99 0%, #6f7d99 38%, #ffffff 50%, #6f7d99 62%, #6f7d99 100%);
+    background-size: 250% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    animation: shsweep 1.6s linear infinite;
+  }
+  .shimmer[dir="rtl"] { animation-name: shsweep-rtl; }
   .shrow { animation: shin .18s ease-out; }
 }
-@keyframes shblink { 0%, 80%, 100% { opacity: .3; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
+@keyframes shsweep { from { background-position: 100% 0; } to { background-position: 0 0; } }
+@keyframes shsweep-rtl { from { background-position: 0 0; } to { background-position: 100% 0; } }
 @keyframes shin { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 .shrow .qbtns { margin-top: 10px; }
 .shrow .qbtn { background: rgba(251,191,36,.08); border-color: rgba(251,191,36,.35); color: #fde68a; }
@@ -505,3 +526,98 @@ table.facts tr.hl td, .docbody li.hl { background: rgba(251,191,36,.12); }
 .shquick { scrollbar-width: none; }
 .shquick::-webkit-scrollbar { display: none; }
 .shinput textarea { overflow-y: hidden; scrollbar-width: thin; }
+
+/* -- Sherlock's questions, by how much the case needs the answer ----------------------- */
+.shask { margin: 8px 0 2px; padding: 6px 10px 6px 26px; border-radius: 6px; position: relative; font-weight: 600; }
+.shask .askdot, .askitem .askdot { position: absolute; left: 9px; top: 50%; width: 9px; height: 9px; margin-top: -4.5px; border-radius: 50%; }
+.shask.red { background: rgba(244,63,94,.12); border-inline-start: 3px solid #f43f5e; color: #fecdd3; }
+.shask.orange { background: rgba(251,146,60,.12); border-inline-start: 3px solid #fb923c; color: #fed7aa; }
+.shask.green { background: rgba(52,211,153,.12); border-inline-start: 3px solid #34d399; color: #bbf7d0; }
+.shask.red .askdot, .askitem.red .askdot { background: #f43f5e; box-shadow: 0 0 6px #f43f5e; }
+.shask.orange .askdot, .askitem.orange .askdot { background: #fb923c; }
+.shask.green .askdot, .askitem.green .askdot { background: #34d399; }
+
+/* -- Sources: documents, the officer's own words, police systems ------------------------ */
+.shsources { margin: 6px 0 0; font-size: 12px; line-height: 2; }
+.cite.srcdoc { color: #93c5fd; }
+.cite.srcchat { color: #fbbf24; background: rgba(251,191,36,.12); border-radius: 3px; padding: 0 3px; }
+.cite.srcapi { color: #a7f3d0; background: rgba(52,211,153,.12); border-radius: 3px; padding: 0 3px; }
+.cite.srcgraph, .cite.srchyp { color: #c4b5fd; }
+.shsources .cite { display: inline-block; margin: 0 2px; padding: 0 6px; border: 1px solid var(--line); border-radius: 10px; text-decoration: none; }
+.facts tr.hl td { background: rgba(251,191,36,.18); }
+
+/* -- Sherlock's work, in the case panel -------------------------------------------------- */
+.shwork { margin: 10px 0; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel-2); }
+.shwork .runhead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.shworking { margin: 4px 0 8px; font-size: 12.5px; }
+.hyplist, .asklist { list-style: none; margin: 6px 0; padding: 0; font-size: 12.5px; }
+.hyplist li { margin: 5px 0; }
+.asklist li { position: relative; padding: 3px 0 3px 18px; }
+.askitem .askdot { left: 2px; }
+.hstat { display: inline-block; font-size: 10.5px; font-weight: 700; text-transform: uppercase; padding: 1px 6px; border-radius: 8px; margin-inline-end: 6px; }
+.hstat.ok { background: rgba(52,211,153,.18); color: #34d399; }
+.hstat.open { background: rgba(251,191,36,.18); color: #fbbf24; }
+.hstat.weak { background: rgba(251,146,60,.18); color: #fb923c; }
+.hstat.out { background: rgba(148,163,184,.2); color: #94a3b8; text-decoration: line-through; }
+.boardbtn { background: #7c2d12 !important; color: #fde68a !important; border-color: #b45309 !important; }
+
+/* -- The detective's case board ------------------------------------------------------------ */
+dialog.boarddlg { width: 96vw; max-width: 1500px; height: 92vh; padding: 0; border: 0; border-radius: 12px; background: #3b2a1a; color: #1f1a14; overflow: hidden; }
+dialog.boarddlg::backdrop { background: rgba(5,8,15,.75); }
+.boardhead { display: flex; gap: 12px; align-items: center; padding: 10px 16px; background: #2a1d12; color: #fde68a; border-bottom: 3px solid #5c3d22; }
+.boardhead .muted { color: #d6b88a; flex: 1; }
+.cork {
+  position: relative; height: calc(92vh - 52px); overflow: auto; padding: 26px; display: grid; gap: 22px 28px;
+  grid-template-columns: minmax(200px, 250px) minmax(320px, 1fr) minmax(260px, 340px);
+  grid-template-areas: "people case facts" "people case facts" "notes questions facts" "timeline timeline timeline";
+  background:
+    radial-gradient(circle at 20% 30%, rgba(255,255,255,.05) 0 1px, transparent 2px) 0 0 / 9px 9px,
+    radial-gradient(circle at 70% 60%, rgba(0,0,0,.12) 0 1px, transparent 2px) 0 0 / 7px 7px,
+    linear-gradient(135deg, #b3804f, #a06e3f 45%, #b88957);
+  box-shadow: inset 0 0 40px rgba(0,0,0,.45);
+}
+.bstrings { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 0; overflow: visible; }
+.bstrings path { fill: none; stroke: #c1121f; stroke-width: 2; opacity: .85; filter: drop-shadow(0 1px 1px rgba(0,0,0,.4)); }
+.bzone { position: relative; z-index: 1; display: flex; flex-direction: column; gap: 14px; }
+.bzone h3 { margin: 0; font: 700 13px/1 system-ui; letter-spacing: .12em; text-transform: uppercase; color: #fff7e6;
+  text-shadow: 0 1px 2px rgba(0,0,0,.6); }
+.bpeople { grid-area: people; } .bcase { grid-area: case; } .bfacts { grid-area: facts; }
+.bnotes { grid-area: notes; } .bquestions { grid-area: questions; } .btimeline { grid-area: timeline; }
+.bcard { position: relative; z-index: 3; background: #fffdf6; border-radius: 3px; padding: 14px 12px 10px; box-shadow: 0 6px 14px rgba(0,0,0,.35);
+  font-size: 12.5px; line-height: 1.45; cursor: pointer; transition: transform .15s ease, box-shadow .15s ease; }
+.bcard:hover { transform: rotate(0deg) scale(1.03) !important; box-shadow: 0 10px 22px rgba(0,0,0,.45); z-index: 4; }
+.bpin { position: absolute; top: -7px; left: 50%; width: 14px; height: 14px; margin-left: -7px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #fff, #e11d48 45%, #7f1d1d); box-shadow: 0 2px 3px rgba(0,0,0,.5); }
+.bpin.blue { background: radial-gradient(circle at 35% 35%, #fff, #2563eb 45%, #1e3a8a); }
+.bpin.orange { background: radial-gradient(circle at 35% 35%, #fff, #f97316 45%, #9a3412); }
+.bpin.green { background: radial-gradient(circle at 35% 35%, #fff, #22c55e 45%, #14532d); }
+.bperson { display: grid; grid-template-columns: 54px 1fr; gap: 2px 10px; align-items: center; }
+.bperson img, .binit { grid-row: span 3; width: 54px; height: 64px; object-fit: cover; border: 3px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,.4); }
+.binit { display: grid; place-items: center; background: #44403c; color: #fde68a; font: 700 18px system-ui; }
+.bperson.main { outline: 3px solid #dc2626; }
+.brole { font-size: 10.5px; font-weight: 700; text-transform: uppercase; color: #b91c1c; }
+.bnew { background: #fff8e1; border: 2px dashed #b91c1c; padding: 18px; font-size: 14px; }
+.bnew h3 { color: #7f1d1d; text-shadow: none; margin-bottom: 6px; font-size: 15px; }
+.bnew p { margin: 3px 0; }
+.bverdict { margin-top: 10px; padding-top: 8px; border-top: 1px solid #e7d5ad; font-family: "Segoe Print", "Bradley Hand", "Comic Sans MS", cursive; font-size: 13px; color: #3f2d14; }
+.bhyps { display: flex; flex-wrap: wrap; gap: 18px; }
+.bsticky { width: 210px; background: #fef08a; font-family: "Segoe Print", "Bradley Hand", "Comic Sans MS", cursive; }
+.bsticky.ok { background: #bbf7d0; } .bsticky.weak { background: #fed7aa; } .bsticky.out { background: #e5e7eb; opacity: .8; }
+.bsticky p { margin: 6px 0; }
+.bsticky.bfocus { outline: 3px solid #b91c1c; }
+.bindex { background: linear-gradient(#fffdf6 0 22px, #ef4444 22px 23px, #fffdf6 23px) top / 100% 100% no-repeat,
+  repeating-linear-gradient(#fffdf6 0 18px, #bfdbfe 18px 19px); }
+.bfact { margin: 6px 0 0; }
+.btier { display: inline-block; font: 700 9.5px system-ui; text-transform: uppercase; padding: 0 4px; margin-inline-end: 5px; border-radius: 3px; background: #dcfce7; color: #166534; }
+.btier.inference { background: #fef3c7; color: #92400e; } .btier.speculation { background: #fee2e2; color: #991b1b; }
+.bnote { background: #fef9c3; font-family: "Segoe Print", "Bradley Hand", "Comic Sans MS", cursive; }
+.bq { border-inline-start: 5px solid #f97316; font-weight: 600; }
+.bq.red { border-color: #dc2626; } .bq.green { border-color: #16a34a; }
+.btrack { display: flex; gap: 0; overflow-x: auto; padding: 18px 4px 8px; border-top: 3px solid rgba(255,255,255,.55); }
+.btick { position: relative; min-width: 150px; max-width: 190px; padding: 8px 10px; margin-inline-end: 12px; background: #fffdf6; border-radius: 3px;
+  box-shadow: 0 4px 10px rgba(0,0,0,.3); font-size: 11.5px; }
+.btick::before { content: ""; position: absolute; top: -27px; left: 50%; width: 10px; height: 10px; margin-left: -5px; border-radius: 50%; background: #fde68a; border: 2px solid #78350f; }
+.btick b { display: block; color: #7f1d1d; }
+@media (max-width: 900px) {
+  .cork { grid-template-columns: 1fr; grid-template-areas: "case" "people" "facts" "notes" "questions" "timeline"; }
+}

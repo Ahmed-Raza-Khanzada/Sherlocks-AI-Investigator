@@ -253,6 +253,24 @@ class GraphRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class CaseBoard(Base):
+    """The case board of a run, stored on its own (see ``evidence/board_store.py``).
+
+    Kept apart from ``graph_run`` because the agents keep writing to it after the run
+    has finished and left memory, and because a save is refused when it is older than
+    the stored board (``version``) - so a stale copy can never overwrite newer work.
+    """
+
+    __tablename__ = "case_board"
+
+    run_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    board: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
 class ProviderCacheEntry(Base):
     """A provider's answer for one (backend, system, cnic, phone). See linkgraph.cache."""
 

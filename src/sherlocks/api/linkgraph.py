@@ -120,27 +120,37 @@ def build_router(settings: Settings, manager: Callable[[], RunManager],
                  session_auth: SessionAuth | None = None) -> APIRouter:
     router = APIRouter(prefix=f"{settings.api.prefix}/graph", tags=["link graph"])
 
-    def auth(x_api_key: str | None = Header(default=None), key: str | None = Query(default=None),
-             x_session_token: str | None = Header(default=None),
-             token: str | None = Query(default=None)) -> str | None:
-        """A signed-in operator, or a machine holding the API key. Either is enough.
-        Returns the user the token names (``None`` for the API key or an open API), so
-        each run records who started it.
+    def officer(x_api_key: str | None = Header(default=None), key: str | None = Query(default=None),
+                x_session_token: str | None = Header(default=None),
+                token: str | None = Query(default=None)) -> dict[str, Any]:
+        """Who is calling: ``{user, systems}``. A signed-in operator (``systems`` from the
+        token's ``sys`` claim, ``None`` when it has none), or a machine holding the API
+        key (``user`` None). The agents' live calls for this caller are limited to
+        ``systems`` and logged under ``user``.
 
         ``key``/``token`` in the query string exist for the browser's own requests -
         <img>, EventSource and download links cannot carry headers.
         """
         expected = settings.api.api_key
         if expected and expected in (x_api_key, key):
-            return None
+            return {"user": None, "systems": None}
         if session_auth and session_auth.verifies_tokens:
             try:
-                return session_auth.verify(x_session_token or token) or None
+                claims = session_auth.claims(x_session_token or token)
             except AuthError as exc:
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+            systems = claims.get("sys")
+            return {"user": str(claims.get("u") or "") or None,
+                    "systems": [str(x) for x in systems] if isinstance(systems, list) else None}
         if expected:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
-        return None
+        return {"user": None, "systems": None}
+
+    def auth(who: dict[str, Any] = Depends(officer)) -> str | None:
+        """A signed-in operator, or a machine holding the API key. Either is enough.
+        Returns the user the token names (``None`` for the API key or an open API), so
+        each run records who started it."""
+        return who["user"]
 
     def _systems_for(backend: str | None) -> list[dict]:
         """Every system the chosen backend actually queries. EMS runs systems the shared
@@ -315,7 +325,7 @@ def build_router(settings: Settings, manager: Callable[[], RunManager],
     @router.post("/analyze/{action}")
     def analyze(action: Literal["ask", "brief", "compare", "ask_pair", "relations", "connection",
                                 "findings", "network", "paths", "investigate"],
-                body: AnalyzeRequest, _: None = Depends(auth)) -> dict:
+                body: AnalyzeRequest, who: dict[str, Any] = Depends(officer)) -> dict:
         """Chat with a graph, and every per-person/per-pair analysis the portal offers -
         on a run held here (``run_id``) or on a graph posted back by the host (``graph``).
 
@@ -361,7 +371,8 @@ def build_router(settings: Settings, manager: Callable[[], RunManager],
             need("a", "b")
             result = mgr.paths(graph, body.a, body.b, k=body.k)
         elif action == "investigate":
-            events = list(mgr.investigate(graph, body.question or "", history=_history(body.history), run_id=scope))
+            events = list(mgr.investigate(graph, body.question or "", history=_history(body.history), run_id=scope,
+                                          officer=who))
             result = {**events[-1], "steps": [e for e in events if e["type"] == "step"]}
         else:
             need("a", "b")
@@ -371,13 +382,14 @@ def build_router(settings: Settings, manager: Callable[[], RunManager],
         return result
 
     @router.post("/investigate")
-    def investigate_stream(body: AnalyzeRequest, _: None = Depends(auth)) -> StreamingResponse:
+    def investigate_stream(body: AnalyzeRequest, who: dict[str, Any] = Depends(officer)) -> StreamingResponse:
         """The AI investigator, live: Server-Sent Events over a POST (read it with fetch()
         and a stream reader - EventSource cannot POST). Events: ``start``, one ``step`` per
         tool call {tool, args, thought, summary}, then ``final`` {answer, hypotheses,
         key_people, next_steps, suggestions, findings}. Body as for /analyze."""
         graph, scope = _source(body)
-        events = manager().investigate(graph, body.question or "", history=_history(body.history), run_id=scope)
+        events = manager().investigate(graph, body.question or "", history=_history(body.history), run_id=scope,
+                                       officer=who)
 
         def stream() -> Any:
             for event in events:
@@ -474,6 +486,17 @@ def build_router(settings: Settings, manager: Callable[[], RunManager],
             return manager().answer_question(run_id, qid.upper(), body.answer, body.pid)
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.get("/runs/{run_id}/audit")
+    def audit(run_id: str, _: None = Depends(auth)) -> dict:
+        """Every live call the agents made for this case - who (officer), which agent, why,
+        which system and identifier, refused or made - and totals, for admins."""
+        from sherlocks.evidence.guard import audit_summary
+
+        case = manager().board(run_id)
+        if case is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return {"summary": audit_summary(case), "calls": case.calls[-500:]}
 
     @router.get("/runs/{run_id}/case")
     def case_index(run_id: str, _: None = Depends(auth)) -> dict:

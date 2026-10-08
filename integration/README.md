@@ -124,13 +124,16 @@ All of it comes from Sherlocks' own page script: deploying Sherlocks updates the
 - **Live EMS only.** The page is pinned with `backend: 'ems'`, so the data-source choice is hidden. It asks for confirmation before each live search.
 - **Chat** about the graph, **person briefs**, **compare two people**, **leads** (linkage patterns), and the **AI investigator**, which streams its steps.
 - **Case evidence** read while the graph builds: the FIR file of every FIR found (complainant, accused, witnesses, case diaries), the forensic/medical lab reports of that FIR (DNA, chemical, FSL, MLO; PDFs read, scanned pages read by the AI vision model), and the CRO dossier of every criminal (poses, fingerprints). Listed in the "Case evidence" card; each opens with its quoted facts and pictures.
-- **Sherlock chat bubble** (bottom right), usable from the moment the graph starts building - a messenger-style chat (Sherlock's messages on the left with his avatar, the officer's on the right, time stamps, a typing indicator, lists and sources as chips). It is a team of agents behind one voice (their internal steps are not shown):
+- **Sherlock chat bubble** (bottom right), usable from the moment the graph starts building - a messenger-style chat (Sherlock's messages on the left with his avatar, the officer's on the right, time stamps, lists, tables and sources as chips). While a reply is worked out, one shimmering line says what runs now ("Checking NADRA · Kamran Ahmed"). It is a team of agents behind one voice (see `AGENTS.md`):
   - replies in the officer's language - **English, اردو or Roman Urdu** - in natural sentences;
   - remembers who is being discussed ("ye kitni FIRs mein hai?" means the person just mentioned);
   - answers fact questions **exactly, computed from the records** (how many FIRs, criminals among his connections or in the whole graph, links between two people, hotel stays, phones, vehicles, documents, what's new, case summary), each item with its source;
   - investigates open questions, and can fetch a document or check one system itself;
   - records what the officer states and **asks the officer questions throughout the chat** (where/when it happened, the crime, the main suspect, the FIR, whose CDR) with answer buttons - remembering every answer, never asking the same thing again;
-  - checks every reply before it is shown (numbers, sources, no contradiction with what the officer said); cites every answer (`F3` opens the quote).
+  - checks every reply before it is shown (numbers, sources, quotes, no contradiction with what the officer said); cites every answer (`F3` opens the quote); shows sources that disagree instead of hiding one;
+  - takes corrections ("nahi, 2 March tha"): the old answer is kept but no longer used, and what rested on it is redone;
+  - sends what takes longer (a slow lookup, Sherlock's own view) as a follow-up message;
+  - works the case in the background (Sherlock's hypotheses, summary, next questions); the downloaded case report is his full, current assessment.
 - **Uploads in the chat** (📎 or drag and drop): image (JPG, PNG), PDF, Word (.docx), Excel (.xlsx) only, up to 25 MB. CDRs and tower dumps go to the CDR agent (and the CDR server). The browser sends them straight to Sherlocks; if a proxy sits in front of Sherlocks, allow 30 MB bodies there.
 - **Incident map** (📍): the officer pins where and when it happened. Map tiles load from OpenStreetMap in the officer's browser (or a tile server set on the Sherlocks side).
 - **Find in graph** understands names by sound across scripts: "altaf" finds الطاف, and the other way round.
