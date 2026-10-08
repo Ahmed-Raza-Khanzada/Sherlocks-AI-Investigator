@@ -15,7 +15,7 @@ NAMES = {"k": "Kamran Ahmed", "t": "Tariq Hussain", "w": "Waqas Javed", "s": "Sa
     ("Family member (Wife)", None, "Tariq Hussain is wife of Kamran Ahmed"),
     ("Co-accused (nominated) in FIR 45/2023", None, "Tariq Hussain is co-accused with Kamran Ahmed in FIR 45/2023"),
     ("Registered owner of SIM 03001234567", None, "Tariq Hussain is registered owner of SIM 03001234567 used by Kamran Ahmed"),
-    ("Room-mate at hotel", None, "Tariq Hussain shared a hotel room with Kamran Ahmed"),
+    ("Room-mate at hotel", None, "Tariq Hussain shared hotel with Kamran Ahmed"),
     ("Tenant (tenancy record)", None, "Tariq Hussain is tenant on a tenancy record found on the phone/CNIC of Kamran Ahmed"),
 ])
 def test_role_labels_become_sentences(label, roles, expected):

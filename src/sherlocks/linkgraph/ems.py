@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -82,12 +83,27 @@ CONF = {
     "psrms_url": _env("EMS_PSRMS_URL"),
     "psrms_key": _env("EMS_PSRMS_KEY"),
     "psrms_check_url": _env("EMS_PSRMS_CHECK_URL"),
+    # Case evidence (sherlocks.evidence): the FIR file report (same PSRMS key), forensic
+    # lab reports per FIR, and the CRO dossier PDF per CRO number.
+    "psrms_fir_url": _env("EMS_PSRMS_FIR_URL"),
+    "psrms_fir_cookie": _env("EMS_PSRMS_FIR_COOKIE"),
+    "labs_url": _env("EMS_LABS_URL"),
+    "labs_token": _env("EMS_LABS_TOKEN"),
+    "safe_cro_url": _env("EMS_SAFE_CRO_URL"),
+    "safe_key": _env("EMS_SAFE_KEY"),
+    # CDR Report App (CDR, multi-CDR, BTS analysis; IMEI and nearest-police-station lookups).
+    "cdr_api_url": _env("EMS_CDR_API_URL"),
+    "cdr_api_key": _env("EMS_CDR_API_KEY"),
     "cfms_url": _env("EMS_CFMS_URL"),
     "watchlist_url": _env("EMS_WATCHLIST_URL"),
     "watchlist_key": _env("EMS_WATCHLIST_KEY"),
     "hotel_cnic_url": _env("EMS_HOTEL_CNIC_URL"),
     "hotel_mobile_url": _env("EMS_HOTEL_MOBILE_URL"),
     "hotel_key": _env("EMS_HOTEL_KEY"),
+    # Hotel Eye person API: one call by phone / CNIC -> profiles with stays, companions, CRO links.
+    "hotel_person_url": _env("EMS_HOTEL_PERSON_URL"),
+    "hotel_person_key": _env("EMS_HOTEL_PERSON_KEY"),
+    "hotel_person_cookie": _env("EMS_HOTEL_PERSON_COOKIE"),
     "sbvs_base": _env("EMS_SBVS_BASE"),
     "sbvs_key": _env("EMS_SBVS_KEY"),
     "prvs_base": _env("EMS_PRVS_BASE"),
@@ -277,9 +293,10 @@ class Req:
     data: dict[str, Any] | None = None
     json: Any = None
     timeout: int | None = None   # override the client default for a slow endpoint
+    files: Any = None            # multipart uploads: {field: (filename, bytes)} or a list of pairs
 
 
-_SECRET_HEADERS = {"autokenn", "secrt", "api_key", "secret_key", "x-api-key", "api-key",
+_SECRET_HEADERS = {"autokenn", "secrt", "api_key", "secret_key", "x-api-key", "api-key", "api-token",
                    "authorization", "psrms-api-key", "i_key", "j_key", "api_token", "x-key", "cookie"}
 _SECRET_FIELDS = {"appkey", "psrms-api-key", "password", "api_key", "secret_key", "token"}
 
@@ -327,7 +344,8 @@ class EmsHttp:
         text = ""
         try:
             resp = self.session.request(req.method, req.url, headers=req.headers, params=req.params,
-                                        data=req.data, json=req.json, timeout=req.timeout or self.timeout)
+                                        data=req.data, json=req.json, files=req.files,
+                                        timeout=req.timeout or self.timeout)
             status = resp.status_code
             # PSRMS (and others) prefix the JSON with a UTF-8 BOM, which resp.json() chokes
             # on - it would fall through to a text blob and every hit would read as
@@ -353,6 +371,31 @@ class EmsHttp:
         finally:
             self._log(req, status, text, error, (_time.time() - started) * 1000)
 
+    def fetch_bytes(self, url: str, *, timeout: int | None = None, max_bytes: int = 40_000_000,
+                    headers: dict[str, str] | None = None) -> bytes:
+        """A binary download (a report PDF), audited like any call. Raises on HTTP errors."""
+        import time as _time
+
+        started = _time.time()
+        status, error, size = 0, None, 0
+        try:
+            resp = self.session.get(url, timeout=timeout or max(self.timeout, 60), stream=True, headers=headers)
+            status = resp.status_code
+            resp.raise_for_status()
+            chunks, size = [], 0
+            for chunk in resp.iter_content(65536):
+                size += len(chunk)
+                if size > max_bytes:
+                    raise requests.HTTPError(f"Download larger than {max_bytes // 1_000_000} MB")
+                chunks.append(chunk)
+            return b"".join(chunks)
+        except requests.RequestException as exc:
+            error = repr(exc)
+            raise
+        finally:
+            self._log(Req("GET", url, headers=dict(headers or {})), status, f"<{size} bytes>", error,
+                      (_time.time() - started) * 1000)
+
     def _log(self, req: Req, status: int, response_text: str, error: str | None, ms: float) -> None:
         """Write the full outbound call (system, input, URL, body, response) to the audit
         file, so exactly what Sherlocks sent - and got back - is auditable and comparable
@@ -372,6 +415,9 @@ class EmsHttp:
             lines.append(f"  params:  {_redact(req.params, _SECRET_FIELDS)}")
         if req.data:
             lines.append(f"  data:    {_redact(req.data, _SECRET_FIELDS)}")
+        if req.files:
+            pairs = req.files.items() if isinstance(req.files, dict) else req.files
+            lines.append("  files:   " + ", ".join(f"{k}={v[0]} ({len(v[1])} bytes)" for k, v in pairs))
         if req.json is not None:
             lines.append(f"  json:    {_redact(req.json, _SECRET_FIELDS) if isinstance(req.json, dict) else req.json}")
         if error:
@@ -466,8 +512,27 @@ class EmsBackend:
         return out
 
     def fir_roster(self, fir_no: str, fir_year: str, ps_id: str) -> dict[str, Any]:
-        # EMS personsearch does not return the ps id needed to fetch a FIR file report.
-        return _result("fir_roster", "no_record", "FIR roster not available on the EMS backend")
+        """The FIR file report: everyone the FIR names, and the whole document (the
+        case file keeps it as evidence)."""
+        from sherlocks.evidence.sources import EmsEvidence
+
+        if not (fir_no and fir_year and ps_id):
+            return _result("fir_roster", "invalid_input", "FIR number, year and police station id required")
+        ctx = getattr(self.http, "set_context", None)
+        if callable(ctx):
+            ctx("fir_roster", f"{fir_no}/{fir_year} ps {ps_id}")
+        try:
+            found = EmsEvidence(self.http).fir_document(fir_no, fir_year, ps_id)
+        except requests.RequestException as exc:
+            return _err("fir_roster", f"FIR report request failed: {exc}")
+        if found["status"] == "error":
+            return _err("fir_roster", found.get("message") or "FIR report request failed")
+        if found["status"] != "hit":
+            return _result("fir_roster", "no_record", found.get("message") or "FIR report not found")
+        doc = found["doc"]
+        names = sum(len(v) for v in doc.get("roster", {}).values())
+        return _result("fir_roster", "success", f"FIR {fir_no}/{fir_year} report read ({names} people named)",
+                       hit=True, raw=doc)
 
     def caller_id(self, phone: str) -> dict[str, Any]:
         return _result("caller_id", "error", "Caller ID excluded from the EMS backend")
@@ -645,7 +710,10 @@ class EmsBackend:
         firs = [{"person_type": r.get("person_type"), "person_name": r.get("person_name"),
                  "person_father": r.get("person_father"), "person_cnic": cnic13(r.get("person_cnic")),
                  "person_phone": mobile11(r.get("person_phone")), "person_address": r.get("person_address"),
-                 "fir_no": r.get("fir_no"), "fir_year": r.get("fir_year"), "ps_id": "",
+                 "fir_no": r.get("fir_no"), "fir_year": r.get("fir_year"),
+                 # personsearch names the station's table id ps_tbl_id; the FIR file
+                 # report wants it as ps_id.
+                 "ps_id": str(r.get("ps_tbl_id") or r.get("ps_id") or ""),
                  "fir_status": r.get("fir_status"),
                  # charges, under whichever name this PSRMS build uses for them
                  "offence": next((r.get(k) for k in ("offence", "fir_offence", "sections", "section",
@@ -821,6 +889,42 @@ class EmsBackend:
     # -- travel / employment / police -----------------------------------------------
 
     def _hotel_eye(self, cnic: str | None, phone: str | None) -> dict[str, Any]:
+        if not (cnic or phone):
+            return _result("hotel_eye", "invalid_input", "CNIC or mobile required")
+        if CONF.get("hotel_person_url"):
+            out = self._hotel_person(cnic, phone)
+            if out is not None:
+                return out
+        return self._hotel_eye_legacy(cnic, phone)
+
+    def _hotel_person(self, cnic: str | None, phone: str | None) -> dict[str, Any] | None:
+        """Hotel Eye ``/api/person``: profiles found by the phone and/or CNIC, each with its
+        stays, the people who stayed with them, and CRO links. ``None`` = the API failed;
+        the older per-identifier endpoints are tried instead."""
+        headers = {"X-API-KEY": CONF.get("hotel_person_key", ""), "Content-Type": "application/json",
+                   "Accept": "application/json"}
+        if CONF.get("hotel_person_cookie"):
+            headers["Cookie"] = CONF["hotel_person_cookie"]
+        try:
+            code, body = self.http.send(Req("POST", CONF["hotel_person_url"], headers=headers, timeout=SLOW_TIMEOUT,
+                                            json={"phone": phone or "", "cnic": dashed_cnic(cnic) if cnic else "",
+                                                  "passport": "", "email": ""}))
+        except requests.RequestException as exc:
+            logger.info("Hotel Eye person API failed (%s); using the older endpoints", exc)
+            return None
+        if not isinstance(body, dict) or "text_response" in body or code >= 400 and code != 404:
+            return None
+        profiles = [p for p in _rows(body.get("profiles")) if isinstance(p, dict)]
+        if not body.get("found") or not profiles:
+            return _no("hotel_eye")
+        stays = sum(len(_rows(p.get("hotel_eye_stays"))) for p in profiles)
+        companions = sum(len(_rows(p.get("stay_with_persons"))) for p in profiles)
+        return _result("hotel_eye", "success",
+                       f"{stays} Hotel Eye stay(s) in {len(profiles)} profile(s)"
+                       + (f", {companions} person(s) stayed with them" if companions else ""),
+                       hit=True, raw={"profiles": profiles, "inputs": body.get("inputs")}, data={})
+
+    def _hotel_eye_legacy(self, cnic: str | None, phone: str | None) -> dict[str, Any]:
         headers = {"x-api-key": CONF["hotel_key"], "Content-Type": "application/x-www-form-urlencoded"}
         # by-mobile can return hundreds of stays and take ~90s; give it the slow timeout.
         probes = self._both(cnic and Req("POST", CONF["hotel_cnic_url"], headers=headers, data={"cnic": dashed_cnic(cnic)}, timeout=SLOW_TIMEOUT),
@@ -1055,24 +1159,51 @@ class EmsBackend:
     # -- complaint ------------------------------------------------------------------
 
     def _igp_cms(self, cnic: str | None, phone: str | None) -> dict[str, Any]:
-        headers = {"X-API-KEY": CONF["igp_key"], "Content-Type": "application/x-www-form-urlencoded"}
-        probes = self._both(cnic and Req("POST", CONF["igp_url"], headers=headers, data={"cnic": dashed_cnic(cnic)}),
-                            phone and Req("POST", CONF["igp_url"], headers=headers, data={"contact": dashed_mobile(phone)}))
+        """IGP complaint management: every complaint the person filed and every complaint
+        filed against them. The current endpoint (``.../api/search-complaints-by-cnic``)
+        takes ``cnic`` or ``phone`` as query parameters and answers with the complaints
+        split by role (``as_complainant``, ``as_complain_against``); the older
+        ``.../api/complaint-details`` (form fields, ``complaints``) is still read."""
+        url = CONF["igp_url"]
+        if "search-complaints" in url:
+            headers = {"X-API-KEY": CONF["igp_key"], "Accept": "application/json"}
+            # One endpoint for both: only the parameter changes (13 bare digits / 03XXXXXXXXX).
+            probes = self._both(cnic and Req("POST", url, headers=headers, params={"cnic": cnic13(cnic)}),
+                                phone and Req("POST", url, headers=headers, params={"phone": mobile11(phone)}))
+        else:
+            headers = {"X-API-KEY": CONF["igp_key"], "Content-Type": "application/x-www-form-urlencoded"}
+            probes = self._both(cnic and Req("POST", url, headers=headers, data={"cnic": dashed_cnic(cnic)}),
+                                phone and Req("POST", url, headers=headers, data={"contact": dashed_mobile(phone)}))
         if probes is None:
             return _result("igp_cms", "invalid_input", "CNIC or mobile required")
-        complaints, seen = [], set()
+        complaints, seen, failures = [], set(), []
         for _branch, code, body in probes:
             if code == 404 or not (isinstance(body, dict) and body.get("success")):
+                message = str((body or {}).get("message") or "") if isinstance(body, dict) else str(body)[:200]
+                # "No records found for the provided cnic" is an answer; anything else (a bad
+                # key, a server error) is a failure, not "nothing on record".
+                if code >= 500 or (code not in (200, 404) and not re.search(r"no (?:record|complaint)", message, re.I)) \
+                        or (code == 200 and message and not re.search(r"no (?:record|complaint)", message, re.I)):
+                    failures.append(f"HTTP {code}: {message[:160]}")
                 continue
-            for c in _rows(body.get("complaints")):
-                ident = str(c.get("complaint_no") or c.get("id") or c)
+            data = body.get("data") if isinstance(body.get("data"), dict) else {}
+            rows = [*(_rows(data.get("as_complainant"))), *(_rows(data.get("as_complain_against"))),
+                    *(_rows(data.get("all_complaints"))), *(_rows(body.get("complaints")))]
+            for c in rows:
+                if not isinstance(c, dict):
+                    continue
+                ident = str(c.get("tracking_id") or c.get("complaint_no") or c.get("id") or c)
                 if ident not in seen:
                     seen.add(ident)
                     complaints.append(c)
         if not complaints:
+            if failures and len(failures) == len(probes):
+                return _err("igp_cms", "IGP CMS failed: " + "; ".join(failures))
             return _no("igp_cms")
-        return _result("igp_cms", "success", f"{len(complaints)} IGP CMS complaint(s)", hit=True,
-                       raw={"complaints": complaints}, data={})
+        filed = sum(1 for c in complaints if str(c.get("cnic_role") or "complainant") == "complainant")
+        against = len(complaints) - filed
+        return _result("igp_cms", "success", f"{len(complaints)} IGP CMS complaint(s): {filed} filed, {against} against",
+                       hit=True, raw={"complaints": complaints}, data={"filed": filed, "against": against})
 
     def _pfc(self, cnic: str | None, phone: str | None) -> dict[str, Any]:
         headers = {"x-api-key": CONF["pfc_key"], "Content-Type": "application/x-www-form-urlencoded"}

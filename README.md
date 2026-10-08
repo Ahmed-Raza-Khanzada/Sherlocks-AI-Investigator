@@ -206,6 +206,39 @@ works on any saved graph posted back. Setup, PHP token code and API reference:
   in the row, name / ولدیت / پتہ columns).
 * PSRMS `WIT`/`SUS` codes follow cdr_report_app's reading (WIT = accused, SUS = witness).
 
+## Case evidence, Sherlock and the case report
+
+While the graph builds, an evidence team (`sherlocks.evidence`) works alongside it:
+
+- **Collector** - for every FIR the search opens it fetches the **FIR file report**
+  (PSRMS `firfilereport`: complainant, accused, witnesses, investigating officers, case
+  diaries, investigation result), the **forensic / medical lab reports** filed against
+  that FIR (Labs `show-reports`: DNA, chemical, FSL, MLO - PDFs downloaded and read,
+  scanned pages read by the vision-language model), and for every CRO number the **CRO dossier**
+  (SAFE `cro-report-pdf`: particulars, poses, fingerprints).
+- **Reader** - turns each document into facts. Structural facts by rule; the model reads
+  narratives, case diaries and report text. Every fact carries a verbatim quote that is
+  checked against the document - a fact whose quote is not there is discarded.
+- **Linker** - finds the graph's people inside the documents (CNIC, phone, vehicle,
+  name). A CNIC or number found in a FIR file becomes a stated edge on the graph
+  ("is mentioned in the file of FIR 45/2023 involving…").
+
+Everything lands in the **case file** (`D#` documents, `F#` quoted facts, `L#` people
+found), which travels with the graph (`graph.case`).
+
+**Sherlock** - the chat bubble (bottom right) - can be used from the moment the graph
+starts building. It queries the graph and the case file, may fetch a FIR file, the lab
+reports of a FIR or a CRO dossier itself, or check one person in one system (at most
+`SHERLOCKS_EVIDENCE_CHAT_LIVE_CALLS` live calls per question), and cites every answer.
+
+**Case report** - when the graph finishes or is stopped, Sherlock writes the case report:
+executive summary, targets with photographs, linkages between the targets, network
+diagram, key findings, assessments (each must cite graph evidence `G#` or the case file,
+or it is dropped), timeline, evidence register with quoted facts and pictures, open
+questions, recommendations and references. Download it as a PDF from the toolbar
+(`GET /graph/runs/{id}/report.pdf`). Endpoints and keys: `EMS_PSRMS_FIR_URL`,
+`EMS_LABS_URL` / `EMS_LABS_TOKEN`, `EMS_SAFE_CRO_URL` / `EMS_SAFE_KEY` in `.env`.
+
 ## The two rules that shape the code
 
 1. **Deterministic rules score; the LLM only structures text.** The local model is

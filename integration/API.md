@@ -38,6 +38,7 @@ answer "how are these people connected?".
 | `graph` | `{version, full, nodes[], edges[], removed_nodes[], removed_edges[]}` | `full`: clear first. Then upsert nodes/edges by `id` and drop the removed ids. |
 | `status` | `{id, seed_label, backend, params, status, progress_pct, message, stats, …}` | update the header and progress |
 | `log` | `{events: [{at, level, message}]}` | append to the log |
+| `case` | `{counts, documents[], facts[], links[], attempts[], report_status}` | the case file so far (FIR files, lab reports, CRO dossiers read; quoted facts; people found in them). Document texts are not streamed: `GET /graph/runs/{id}/documents/{D#}` |
 | `done` | `{status}` | **close the EventSource** (or the browser reconnects), then fetch the export |
 
 The first `graph` event carries everything so far. Each later one carries only what
@@ -79,12 +80,63 @@ does this. The events are:
 
 | event | data |
 |---|---|
-| `start` | `{question, people, targets, findings, model}` |
-| `step` | `{tool, args, args_text, thought, summary}`: one per query the investigator makes |
-| `final` | `{answer, confident, hypotheses[{statement, tier, people, people_ids, evidence}], key_people, next_steps, suggestions, findings, model}` |
+| `start` | `{question, people, targets, findings, model, documents, live_calls}` |
+| `step` | `{tool, args, args_text, thought, summary, live}`: one per query the investigator makes; `live: true` = it queried a police system |
+| `final` | `{answer, confident, hypotheses[{statement, tier, people, people_ids, evidence}], key_people, next_steps, suggestions, findings, model, citations[{id, type, title, quote, doc}], case?}` |
 
-The investigator never searches the live systems itself. The people it suggests
-searching next come back as `suggestions`, and the officer decides whether to search them.
+This is what the **Sherlock chat bubble** uses. It reads the case file (documents `D#`,
+quoted facts `F#`, people found in documents `L#`) and cites them in its answer. It may
+fetch a document itself (a FIR file, the lab reports of a FIR, a CRO dossier) or ask one
+police system about one person, at most `SHERLOCKS_EVIDENCE_CHAT_LIVE_CALLS` per question.
+It never expands the graph: people worth searching come back as `suggestions`.
+
+Page hooks for the host: `onRunComplete(run)` once when a search finishes, and
+`onCaseUpdated(run)` whenever a finished run's case changes later (uploads read, incident
+pinned, answers, chat fetches) - save both under the same run id.
+
+For a **saved graph** (posted as `graph`), a final event carrying `case` means the chat
+fetched new documents: replace `graph.case` with it before saving the graph again. The
+page does this itself (`window.Sherlocks.currentRun()` returns the updated graph).
+
+### Case evidence and the case report
+
+| | |
+|---|---|
+| `GET /graph/runs/{id}/documents/{D#}` | one document in full: `text`, `fact_rows` (each with its verbatim `quote`), `link_rows`, `images` (ids for `/graph/images/{id}`), `urls` |
+| `GET /graph/runs/{id}/report.pdf` | the case report PDF (written by Sherlock when the run finished or was stopped). `?rebuild=true` writes it again, e.g. after the chat fetched more documents. Token as header, or `?token=` for a plain link |
+| `POST /graph/report` | `{graph}` of a saved run (with its `case`) -> the case report PDF. `explain: true` rewrites it |
+
+### Uploads, the incident, Sherlock's questions
+
+| | |
+|---|---|
+| `POST /graph/runs/{id}/uploads` | multipart `file` (+ optional `note`, `owner` person id). Image (JPG, PNG), PDF, `.docx`, `.xlsx` only, 25 MB. `202` = accepted and being read; `422` = refused, `detail` says why |
+| `GET /graph/runs/{id}/uploads/{D#}/file` | the original uploaded file |
+| `POST /graph/runs/{id}/incident` | `{lat, lon, place, date (YYYY-MM-DD), time (HH:MM), fir}` - where and when it happened |
+| `POST /graph/runs/{id}/questions/{Q#}` | `{answer, pid?}` - answer one of Sherlock's questions |
+| `GET /graph/runs/{id}/case` | the case board now (documents, facts, incident, roles, open questions); poll it while uploads are read after the stream has ended |
+
+The `investigate` stream is one chat turn worked by the agent team. Besides `start`,
+`step` and `final` it sends `agent` events `{agent, text}` - Conversation agent, Fact
+collector, Understanding agent, Facts agent, Investigator, Briefing agent, Questioner,
+Validator - and each `step` carries `agent`. `final` carries:
+
+| field | meaning |
+|---|---|
+| `answer` | the reply, in the officer's language |
+| `language` | `en`, `roman` (Roman Urdu) or `ur` |
+| `intent` | `question`, `statement`, `answer` (to Sherlock's question) or `greeting` |
+| `query` | what was understood: `{type, people, pronoun}` (`cases`, `count_cases`, `fir_status`, `criminals_near`, `criminals_all`, `profile`, `connection`, `hotels`, `phones`, `vehicles`, `documents`, `graph_stats`, `news`, `summary`, `open`) |
+| `facts` | the exact answer computed from the records: `{type, subject, count, items[{text, source, pid}]}` |
+| `asking` | the one question Sherlock asks back, if any: `{id, key, text, action, options}` (`action`: `pin_location`, `choose_person`, `upload`, `text`) |
+| `questions` | every open question |
+| `checks` | the Validator: `{ok, issues, revised}` |
+| `citations` | the case-file ids the reply cites |
+
+The case file lives **inside the graph**: `run.graph.case` in every export and in the
+`onRunComplete` payload. A run with documents is larger (document texts, typically
+100 KB - 2 MB): store `payload` as `longText`, and allow a request body of at least
+16 MB on the save route (`post_max_size` / `client_max_body_size`).
 
 ### Errors
 

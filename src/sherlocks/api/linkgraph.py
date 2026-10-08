@@ -23,12 +23,24 @@ from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from sherlocks.agents.llm import llm_label
 from sherlocks.api.auth import AuthError, SessionAuth
+from sherlocks.evidence.case_file import CaseFile
 from sherlocks.linkgraph.demo_data import DEMO_SEEDS
 from sherlocks.linkgraph.images import _MAGIC
 from sherlocks.linkgraph.models import GraphRunParams
@@ -48,7 +60,7 @@ _STREAM_TICK_SECONDS = 0.5
 _STREAM_KEEPALIVE_SECONDS = 15.0
 _TERMINAL = {"completed", "failed", "cancelled"}
 _STATUS_KEYS = ("id", "seed_label", "backend", "params", "status", "progress_pct", "message", "stats",
-                "created_by", "created_at", "finished_at")
+                "created_by", "created_at", "finished_at", "evidence")
 
 
 class ChatTurn(BaseModel):
@@ -85,6 +97,21 @@ class AskRequest(BaseModel):
     history: list[ChatTurn] = Field(default_factory=list)
 
 
+class IncidentBody(BaseModel):
+    lat: float | None = Field(default=None, ge=-90, le=90)
+    lon: float | None = Field(default=None, ge=-180, le=180)
+    place: str | None = None
+    date: str | None = Field(default=None, description="YYYY-MM-DD")
+    time: str | None = Field(default=None, description="HH:MM")
+    fir: str | None = None
+    police_station: str | None = None
+
+
+class AnswerBody(BaseModel):
+    answer: str = ""
+    pid: str | None = None
+
+
 def _sse(event: str, data: Any) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
 
@@ -93,27 +120,37 @@ def build_router(settings: Settings, manager: Callable[[], RunManager],
                  session_auth: SessionAuth | None = None) -> APIRouter:
     router = APIRouter(prefix=f"{settings.api.prefix}/graph", tags=["link graph"])
 
-    def auth(x_api_key: str | None = Header(default=None), key: str | None = Query(default=None),
-             x_session_token: str | None = Header(default=None),
-             token: str | None = Query(default=None)) -> str | None:
-        """A signed-in operator, or a machine holding the API key. Either is enough.
-        Returns the user the token names (``None`` for the API key or an open API), so
-        each run records who started it.
+    def officer(x_api_key: str | None = Header(default=None), key: str | None = Query(default=None),
+                x_session_token: str | None = Header(default=None),
+                token: str | None = Query(default=None)) -> dict[str, Any]:
+        """Who is calling: ``{user, systems}``. A signed-in operator (``systems`` from the
+        token's ``sys`` claim, ``None`` when it has none), or a machine holding the API
+        key (``user`` None). The agents' live calls for this caller are limited to
+        ``systems`` and logged under ``user``.
 
         ``key``/``token`` in the query string exist for the browser's own requests -
         <img>, EventSource and download links cannot carry headers.
         """
         expected = settings.api.api_key
         if expected and expected in (x_api_key, key):
-            return None
+            return {"user": None, "systems": None}
         if session_auth and session_auth.verifies_tokens:
             try:
-                return session_auth.verify(x_session_token or token) or None
+                claims = session_auth.claims(x_session_token or token)
             except AuthError as exc:
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+            systems = claims.get("sys")
+            return {"user": str(claims.get("u") or "") or None,
+                    "systems": [str(x) for x in systems] if isinstance(systems, list) else None}
         if expected:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
-        return None
+        return {"user": None, "systems": None}
+
+    def auth(who: dict[str, Any] = Depends(officer)) -> str | None:
+        """A signed-in operator, or a machine holding the API key. Either is enough.
+        Returns the user the token names (``None`` for the API key or an open API), so
+        each run records who started it."""
+        return who["user"]
 
     def _systems_for(backend: str | None) -> list[dict]:
         """Every system the chosen backend actually queries. EMS runs systems the shared
@@ -155,6 +192,8 @@ def build_router(settings: Settings, manager: Callable[[], RunManager],
             "demo_seeds": DEMO_SEEDS,
             "systems": _systems_for(backend or lg.backend),
             "categories": sorted({info.category for info in SYSTEMS.values()}),
+            "uploads": {"accept": ".jpg,.jpeg,.png,.pdf,.docx,.xlsx", "max_mb": settings.evidence.max_upload_mb},
+            "map_tiles": settings.evidence.map_tiles,
         }
 
     @router.get("/systems")
@@ -196,6 +235,9 @@ def build_router(settings: Settings, manager: Callable[[], RunManager],
         ``status`` - the run's summary (``id, seed_label, backend, params, status,
                      progress_pct, message, stats``…) whenever any of it changes.
         ``log``    - ``{events: [{at, level, message}]}``, new log lines.
+        ``case``   - the case file's index whenever it changes: ``{counts, documents,
+                     facts, links, attempts, report_status}`` (document texts are fetched
+                     with ``/runs/{id}/documents/{doc}``).
         ``done``   - ``{status}``; the stream then ends. Close the EventSource here, or
                      the browser reconnects. Fetch ``/runs/{id}/export`` to save it.
         """
@@ -213,11 +255,13 @@ def build_router(settings: Settings, manager: Callable[[], RunManager],
                     return
                 graph = run.get("graph") or {"nodes": [], "edges": [], "version": 0}
                 yield _sse("graph", {**GraphDiffer().diff(graph)})
+                yield _sse("case", CaseFile.from_dict(graph.get("case")).index())
                 yield _sse("status", {k: run.get(k) for k in _STATUS_KEYS})
                 yield _sse("log", {"events": run.get("events") or []})
                 yield _sse("done", {"status": run.get("status")})
                 return
             differ, version, seq, last_status, last_sent = GraphDiffer(), -1, 0, None, time.monotonic()
+            case_version = -1
             while True:
                 if await request.is_disconnected():
                     return
@@ -228,6 +272,9 @@ def build_router(settings: Settings, manager: Callable[[], RunManager],
                     delta = differ.diff(await asyncio.to_thread(handle.builder.snapshot))
                     if delta is not None:
                         chunks.append(_sse("graph", delta))
+                if handle.case.version != case_version or finished:
+                    case_version = handle.case.version
+                    chunks.append(_sse("case", handle.case.index()))
                 summary = handle.to_dict(graph=False)
                 current = {k: summary.get(k) for k in _STATUS_KEYS}
                 if current != last_status:
@@ -278,7 +325,7 @@ def build_router(settings: Settings, manager: Callable[[], RunManager],
     @router.post("/analyze/{action}")
     def analyze(action: Literal["ask", "brief", "compare", "ask_pair", "relations", "connection",
                                 "findings", "network", "paths", "investigate"],
-                body: AnalyzeRequest, _: None = Depends(auth)) -> dict:
+                body: AnalyzeRequest, who: dict[str, Any] = Depends(officer)) -> dict:
         """Chat with a graph, and every per-person/per-pair analysis the portal offers -
         on a run held here (``run_id``) or on a graph posted back by the host (``graph``).
 
@@ -324,7 +371,8 @@ def build_router(settings: Settings, manager: Callable[[], RunManager],
             need("a", "b")
             result = mgr.paths(graph, body.a, body.b, k=body.k)
         elif action == "investigate":
-            events = list(mgr.investigate(graph, body.question or "", history=_history(body.history)))
+            events = list(mgr.investigate(graph, body.question or "", history=_history(body.history), run_id=scope,
+                                          officer=who))
             result = {**events[-1], "steps": [e for e in events if e["type"] == "step"]}
         else:
             need("a", "b")
@@ -334,13 +382,14 @@ def build_router(settings: Settings, manager: Callable[[], RunManager],
         return result
 
     @router.post("/investigate")
-    def investigate_stream(body: AnalyzeRequest, _: None = Depends(auth)) -> StreamingResponse:
+    def investigate_stream(body: AnalyzeRequest, who: dict[str, Any] = Depends(officer)) -> StreamingResponse:
         """The AI investigator, live: Server-Sent Events over a POST (read it with fetch()
         and a stream reader - EventSource cannot POST). Events: ``start``, one ``step`` per
         tool call {tool, args, thought, summary}, then ``final`` {answer, hypotheses,
         key_people, next_steps, suggestions, findings}. Body as for /analyze."""
-        graph, _scope = _source(body)
-        events = manager().investigate(graph, body.question or "", history=_history(body.history))
+        graph, scope = _source(body)
+        events = manager().investigate(graph, body.question or "", history=_history(body.history), run_id=scope,
+                                       officer=who)
 
         def stream() -> Any:
             for event in events:
@@ -350,6 +399,113 @@ def build_router(settings: Settings, manager: Callable[[], RunManager],
 
         return StreamingResponse(stream(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    # -- case file and case report ------------------------------------------------------
+
+    @router.get("/runs/{run_id}/documents/{doc_id}")
+    def document(run_id: str, doc_id: str, _: None = Depends(auth)) -> dict:
+        """One case document in full: text, quoted facts, people found, pictures (as
+        image ids for ``/images/{id}``)."""
+        doc = manager().document(run_id, doc_id.upper())
+        if doc is None:
+            raise HTTPException(status_code=404, detail="Run or document not found")
+        return doc
+
+    def _pdf_response(pdf: bytes, name: str) -> Response:
+        return Response(pdf, media_type="application/pdf",
+                        headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
+
+    @router.get("/runs/{run_id}/report.pdf")
+    def report_pdf(run_id: str, rebuild: bool = False, _: None = Depends(auth)) -> Response:
+        """The case report as a PDF: written when the run finished or was stopped (or now,
+        with ``rebuild=true`` - e.g. after the chat fetched more documents). A link the
+        browser can open directly: pass the token as ``?token=``."""
+        mgr = manager()
+        graph = mgr.graph_for(run_id)
+        if graph is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        try:
+            pdf = mgr.report_pdf(graph, run_id, rebuild=rebuild)
+        except Exception as exc:
+            logger.exception("Case report PDF for %s failed", run_id)
+            raise HTTPException(status_code=500, detail=f"Case report failed: {exc}") from exc
+        return _pdf_response(pdf, f"sherlocks_case_report_{run_id[:8]}.pdf")
+
+    @router.post("/report")
+    def report_from_graph(body: AnalyzeRequest, _: None = Depends(auth)) -> Response:
+        """The case report PDF for a graph the host saved (``graph`` with its ``case``),
+        or for a run held here (``run_id``)."""
+        graph, scope = _source(body)
+        try:
+            pdf = manager().report_pdf(graph, scope, rebuild=body.explain)
+        except Exception as exc:
+            logger.exception("Case report PDF failed")
+            raise HTTPException(status_code=500, detail=f"Case report failed: {exc}") from exc
+        return _pdf_response(pdf, "sherlocks_case_report.pdf")
+
+    # -- the case board: uploads, the incident, the Questioner's questions ------------------
+
+    @router.post("/runs/{run_id}/uploads", status_code=202)
+    async def upload(run_id: str, file: UploadFile = File(...), note: str = Form(default=""),
+                     owner: str | None = Form(default=None), _: None = Depends(auth)) -> dict:
+        """Upload a file for the agents to read: image (JPG, PNG), PDF, Word (.docx) or
+        Excel (.xlsx) only. It is read in the background; the document appears in the
+        case file (``case`` events / ``GET /runs/{id}/case``)."""
+        from sherlocks.evidence.uploads import UploadError
+
+        limit = settings.evidence.max_upload_mb * 1_000_000
+        content = await file.read(limit + 1)
+        try:
+            return manager().upload(run_id, file.filename or "upload", content, note=note, owner=owner or None)
+        except UploadError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.get("/runs/{run_id}/uploads/{doc_id}/file")
+    def upload_file(run_id: str, doc_id: str, _: None = Depends(auth)) -> Response:
+        found = manager().upload_file(run_id, doc_id.upper())
+        if found is None:
+            raise HTTPException(status_code=404, detail="Upload not found")
+        content, name, mime = found
+        return Response(content, media_type=mime, headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+    @router.post("/runs/{run_id}/incident")
+    def incident(run_id: str, body: IncidentBody, _: None = Depends(auth)) -> dict:
+        """Where and when the incident happened (pinned on the map). The agents then find
+        the nearest police station and read every uploaded CDR against the point."""
+        try:
+            return {"incident": manager().set_incident(run_id, body.model_dump())}
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.post("/runs/{run_id}/questions/{qid}")
+    def answer(run_id: str, qid: str, body: AnswerBody, _: None = Depends(auth)) -> dict:
+        """Answer one of the Questioner's questions (a person picked, or text)."""
+        try:
+            return manager().answer_question(run_id, qid.upper(), body.answer, body.pid)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.get("/runs/{run_id}/audit")
+    def audit(run_id: str, _: None = Depends(auth)) -> dict:
+        """Every live call the agents made for this case - who (officer), which agent, why,
+        which system and identifier, refused or made - and totals, for admins."""
+        from sherlocks.evidence.guard import audit_summary
+
+        case = manager().board(run_id)
+        if case is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return {"summary": audit_summary(case), "calls": case.calls[-500:]}
+
+    @router.get("/runs/{run_id}/case")
+    def case_index(run_id: str, _: None = Depends(auth)) -> dict:
+        """The case board now (documents, facts, incident, roles, open questions) - for
+        polling while uploads are read after the run's stream has ended."""
+        index = manager().case_index(run_id)
+        if index is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return index
 
     # The per-run forms below predate /analyze and are kept for existing callers.
 

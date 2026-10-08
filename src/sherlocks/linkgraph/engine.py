@@ -89,8 +89,12 @@ class Expansion:
         checkpoint: Callable[[], None] | None = None,
         cancelled: Callable[[], bool] | None = None,
         llm: Any = None,
+        evidence: Any = None,
     ) -> None:
         self.backend = backend
+        # The evidence team (sherlocks.evidence.collector.CaseAgents): told about every
+        # FIR file opened and every record, it fetches and reads documents alongside.
+        self.evidence = evidence
         self.cache = cache
         self.images = images
         self.settings = settings
@@ -181,6 +185,11 @@ class Expansion:
         for rel in rec.related:
             rpid, _ = self.builder.link_related(sid, rel, depth=depth + 1, from_pid=pid)
             found.append(rpid)
+        if self.evidence is not None:
+            try:
+                self.evidence.on_record(pid, rec)
+            except Exception:
+                logger.exception("Evidence hook failed for %s", system)
         return found, rec
 
     def _run_system(self, pid: str, system: str, cnic: str | None, phone: str | None, depth: int,
@@ -316,6 +325,11 @@ class Expansion:
         if payload.get("hit"):
             with self._firs_lock:
                 self._firs[key] = f"s:fir_roster:{key}"
+            if self.evidence is not None:
+                try:
+                    self.evidence.on_fir(self.builder.canonical(pid), fir, payload)
+                except Exception:
+                    logger.exception("Evidence hook failed for FIR %s", key)
         return found
 
     # -- the run --------------------------------------------------------------------

@@ -79,3 +79,9 @@ CLAUDE.md
 *.swp
 *~
 
+
+# --- Tests on real case data --------------------------------------------------
+# Regression tests replayed on a real server run (real names, CNICs, FIR files).
+# Kept on this machine only; the public tests use fictional people.
+tests/private/
+*real_run*.json

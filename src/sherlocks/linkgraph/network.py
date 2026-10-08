@@ -33,7 +33,8 @@ import networkx as nx
 from rapidfuzz import fuzz, process
 
 from sherlocks.linkgraph.dossier import criminal_flags
-from sherlocks.linkgraph.normalize import name_key
+from sherlocks.linkgraph.graph import witness_role
+from sherlocks.linkgraph.normalize import name_key, sounds_like
 from sherlocks.linkgraph.systems import system_label
 
 # A record naming more people than this (a big FIR roster) is a crowd: its people are
@@ -86,11 +87,15 @@ class PersonNetwork:
         for pid, n in self.people.items():
             self.G.add_node(pid, name=n["label"], data=n["data"])
         members: dict[str, list[str]] = {}
+        roles: dict[tuple[str, str], str] = {}   # (record, person) -> their role on it
         for e in self.graph.get("edges", []):
             src, dst = e["source"], e["target"]
             if e["kind"] == "found_in":
                 members.setdefault(dst, []).append(src)
+                roles[(dst, src)] = e.get("label") or ""
                 continue
+            if e["kind"] == "strong" and str(src).startswith("s:"):
+                roles.setdefault((src, dst), e.get("label") or "")
             if e["kind"] == "strong" and str(src).startswith("s:"):
                 owner = (nodes.get(src) or {}).get("data", {}).get("owner")
                 if owner:
@@ -109,6 +114,11 @@ class PersonNetwork:
                 self.hub_records.append({"record": rid, "label": record.get("label"), "people": len(pids)})
                 continue
             for a, b in itertools.combinations(pids, 2):
+                if witness_role(roles.get((rid, a))) and witness_role(roles.get((rid, b))):
+                    # Witnesses of the same case are not witnesses of each other.
+                    self._add(a, b, Link("weak", f"Both witnesses on {record.get('label') or rid}",
+                                         record.get("data", {}).get("system"), None, rid, score=0.5))
+                    continue
                 self._add(a, b, Link("shared", f"Both on {record.get('label') or rid}",
                                      record.get("data", {}).get("system"), None, rid))
         # Hop cost: the best link's cost, plus a toll for each end that is a hub.
@@ -146,7 +156,19 @@ class PersonNetwork:
                 return pid
         names = {pid: name_key(n["label"]) for pid, n in self.people.items()}
         hit = process.extractOne(name_key(ref), names, scorer=fuzz.WRatio, score_cutoff=80)
-        return hit[2] if hit else None
+        if hit:
+            return hit[2]
+        # One distinctive word of a name ("kamran" -> Kamran Ahmed), held by one person.
+        from sherlocks.linkgraph.rarity import COMMON_NAME_TOKENS
+
+        words = [w for w in name_key(ref).split() if len(w) >= 3 and w not in COMMON_NAME_TOKENS]
+        if words:
+            holders = [pid for pid, key in names.items() if all(w in key.split() for w in words)]
+            if len(holders) == 1:
+                return holders[0]
+        # The same name in the other script ("afzal" for افضل): one person must match.
+        by_sound = [pid for pid, n in self.people.items() if sounds_like(ref, n["label"])]
+        return by_sound[0] if len(by_sound) == 1 else None
 
     def criminal(self, pid: str) -> bool:
         return bool(criminal_flags(self.data(pid)))

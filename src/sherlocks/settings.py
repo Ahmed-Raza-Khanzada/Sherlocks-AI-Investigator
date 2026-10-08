@@ -92,6 +92,9 @@ class LlmSettings(BaseModel):
     temperature: float = 0.0
     max_tokens: int = 800
     enabled: bool = True
+    # The served model is a vision-language model (the office Qwen 27B is): it reads
+    # scanned report pages - Urdu and English - so no separate OCR engine is needed.
+    vision: bool = True
 
     @property
     def ready(self) -> bool:
@@ -235,6 +238,71 @@ class AuthSettings(BaseModel):
     secret: str | None = None            # signs session tokens; random per boot if unset
 
 
+class ChatSettings(BaseModel):
+    """How long each step of a chat reply may take (seconds), and how big the context
+    pack may be. A step over budget falls back (templates, the board, rules only) and
+    what finishes late is sent as a follow-up message - partial beats late."""
+
+    reply_budget_s: float = 40.0      # the whole reply, never longer
+    draft_budget_s: float = 10.0      # O1 understanding + drafting (one model call)
+    tools_budget_s: float = 10.0      # toolbox / live calls, together, in parallel
+    view_budget_s: float = 10.0       # Sherlock's quick view (one model call, no tools)
+    investigate_budget_s: float = 25.0  # the investigator's tool loop in a reply
+    check_budget_s: float = 6.0       # the Answer checker's model check
+    revise_budget_s: float = 6.0      # O1 fixing a draft once
+    pack_chars: int = 14000           # the context pack, all parts together
+    recent_turns: int = 4             # chat turns given word for word; older ones summarised
+
+
+class EvidenceSettings(BaseModel):
+    """Case evidence read while a graph builds: the FIR document of every FIR found
+    (PSRMS file report), the forensic lab reports filed against it (DNA, chemical,
+    FSL, medico-legal), and the CRO dossier PDF of every criminal record number.
+
+    Each document is fetched once per run (and cached like any provider answer), read
+    into facts that quote it, and kept with the graph as the case file the chat and
+    the case report cite."""
+
+    enabled: bool = True
+    # Per run. Each FIR document, lab report and CRO dossier is one upstream query.
+    max_documents: int = 40
+    lab_reports: bool = True
+    cro_dossiers: bool = True
+    # Read scanned pages (lab reports, dossiers) with the vision model (llm.vision).
+    ocr: bool = True
+    # The AI reader writes facts from narratives, case diaries and report text, each
+    # with a verbatim quote that is checked against the document.
+    ai_reader: bool = True
+    ai_reader_calls_per_run: int = 30
+    # Write the case report (assessments, linkages) as soon as the graph finishes or is stopped.
+    auto_report: bool = True
+    # The chat may call police systems itself (FIR document, lab reports, CRO dossier,
+    # one system lookup) to check a lead - at most this many live calls per question.
+    chat_live_calls: int = 6
+    # Live calls one case may make in all, and per hour (every agent, every team). Over the
+    # limit the calls stop and the officer is told; near the hourly limit admins are warned.
+    case_live_calls: int = 120
+    case_live_calls_per_hour: int = 40
+    # Live calls the Sherlock team may make in one background run.
+    background_live_calls: int = 4
+    # Background runs of the Sherlock team per case (the report and the officer can always
+    # ask for one more).
+    sherlock_runs_per_case: int = 20
+    # On a report download, how long Sherlock may take to bring his assessment up to date
+    # first; past it the report is built from his last assessment and says "as of".
+    report_wait_s: float = 90.0
+    # Uploads (image, PDF, Word, Excel) per file.
+    max_upload_mb: int = 25
+    # Send an uploaded CDR / BTS file to the CDR server for its analysis (its report also
+    # looks up top contacts in the police systems - live queries). false = own analysis only.
+    cdr_auto_analyze: bool = True
+    # "Near the incident": towers within this distance of the pinned point.
+    cdr_radius_km: float = 2.0
+    # Map tiles for pinning the incident ({z}/{x}/{y}); a tile server on the police network
+    # when the officers' browsers have no internet.
+    map_tiles: str = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+
+
 class Settings(BaseModel):
     app: AppSettings = Field(default_factory=AppSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
@@ -244,6 +312,8 @@ class Settings(BaseModel):
     linkgraph: LinkGraphSettings = Field(default_factory=LinkGraphSettings)
     api: ApiSettings = Field(default_factory=ApiSettings)
     auth: AuthSettings = Field(default_factory=AuthSettings)
+    evidence: EvidenceSettings = Field(default_factory=EvidenceSettings)
+    chat: ChatSettings = Field(default_factory=ChatSettings)
     config_path: str | None = None
     env_file: str | None = None
 
@@ -352,6 +422,21 @@ def _env_overrides(env: dict[str, str]) -> dict[str, Any]:
             "api_key": get("SHERLOCKS_LLM_API_KEY"),
             "timeout_seconds": _as_int(get("SHERLOCKS_LLM_TIMEOUT")),
             "enabled": _as_bool(get("SHERLOCKS_LLM_ENABLED")),
+            "vision": _as_bool(get("SHERLOCKS_LLM_VISION")),
+        },
+        "evidence": {
+            "enabled": _as_bool(get("SHERLOCKS_EVIDENCE_ENABLED")),
+            "max_documents": _as_int(get("SHERLOCKS_EVIDENCE_MAX_DOCUMENTS")),
+            "lab_reports": _as_bool(get("SHERLOCKS_EVIDENCE_LAB_REPORTS")),
+            "cro_dossiers": _as_bool(get("SHERLOCKS_EVIDENCE_CRO_DOSSIERS")),
+            "ocr": _as_bool(get("SHERLOCKS_EVIDENCE_OCR")),
+            "ai_reader": _as_bool(get("SHERLOCKS_EVIDENCE_AI_READER")),
+            "auto_report": _as_bool(get("SHERLOCKS_EVIDENCE_AUTO_REPORT")),
+            "chat_live_calls": _as_int(get("SHERLOCKS_EVIDENCE_CHAT_LIVE_CALLS")),
+            "max_upload_mb": _as_int(get("SHERLOCKS_UPLOAD_MAX_MB")),
+            "cdr_auto_analyze": _as_bool(get("SHERLOCKS_CDR_AUTO_ANALYZE")),
+            "cdr_radius_km": _as_float(get("SHERLOCKS_CDR_RADIUS_KM")),
+            "map_tiles": get("SHERLOCKS_MAP_TILES"),
         },
         "osint": {
             "enabled": _as_bool(get("SHERLOCKS_OSINT_ENABLED")),

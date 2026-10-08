@@ -59,7 +59,7 @@ def _fake_ems_endpoints(monkeypatch):
         "hope_emp_url": f"{host}/api/client/hope-employee-cnic-search",
         "hope_empr_url": f"{host}/api/client/hope_employer_cnic_search",
         "dls_login_url": f"{host}/auth/login", "dls_api": f"{host}/api",
-        "igp_url": f"{host}/api/complaint-details",
+        "igp_url": f"{host}/api/search-complaints-by-cnic",
         "pfc_url": f"{host}/api/citizen/icop-complaints",
         "hrmis_url": f"{host}/api/fir/officer_data/",
         "milap_url": f"{host}/api/lost-records",
@@ -68,6 +68,10 @@ def _fake_ems_endpoints(monkeypatch):
         "excise_url": f"{host}/GetVehicleInquiry/getVehicleInfo",
         "tracs_url": f"{host}/api/v1/sindh-police/challans",
         "avlc_url": f"{host}/api/icop",
+        "psrms_fir_url": f"{host}/restapi/Criminal_api/firfilereport",
+        "labs_url": f"{host}/api/v1/show-reports",
+        "safe_cro_url": f"{host}/api/cro-report-pdf",
+        "hotel_person_url": "",   # the Hotel Eye person API is off unless a test turns it on
     }
     for key in ems.CONF:
         monkeypatch.setitem(ems.CONF, key, fake.get(key, f"test-{key}"))

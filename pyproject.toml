@@ -26,6 +26,10 @@ dependencies = [
     "rapidfuzz>=3.9",
     "arabic-reshaper>=3.0",
     "python-bidi>=0.6",
+    # Case evidence: FIR file reports (HTML) and the case report's Urdu text shaping.
+    "beautifulsoup4>=4.12",
+    "uharfbuzz>=0.40",
+    "Pillow>=10.0",
 ]
 
 [project.optional-dependencies]

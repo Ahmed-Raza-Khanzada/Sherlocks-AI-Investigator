@@ -6,8 +6,8 @@
  *
  * Embedding in another portal: define window.SHERLOCKS_CONFIG before this script -
  *   { apiBase, token, embedded: true, savedRun, backend ('ems' pins the data source),
- *     onRunStarted(runId), onRunComplete(run), onTokenExpired() -> Promise<token|null> }
- * and use window.Sherlocks (loadGraph, openRun, setToken, currentRun). The host owns
+ *     onRunStarted(runId), onRunComplete(run), onCaseUpdated(run), onTokenExpired() -> Promise<token|null> }
+ * and use window.Sherlocks (loadGraph, openRun, setToken, currentRun, openChat, downloadReport). The host owns
  * accounts and saved graphs; see docs/INTEGRATION.md.
  */
 (() => {
@@ -49,6 +49,24 @@
   };
 
   const $ = (id) => document.getElementById(id);
+
+  // A host page may carry an older copy of this page's markup (the Laravel tab view).
+  // Add - or replace, when out of date - the newer parts: case evidence card, report
+  // button, the Sherlock chat (with uploads and the map pin), document viewer, map.
+  for (const [sentinel, ids, html, anchor] of [
+    ["evidenceCard", ["evidenceCard"], "<section class=\"card\" id=\"evidenceCard\" hidden>\n        <div class=\"runhead\"><b>Case evidence</b>\n          <button id=\"reportBtn2\" class=\"ghost small\" type=\"button\" disabled title=\"Available when the graph finishes or is stopped\">📑 Case report</button></div>\n        <div id=\"evidenceCounts\" class=\"evcounts\"></div>\n        <div id=\"reportStatus\" class=\"muted small\"></div>\n        <ul id=\"evidenceList\" class=\"evlist\"></ul>\n      </section>", "relationsCard"],
+    ["connBtn", [], "<div class=\"connfilter\"><button id=\"connBtn\" type=\"button\" title=\"Choose which kinds of connection are drawn\">Connections ▾</button><div id=\"connPanel\" class=\"connpanel\" hidden></div></div>", "reportBtn"],
+    ["reportBtn", ["reportBtn"], "<button id=\"reportBtn\" class=\"reportbtn\" title=\"Download the case report (PDF) - available when the graph finishes or is stopped\" disabled>📑 Case report</button>", "pngBtn"],
+    ["sherlockStatus", ["sherlockFab", "sherlockPanel"], "<button id=\"sherlockFab\" class=\"fab\" type=\"button\" title=\"Chat with Sherlock about this case\">\n      <svg viewBox=\"0 0 32 32\" aria-hidden=\"true\"><path d=\"M6 14c0-5 4.5-8 10-8s10 3 10 8H6z\" fill=\"#fbbf24\"/><rect x=\"4\" y=\"13\" width=\"24\" height=\"3\" rx=\"1.5\" fill=\"#d97706\"/><circle cx=\"16\" cy=\"21\" r=\"5.5\" fill=\"none\" stroke=\"#e6ebf5\" stroke-width=\"2.2\"/><path d=\"M20 25l5 5\" stroke=\"#e6ebf5\" stroke-width=\"2.6\" stroke-linecap=\"round\"/></svg>\n      <span id=\"fabBadge\" class=\"fabbadge\" hidden></span>\n    </button>\n    <section id=\"sherlockPanel\" class=\"sherlock\" hidden aria-label=\"Sherlock case chat\">\n      <header class=\"shhead\">\n        <span class=\"shavatar big\" aria-hidden=\"true\"><svg viewBox=\"0 0 32 32\"><path d=\"M6 14c0-5 4.5-8 10-8s10 3 10 8H6z\" fill=\"#fbbf24\"/><rect x=\"4\" y=\"13\" width=\"24\" height=\"3\" rx=\"1.5\" fill=\"#d97706\"/><circle cx=\"16\" cy=\"21\" r=\"5.5\" fill=\"none\" stroke=\"#e6ebf5\" stroke-width=\"2.2\"/><path d=\"M20 25l5 5\" stroke=\"#e6ebf5\" stroke-width=\"2.6\" stroke-linecap=\"round\"/></svg></span>\n        <div class=\"shwho\">\n          <b>Sherlock</b>\n          <span class=\"shstatus\"><i class=\"dot\"></i><span id=\"sherlockStatus\">online</span> · <span id=\"sherlockCtx\"></span></span>\n        </div>\n        <button id=\"sherlockClose\" class=\"shclose\" type=\"button\" title=\"Close\" aria-label=\"Close\">×</button>\n      </header>\n      <div id=\"sherlockLog\" class=\"shlog\"></div>\n      <div id=\"sherlockQuick\" class=\"shquick\">\n        <button type=\"button\" data-q=\"Summarise this case: who are the targets, what connects them, and what do the documents establish?\">Summarise the case</button>\n        <button type=\"button\" data-q=\"How are the targets connected? Give every route with its source.\">How are they connected?</button>\n        <button type=\"button\" data-q=\"Who keeps reappearing across records and documents (witness, guarantor, co-accused, hotel, SIM owner)?\">Who keeps reappearing?</button>\n        <button type=\"button\" data-q=\"What do the FIR files, case diaries and lab reports say about the targets?\">What do the documents say?</button>\n      </div>\n      <form id=\"sherlockForm\" class=\"shform\">\n        <button type=\"button\" id=\"sherlockAttach\" class=\"shattach\" title=\"Upload a file for the agents to read: image (JPG, PNG), PDF, Word (.docx) or Excel (.xlsx) - CDRs, tower dumps, documents, photos\">📎</button>\n        <button type=\"button\" id=\"sherlockPin\" class=\"shattach\" title=\"Pin the incident location on the map\">📍</button>\n        <input type=\"file\" id=\"sherlockFile\" accept=\".jpg,.jpeg,.png,.pdf,.docx,.xlsx\" multiple hidden>\n        <div class=\"shinput\">\n          <textarea id=\"sherlockInput\" rows=\"1\" placeholder=\"Message Sherlock - English, اردو or Roman Urdu\" dir=\"auto\" autocomplete=\"off\"></textarea>\n        </div>\n        <button class=\"shsend\" type=\"submit\" id=\"sherlockSend\" title=\"Send\" aria-label=\"Send\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M3.4 20.4 21 12 3.4 3.6 3.4 10l12.6 2-12.6 2z\" fill=\"currentColor\"/></svg></button>\n      </form>\n    </section>", "details"],
+    ["docDlg", ["docDlg"], "<dialog id=\"docDlg\" class=\"docdlg\">\n    <form method=\"dialog\" class=\"dlghead\"><b id=\"docTitle\">Document</b><button class=\"ghost\">Close</button></form>\n    <div id=\"docBody\" class=\"docbody\"></div>\n  </dialog>", "keyDlg"],
+    ["mapDlg", ["mapDlg"], "<dialog id=\"mapDlg\" class=\"mapdlg\">\n    <form method=\"dialog\" class=\"dlghead\"><b>Pin the incident location</b><button class=\"ghost\" value=\"cancel\">Close</button></form>\n    <p class=\"muted small\">Click the map where the incident happened (or type the coordinates), add the date and time, and save. The agents then check whose phones were near the point and find the nearest police station.</p>\n    <div id=\"incidentMap\" class=\"incidentmap\"></div>\n    <div class=\"maprow\">\n      <label>Latitude <input id=\"incLat\" inputmode=\"decimal\" placeholder=\"24.8607\"></label>\n      <label>Longitude <input id=\"incLon\" inputmode=\"decimal\" placeholder=\"67.0011\"></label>\n      <label class=\"wide\">Place <input id=\"incPlace\" placeholder=\"e.g. University Road, Block 5, Gulshan-e-Iqbal\"></label>\n      <label>Date <input id=\"incDate\" type=\"date\"></label>\n      <label>Time <input id=\"incTime\" type=\"time\"></label>\n      <label>FIR <input id=\"incFir\" placeholder=\"604/2025\"></label>\n    </div>\n    <div class=\"dlgbtns\"><span id=\"mapMsg\" class=\"muted small\"></span><button type=\"button\" id=\"incSave\" class=\"primary\">Save incident</button></div>\n  </dialog>", "keyDlg"],
+  ]) {
+    if ($(sentinel)) continue;
+    for (const id of ids) $(id)?.remove();
+    const at = $(anchor);
+    if (at) at.insertAdjacentHTML('beforebegin', html);
+    else document.body.insertAdjacentHTML('beforeend', html);
+  }
   const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const dashCnic = (c) => (c && c.length === 13 ? `${c.slice(0, 5)}-${c.slice(5, 12)}-${c.slice(12)}` : c || '');
   const dashPhone = (p) => (p && p.length === 11 ? `${p.slice(0, 4)}-${p.slice(4)}` : p || '');
@@ -58,6 +76,7 @@
     depth: 2, key: sessionStorage.getItem('sherlocks_key') || '', selected: null, laidOut: false,
     token: HOST.token || (EMBED ? '' : localStorage.getItem('sherlocks_session')) || '', user: null, mode: 'single',
     nodes: new Map(), edges: new Map(), events: [], es: null, offline: false, chatTurns: [],
+    caseIndex: null, caseFull: null, sherlockTurns: [], sherlockBusy: false,
   };
 
   // ------------------------------------------------------------------ API
@@ -391,7 +410,20 @@
 
   function showRunCards() {
     $('runCard').hidden = false;
-    $('chatCard').hidden = false;
+    // The Sherlock bubble is the chat now; the old card stays in the markup for hosts that style it.
+    $('chatCard').hidden = true;
+    $('evidenceCard').hidden = false;
+    $('sherlockFab').hidden = false;
+    state.caseIndex = null;
+    state.caseFull = null;
+    state.sherlockTurns = [];
+    state.followupsSeen = null;
+    state.shownQuestions = new Set();
+    $('sherlockLog').innerHTML = '';
+    if (!$('sherlockPanel').hidden) {
+      sherlockSay('bot', '<b>Sherlock</b>New case started. I am reading it as the graph builds - ask me anything about the targets, their links and the documents.');
+    }
+    renderEvidence();
     $('relationsCard').hidden = true;
     $('chatLog').innerHTML = '';
     state.chatTurns = [];
@@ -435,6 +467,11 @@
       state.run = { ...state.run, ...JSON.parse(ev.data) };
       renderRun(state.run);
     });
+    es.addEventListener('case', (ev) => {
+      if (!mine()) return;
+      state.caseIndex = JSON.parse(ev.data);
+      renderEvidence();
+    });
     es.addEventListener('log', (ev) => {
       if (!mine()) return;
       state.events.push(...JSON.parse(ev.data).events);
@@ -472,7 +509,11 @@
 
   // The graph as the server shapes it - for export, and for analysing a saved graph.
   function currentGraph() {
-    return { version: state.version, nodes: [...state.nodes.values()], edges: [...state.edges.values()] };
+    const graph = { version: state.version, nodes: [...state.nodes.values()], edges: [...state.edges.values()] };
+    // A saved graph carries its case file (documents, quoted facts) so chat and the
+    // case report keep working on it.
+    if (state.caseFull) graph.case = state.caseFull;
+    return graph;
   }
 
   function currentRun() {
@@ -512,11 +553,24 @@
     state.run = { ...run };
     showRunCards();
     state.events = [...(run.events || [])];
+    setCaseFull(run.graph.case || null);
     renderRun(state.run);
     renderEvents(state.events);
     mergeGraph(run.graph);
     state.finalLaid = false;
     onFinished();
+    // Still held by Sherlocks? Then work on its copy: it has every upload, pin and answer
+    // added since the portal saved this graph.
+    if (run.id) {
+      api(`/graph/runs/${encodeURIComponent(run.id)}/case`).then((index) => {
+        if (state.runId !== run.id) return;
+        state.offline = false;
+        state.caseFull = null;
+        state.caseIndex = index;
+        state.caseSaved = index.version;
+        renderEvidence();
+      }).catch(() => { /* not held here: the saved copy is the case */ });
+    }
   }
 
   // Every analysis of the current graph: by run id while this server holds the run, or
@@ -544,6 +598,10 @@
     if (run.graph && run.graph.version !== state.version) {
       state.version = run.graph.version;
       mergeGraph(run.graph);
+    }
+    if (run.graph && run.graph.case) {
+      state.caseIndex = caseIndexOf(run.graph.case);
+      renderEvidence();
     }
     state.events = run.events || [];
     renderEvents(state.events);
@@ -740,6 +798,805 @@
     if ((f.key_people || []).length) highlightPeople(f.key_people.map((p) => p.id));
   }
 
+  // ------------------------------------------------------------------ case evidence
+
+  const KIND_ICON = { fir: '📄', lab: '🧪', cro: '🗂', upload: '📎', cdr: '📶', notes: '🗒' };
+  const KIND_TEXT = { fir: 'FIR file', lab: 'Lab report', cro: 'CRO dossier', upload: 'Upload', cdr: 'CDR', labs: 'Lab report' };
+
+  function caseIndexOf(full) {
+    if (!full) return null;
+    const documents = (full.documents || []).map(({ text, data, ...rest }) => rest);
+    return {
+      version: full.version, documents, facts: full.facts || [], links: full.links || [],
+      attempts: full.attempts || [], report_status: full.report_status || (full.report ? 'ready' : 'none'),
+      counts: { documents: documents.length, facts: (full.facts || []).length, links: (full.links || []).length, pending: 0 },
+    };
+  }
+
+  function setCaseFull(full) {
+    state.caseFull = full;
+    state.caseIndex = caseIndexOf(full);
+    renderEvidence();
+  }
+
+  function reportAvailable() {
+    return !!state.runId && (state.offline || ['completed', 'cancelled', 'failed'].includes(state.run?.status));
+  }
+
+  function renderReportButtons() {
+    const status = state.caseIndex?.report_status;
+    const ok = reportAvailable() && status !== 'building';
+    for (const id of ['reportBtn', 'reportBtn2']) {
+      const b = $(id);
+      b.disabled = !ok;
+      b.textContent = status === 'building' ? '✍ Writing report…' : '📑 Case report';
+    }
+  }
+
+  /* Follow-ups: what Sherlock sends after a reply went out - a slow lookup, his view, the
+     rest of an answer that ran over its time budget. Shown once each, in the chat. */
+  function showFollowups() {
+    const list = state.caseIndex?.followups || [];
+    if (!state.followupsSeen) {
+      // Opening a case: earlier follow-ups belong to earlier sessions (unless one was asked for now).
+      state.followupsSeen = new Set(state.sherlockTurns?.length ? [] : list.map((f) => f.id));
+    }
+    for (const f of list) {
+      if (state.followupsSeen.has(f.id)) continue;
+      state.followupsSeen.add(f.id);
+      const box = sherlockSay('bot', `<div class="shans followup" dir="auto"><div class="shreply">${replyHtml(f.text)}</div></div>`);
+      wireCites(box);
+    }
+  }
+
+  function watchFollowups() {
+    clearTimeout(state.followTimer);
+    let polls = 0;
+    const tick = async () => {
+      polls += 1;
+      const before = (state.caseIndex?.followups || []).length;
+      await refreshCase();
+      if ((state.caseIndex?.followups || []).length === before && polls < 30) state.followTimer = setTimeout(tick, 2500);
+    };
+    state.followTimer = setTimeout(tick, 1500);
+  }
+
+  function renderEvidence() {
+    const c = state.caseIndex;
+    showFollowups();
+    const counts = c?.counts || { documents: 0, facts: 0, links: 0, pending: 0 };
+    $('evidenceCounts').innerHTML = [['Documents', counts.documents], ['Quoted facts', counts.facts],
+      ['People in documents', counts.links]].map(([k, v]) => `<div class="stat"><b>${v ?? 0}</b><span>${k}</span></div>`).join('')
+      + (counts.pending ? `<div class="muted small evpending">Reading ${counts.pending} more…</div>` : '');
+    const st = c?.report_status;
+    $('reportStatus').textContent = st === 'ready' ? 'Case report ready - written by Sherlock from the evidence below.'
+      : st === 'building' ? 'Sherlock is writing the case report…'
+        : st === 'failed' ? 'The case report failed - use the button to try again.'
+          : 'The case report is written when the graph finishes or is stopped.';
+    const docs = c?.documents || [];
+    const titles = docs.map((d) => d.title).join(' ');
+    const missing = (c?.attempts || []).filter((a) => a.status !== 'hit'
+      && !(a.status === 'accepted' && titles.includes(a.key.replace(/^upload:/, '')))).slice(-5);
+    $('evidenceList').innerHTML = docs.map((d) => `<li data-doc="${esc(d.id)}" title="Open the document">
+        <span class="evicon">${KIND_ICON[d.kind] || '📎'}</span>
+        <span class="evmain"><b>${esc(d.id)}</b> ${esc(d.title)}<span class="muted small">${esc(d.ai_summary || d.summary || '')}</span></span>
+        <span class="evfacts">${(d.facts || []).length}</span></li>`).join('')
+      + missing.map((a) => `<li class="evmiss"><span class="evicon">${a.status === 'accepted' ? '⏳' : '∅'}</span><span class="evmain small muted">${esc(KIND_TEXT[a.kind] || a.kind)} ${esc(a.key.split(':').slice(1).join(':'))}: ${esc(a.message || a.status)}</span></li>`).join('')
+      || '<li class="muted small">FIR files, lab reports and CRO dossiers appear here as the search reaches them.</li>';
+    $('evidenceList').querySelectorAll('[data-doc]').forEach((li) => { li.onclick = () => openDocument(li.dataset.doc); });
+    $('fabBadge').hidden = !counts.documents;
+    $('fabBadge').textContent = counts.documents;
+    renderQuestions();
+    renderSherlockWork();
+    if ($('boardDlg')?.open) renderBoard();
+    notifyCaseChanged();
+    $('sherlockCtx').textContent = `${state.nodes.size ? [...state.nodes.values()].filter((n) => n.kind === 'person').length : 0} people · ${counts.documents} documents`;
+    renderReportButtons();
+  }
+
+  // ------------------------------------------------------------------ Sherlock's work and the case board
+
+  const STATUS_COLOR = { supported: 'ok', open: 'open', weakened: 'weak', 'ruled out': 'out' };
+  const AGENDA_TEXT = {
+    sherlock: 'Re-assessing the case', summary: 'Updating the summary and timeline', gaps: 'Ranking what to ask next',
+    dossiers: 'Refreshing the dossiers', 'cdr:location': 'Re-reading the CDRs against the incident',
+    'cdr:patterns': 'Re-reading CDR patterns', 'cdr:cross': 'Linking the CDRs to each other', 'incident:ps': 'Finding the nearest police station',
+  };
+
+  /* What Sherlock is doing on the case right now - in the case panel. */
+  function renderSherlockWork() {
+    const box = $('sherlockWork');
+    const c = state.caseIndex;
+    if (!box || !c) return;
+    const a = c.assessment || {};
+    const hyps = (c.hypotheses || []).filter((h) => !h.stale);
+    const agenda = (c.agenda || []).map((x) => AGENDA_TEXT[x.task] || AGENDA_TEXT[x.task.split(':').slice(0, 2).join(':')] || x.task);
+    const qs = (c.questions || []).filter((q) => q.status === 'open');
+    box.innerHTML = `<div class="runhead"><b>🕵 Sherlock's work</b><button id="boardBtn2" class="ghost small" type="button">Open case board</button></div>
+      ${agenda.length ? `<div class="shworking"><span class="shimmer">${esc(agenda[0])}…</span>${agenda.length > 1 ? `<span class="muted small"> +${agenda.length - 1} more</span>` : ''}</div>` : ''}
+      ${a.answer ? `<p class="small">${citeHtml(a.answer)}</p>` : '<p class="muted small">Sherlock assesses the case as documents, records and your answers arrive.</p>'}
+      ${hyps.length ? `<ul class="hyplist">${hyps.slice(0, 6).map((h) => `<li><span class="hstat ${STATUS_COLOR[h.status] || 'open'}">${esc(h.status)}</span>${citeHtml(h.statement)} <a href="#" class="cite srchyp" data-ref="${esc(h.id)}">${esc(h.id)}</a></li>`).join('')}</ul>` : ''}
+      ${qs.length ? `<div class="leadgroup">Sherlock needs to know</div><ul class="asklist">${qs.slice(0, 5).map((q) => `<li class="askitem ${esc(q.priority || 'orange')}"><span class="askdot"></span>${esc(q.text)}</li>`).join('')}</ul>` : ''}
+      ${a.at ? `<div class="muted small">Assessed ${esc(String(a.at).replace('T', ' ').slice(0, 16))}</div>` : ''}`;
+    box.hidden = false;
+    wireCites(box);
+    $('boardBtn2').onclick = () => openBoard();
+  }
+
+  /* A host page (the Laravel tab) carries its own copy of the markup, possibly from before
+     the case board: add what it lacks, so an older page never breaks the app. */
+  function ensureBoardMarkup() {
+    if (!$('boardDlg')) {
+      const dlg = document.createElement('dialog');
+      dlg.id = 'boardDlg';
+      dlg.className = 'boarddlg';
+      dlg.innerHTML = '<form method="dialog" class="dlghead boardhead"><b>🕵 Case board</b><span id="boardMeta" class="muted small"></span>'
+        + '<button class="ghost">Close</button></form><div id="boardBody" class="cork"></div>';
+      document.body.appendChild(dlg);
+    }
+    if (!$('boardBtn') && $('reportBtn')) {
+      const btn = document.createElement('button');
+      btn.id = 'boardBtn';
+      btn.className = 'boardbtn';
+      btn.type = 'button';
+      btn.title = "Open the detective's case board";
+      btn.textContent = '🕵 Case board';
+      $('reportBtn').before(btn);
+    }
+    if (!$('sherlockWork') && $('evidenceList')) {
+      const box = document.createElement('div');
+      box.id = 'sherlockWork';
+      box.className = 'shwork';
+      box.hidden = true;
+      $('evidenceList').before(box);
+    }
+  }
+
+  function openBoard(focus = null) {
+    ensureBoardMarkup();
+    if (!$('boardDlg').open) $('boardDlg').showModal();
+    renderBoard(focus);
+  }
+
+  /* The detective's case board: the new case in the middle, the people pinned around it,
+     Sherlock's hypotheses as sticky notes, the documents' facts on index cards, the
+     officer's notes, the questions still open, the timeline - and red string from each
+     person to every note about them. Built from the case board; every card opens its source. */
+  function renderBoard(focus = null) {
+    const c = state.caseIndex;
+    const body = $('boardBody');
+    if (!c) { body.innerHTML = '<p class="note">The case board fills as the search and Sherlock work.</p>'; return; }
+    const tilt = (i) => `transform: rotate(${((i * 37) % 7) - 3}deg)`;
+    const people = new Map();
+    for (const n of state.nodes.values()) {
+      if (n.kind === 'person' && (n.data?.seed || c.roles?.[n.id])) people.set(n.id, n);
+    }
+    for (const h of c.hypotheses || []) for (const pid of h.people || []) if (state.nodes.has(pid)) people.set(pid, state.nodes.get(pid));
+    const inc = c.incident || {};
+    const live = (c.facts || []).filter((f) => !f.replaced_by && !f.stale);
+    const docs = (c.documents || []).filter((d) => !['notes', 'graph'].includes(d.kind));
+    const notes = live.filter((f) => f.by === 'officer').slice(-8);
+    const patterns = live.filter((f) => f.by === 'graph').slice(0, 6);
+    const qs = (c.questions || []).filter((q) => q.status === 'open');
+    const line = (c.summary?.timeline || []).slice(-14);
+    const personCard = ([pid, n], i) => {
+      const img = (n.data?.images || [])[0];
+      const role = c.roles?.[pid];
+      return `<div class="bcard bperson ${role === 'main suspect' ? 'main' : ''}" data-pid="${esc(pid)}" data-node="${esc(pid)}" style="${tilt(i)}">
+        <span class="bpin"></span>${img ? `<img src="${imageUrl(img.id || img)}" alt="">` : `<div class="binit">${esc((n.label || '?').split(/\s+/).map((w) => w[0]).join('').slice(0, 2))}</div>`}
+        <b>${esc(n.label)}</b>${role ? `<span class="brole">${esc(role)}</span>` : n.data?.seed ? '<span class="brole">target</span>' : ''}
+        ${(n.data?.flags || []).length ? `<span class="muted small">${esc((n.data.flags || []).slice(0, 2).join(', ').replace(/_/g, ' '))}</span>` : ''}</div>`;
+    };
+    body.innerHTML = `<svg class="bstrings" aria-hidden="true"></svg>
+      <div class="bzone bpeople"><h3>The people</h3>${[...people.entries()].slice(0, 10).map(personCard).join('') || '<p class="muted small">Targets appear here.</p>'}</div>
+      <div class="bzone bcase">
+        <div class="bcard bnew"><span class="bpin red"></span><h3>The new case</h3>
+          ${inc.offence || inc.place || inc.date ? `<p><b>${esc(inc.offence || 'Offence not given')}</b></p>
+            <p>${esc(inc.place || (inc.lat != null ? `${inc.lat}, ${inc.lon}` : 'Place not given'))}${inc.date ? ` · ${esc(inc.date)} ${esc(inc.time || '')}` : ''}</p>
+            ${inc.fir ? `<p>FIR ${esc(inc.fir)}</p>` : ''}${inc.nearest_ps ? `<p class="muted small">Nearest PS: ${esc(inc.nearest_ps)}</p>` : ''}`
+            : '<p class="muted">Not described yet - tell Sherlock what happened, where and when.</p>'}
+          ${c.assessment?.answer ? `<div class="bverdict">🕵 ${citeHtml(c.assessment.answer)}</div>` : ''}</div>
+        <div class="bhyps">${(c.hypotheses || []).filter((h) => !h.stale).map((h, i) => `<div class="bcard bsticky ${STATUS_COLOR[h.status] || 'open'} ${focus === h.id ? 'bfocus' : ''}" data-pids="${esc((h.people || []).join(' '))}" data-hyp="${esc(h.id)}" style="${tilt(i + 3)}">
+            <span class="bpin"></span><span class="hstat ${STATUS_COLOR[h.status] || 'open'}">${esc(h.id)} · ${esc(h.status)}</span><p>${esc(h.statement)}</p>
+            <span class="muted small">${esc(h.confidence)} confidence · for ${(h.for || []).length}, against ${(h.against || []).length}</span></div>`).join('')
+            || '<p class="muted small">Sherlock\'s hypotheses are pinned here as he forms them.</p>'}</div>
+      </div>
+      <div class="bzone bfacts"><h3>What the records say</h3>
+        ${docs.map((d, i) => { const fs = live.filter((f) => f.doc === d.id).slice(0, 3); return `<div class="bcard bindex" data-doc="${esc(d.id)}" data-pids="${esc([...new Set(fs.flatMap((f) => f.pids || []))].join(' '))}" style="${tilt(i + 1)}">
+          <span class="bpin blue"></span><b>${KIND_ICON[d.kind] || '📄'} ${esc(d.title)}</b>
+          ${fs.map((f) => `<p class="bfact"><span class="btier ${esc(f.tier || 'fact')}">${esc(f.tier || 'fact')}</span>${esc(f.statement.slice(0, 140))}</p>`).join('') || `<p class="muted small">${esc((d.summary || '').slice(0, 120))}</p>`}</div>`; }).join('')}
+        ${patterns.length ? `<div class="bcard bindex bpattern" data-pids="${esc([...new Set(patterns.flatMap((f) => f.pids || []))].join(' '))}" style="${tilt(9)}"><span class="bpin"></span><b>🔗 Patterns in the graph</b>
+          ${patterns.map((f) => `<p class="bfact">${esc(f.statement.slice(0, 120))}</p>`).join('')}</div>` : ''}</div>
+      <div class="bzone bnotes"><h3>Officer's notes</h3>${notes.map((f, i) => `<div class="bcard bnote" data-fact="${esc(f.id)}" style="${tilt(i + 5)}"><span class="bpin"></span>${esc(f.statement.replace(/^Stated by the officer(?: \(correction\))?: /, ''))}</div>`).join('') || '<p class="muted small">What you tell Sherlock is pinned here.</p>'}</div>
+      <div class="bzone bquestions"><h3>Open questions</h3>${qs.map((q, i) => `<div class="bcard bq ${esc(q.priority || 'orange')}" style="${tilt(i + 7)}"><span class="bpin ${esc(q.priority || 'orange')}"></span>${esc(q.text)}</div>`).join('') || '<p class="muted small">Nothing open.</p>'}</div>
+      <div class="bzone btimeline"><h3>Timeline</h3><div class="btrack">${line.map((r) => `<div class="btick" title="${esc(r.what)}"><b>${esc(String(r.when).slice(0, 16))}</b><span>${esc(r.what.slice(0, 80))}</span></div>`).join('') || '<p class="muted small">Dates appear as documents are read.</p>'}</div></div>`;
+    $('boardMeta').textContent = `${people.size} people · ${docs.length} documents · ${live.length} facts · ${(c.hypotheses || []).length} hypotheses`;
+    body.querySelectorAll('[data-doc]').forEach((el) => { el.onclick = () => openDocument(el.dataset.doc); });
+    body.querySelectorAll('[data-fact]').forEach((el) => { el.onclick = () => { const d = docOfRef(el.dataset.fact); if (d) openDocument(d, el.dataset.fact); }; });
+    body.querySelectorAll('[data-node]').forEach((el) => { el.onclick = () => { $('boardDlg').close(); if (state.nodes.has(el.dataset.node)) focusNode(el.dataset.node); }; });
+    wireCites(body);
+    requestAnimationFrame(() => drawStrings(body));
+  }
+
+  /* Red string from each person to every card about them. */
+  function drawStrings(body) {
+    const svg = body.querySelector('.bstrings');
+    if (!svg) return;
+    const box = body.getBoundingClientRect();
+    svg.setAttribute('width', body.scrollWidth);
+    svg.setAttribute('height', body.scrollHeight);
+    const centre = (el) => { const r = el.getBoundingClientRect(); return [r.left - box.left + body.scrollLeft + r.width / 2, r.top - box.top + body.scrollTop + 10]; };
+    const paths = [];
+    body.querySelectorAll('.bperson').forEach((p) => {
+      const [x1, y1] = centre(p);
+      body.querySelectorAll('[data-pids]').forEach((card) => {
+        if (!(card.dataset.pids || '').split(' ').includes(p.dataset.pid)) return;
+        const [x2, y2] = centre(card);
+        const sag = Math.min(80, Math.abs(x2 - x1) / 4 + 20);
+        paths.push(`<path d="M${x1},${y1} Q${(x1 + x2) / 2},${Math.max(y1, y2) + sag} ${x2},${y2}"/>`);
+      });
+    });
+    svg.innerHTML = paths.join('');
+  }
+
+  // After a run has finished, the case keeps growing (uploads, the incident pin, answers,
+  // chat fetches). Tell the host so it can save the graph again - debounced, finished runs only.
+  function notifyCaseChanged() {
+    const v = state.caseIndex?.version;
+    if (v == null || typeof HOST.onCaseUpdated !== 'function' || !boardRun() || state.offline) return;
+    if (!['completed', 'cancelled', 'failed'].includes(state.run?.status)) { state.caseSaved = v; return; }
+    if (state.caseSaved === undefined) { state.caseSaved = v; return; }
+    if (v === state.caseSaved) return;
+    clearTimeout(state.caseSaveTimer);
+    state.caseSaveTimer = setTimeout(async () => {
+      if ((state.caseIndex?.counts?.pending || 0) > 0) { notifyCaseChanged(); return; }
+      state.caseSaved = state.caseIndex?.version;
+      try {
+        HOST.onCaseUpdated(await api(`/graph/runs/${encodeURIComponent(state.runId)}/export`));
+      } catch (err) {
+        logLocal('error', `Could not hand the updated case to the portal: ${err.message}`);
+      }
+    }, 6000);
+  }
+
+  async function fetchDocument(id) {
+    const doc = state.caseFull && (state.caseFull.documents || []).find((d) => d.id === id);
+    if (state.caseFull && !doc && state.runId === 'saved') throw new Error(`Document ${id} not found`);
+    if (doc) {
+      return { ...doc, fact_rows: (state.caseFull.facts || []).filter((f) => f.doc === id),
+        link_rows: (state.caseFull.links || []).filter((l) => l.doc === id) };
+    }
+    return api(`/graph/runs/${encodeURIComponent(state.runId)}/documents/${encodeURIComponent(id)}`);
+  }
+
+  function docOfRef(ref) {
+    const c = state.caseIndex;
+    if (!c) return null;
+    if (ref[0] === 'D') return ref;
+    const row = ref[0] === 'F' ? c.facts.find((f) => f.id === ref) : c.links.find((l) => l.id === ref);
+    return row ? row.doc : null;
+  }
+
+  async function openDocument(id, highlight = null) {
+    $('docTitle').textContent = id;
+    $('docBody').innerHTML = '<p class="muted">Loading…</p>';
+    if (!$('docDlg').open) $('docDlg').showModal();
+    try {
+      const d = await fetchDocument(id);
+      $('docTitle').textContent = `${KIND_ICON[d.kind] || ''} ${d.id} · ${d.title}`;
+      const facts = (d.fact_rows || []).map((f) => `<tr class="${f.id === highlight ? 'hl' : ''}" id="row-${esc(f.id)}">
+          <td><b>${esc(f.id)}</b>${f.by === 'ai' ? '<span class="aitag" title="Read by the AI reader; the quote was checked against the document">AI</span>' : ''}</td>
+          <td>${esc(f.statement)}</td><td dir="auto" class="quote">“${esc(f.quote)}”</td></tr>`).join('');
+      const people = (d.link_rows || []).map((l) => `<li class="${l.id === highlight ? 'hl' : ''}"><a href="#" data-pid="${esc(l.pid)}">${esc(l.name)}</a> - ${esc(l.how)} <span class="muted small">[${esc(l.id)}]</span></li>`).join('');
+      const pics = (d.images || []).map((p) => `<figure><img src="${imageUrl(p.id)}" alt="${esc(p.caption || '')}" loading="lazy"><figcaption>${esc(p.caption || '')}</figcaption></figure>`).join('');
+      $('docBody').innerHTML = `
+        <div class="muted small">${esc(d.source)} · read ${esc((d.fetched_at || '').replace('T', ' ').slice(0, 16))}${(d.urls || []).map((u) => ` · ${safeLink(u, 'original')}`).join('')}${d.data?.path ? ` · <a href="#" data-orig="${esc(d.id)}">download original</a>` : ''}</div>
+        ${d.ai_summary || d.summary ? `<p class="docsum">${esc(d.ai_summary || d.summary)}</p>` : ''}
+        ${(d.unread_pages || []).length ? `<div class="note">Page(s) ${d.unread_pages.join(', ')} could not be read by machine - check the original.</div>` : ''}
+        ${facts ? `<div class="leadgroup">Facts (each quotes the document)</div><table class="facts"><tbody>${facts}</tbody></table>` : ''}
+        ${people ? `<div class="leadgroup">People of the graph found in it</div><ul class="list">${people}</ul>` : ''}
+        ${pics ? `<div class="leadgroup">Pictures</div><div class="pics">${pics}</div>` : ''}
+        <details ${facts ? '' : 'open'}><summary class="leadgroup">Full text</summary><pre dir="auto" class="doctext">${esc(d.text || '')}</pre></details>`;
+      $('docBody').querySelectorAll('[data-orig]').forEach((a) => {
+        a.onclick = async (e) => {
+          e.preventDefault();
+          const r = await fetch(`${API}/graph/runs/${encodeURIComponent(state.runId)}/uploads/${a.dataset.orig}/file`, { headers: authHeaders() });
+          if (r.ok) download(d.data?.name || 'upload', URL.createObjectURL(await r.blob()));
+        };
+      });
+      $('docBody').querySelectorAll('[data-pid]').forEach((a) => {
+        a.onclick = (e) => { e.preventDefault(); $('docDlg').close(); if (state.nodes.has(a.dataset.pid)) focusNode(a.dataset.pid); };
+      });
+      if (highlight) document.getElementById(`row-${highlight}`)?.scrollIntoView({ block: 'center' });
+    } catch (err) {
+      $('docBody').innerHTML = `<p class="note">${esc(err.message)}</p>`;
+    }
+  }
+
+  async function downloadReport(rebuild = false) {
+    if (!reportAvailable()) return;
+    const buttons = [$('reportBtn'), $('reportBtn2')];
+    buttons.forEach((b) => { b.disabled = true; b.textContent = '✍ Preparing PDF…'; });
+    // The report is Sherlock's assessment: if new work is on the board he finishes it first.
+    const note = sherlockSay('bot', '<div class="shans" dir="auto"><div class="shstatus" role="status" aria-live="polite">'
+      + '<span class="shimmer">Sherlock is finishing his assessment for the report…</span><span class="shelapsed"></span></div></div>');
+    const waiting = statusLine(note.querySelector('.shstatus'));
+    try {
+      const response = state.offline
+        ? await fetch(`${API}/graph/report`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ graph: currentGraph(), explain: rebuild }) })
+        : await fetch(`${API}/graph/runs/${encodeURIComponent(state.runId)}/report.pdf${rebuild ? '?rebuild=true' : ''}`, { headers: authHeaders() });
+      if (!response.ok) {
+        let detail = response.statusText;
+        try { detail = (await response.json()).detail || detail; } catch (_) { /* not json */ }
+        throw new Error(detail);
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      download(`Sherlocks_case_report_${(state.runId || 'graph').slice(0, 8)}.pdf`, url);
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      note.querySelector('.shans').innerHTML = '<div class="shreply"><p>Case report ready - downloaded.</p></div>';
+    } catch (err) {
+      logLocal('error', `Case report: ${err.message}`);
+      note.querySelector('.shans').innerHTML = `<div class="shreply"><p>Case report failed: ${esc(err.message)}</p></div>`;
+    } finally {
+      waiting.stop();
+      renderReportButtons();
+    }
+  }
+
+  // ------------------------------------------------------------------ Sherlock (chat bubble)
+
+  /* Every source in brackets is clickable: case ids ([D2], [F7], "FIR file D1") open the
+     document at the quoted line; system names ([PSRMS], [CRO]) open that system's records. */
+  function citeHtml(text) {
+    return esc(text).replace(/\n/g, '<br>')
+      .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+      .replace(/\[([^\]<>]{1,80})\]/g, (all, inner) => {
+        const parts = inner.split(/,\s*/).map((part) => {
+          const id = part.match(/\b([DFLHQ]\d{1,4})\b/);
+          if (id) return part.replace(id[1], `<a href="#" class="cite ${sourceKind(id[1])}" data-ref="${id[1]}">${id[1]}</a>`);
+          if (/^[A-Za-z][\w .&#/-]{1,30}$/.test(part) && !/^\d+$/.test(part)) {
+            return `<a href="#" class="cite srcapi" data-sys="${part}" title="Open the ${part} records">${part}</a>`;
+          }
+          return part;
+        });
+        return `[${parts.join(', ')}]`;
+      });
+  }
+
+  /* What a case id is: a document, the officer's own words (chat), or Sherlock's work. */
+  function sourceKind(ref) {
+    const c = state.caseIndex;
+    if (!c) return '';
+    if (ref[0] === 'F') {
+      const f = (c.facts || []).find((x) => x.id === ref);
+      if (f?.by === 'officer') return 'srcchat';
+      if (f?.by === 'graph') return 'srcgraph';
+      return 'srcdoc';
+    }
+    if (ref[0] === 'D') return (c.documents || []).find((d) => d.id === ref)?.kind === 'notes' ? 'srcchat' : 'srcdoc';
+    return ref[0] === 'H' ? 'srchyp' : '';
+  }
+
+  /* An API source: the records that system returned, for the people of the answer, with
+     the values the answer used highlighted. */
+  function openSystemSource(label, context) {
+    const want = String(label || '').toLowerCase();
+    const ctx = String(context || '').toLowerCase();
+    const nodes = [...state.nodes.values()].filter((n) => n.kind === 'system'
+      && [(n.data?.system_label || ''), (n.data?.system || ''), (n.label || '')].some((x) => x.toLowerCase() === want));
+    $('docTitle').textContent = `🔌 ${label} - records from the police system`;
+    const owner = (n) => state.nodes.get(String(n.id).split(':').pop())?.label || '';
+    const hl = (v) => { const t = String(v ?? '').toLowerCase().trim(); return t.length >= 3 && ctx.includes(t); };
+    $('docBody').innerHTML = nodes.length ? nodes.map((n) => `<div class="leadgroup">${esc(owner(n) || n.label)} · ${esc(n.data?.summary || '')}</div>
+        <table class="facts"><tbody>${(n.data?.fields || []).map((f) => `<tr class="${hl(f.value) ? 'hl' : ''}"><td><b>${esc(f.label)}</b></td><td dir="auto">${esc(f.value)}</td></tr>`).join('')}</tbody></table>`).join('')
+      : `<p class="note">${esc(label)} is a police system. Its answer was used directly (for example a live lookup in the chat); no stored record of it is on the graph.</p>`;
+    if (!$('docDlg').open) $('docDlg').showModal();
+    $('docBody').querySelector('tr.hl')?.scrollIntoView({ block: 'center' });
+  }
+
+  function wireCites(box) {
+    box.querySelectorAll('.cite').forEach((a) => {
+      a.onclick = (e) => {
+        e.preventDefault();
+        if (a.dataset.sys) { openSystemSource(a.dataset.sys, box.textContent); return; }
+        if (a.dataset.ref?.[0] === 'H') { openBoard(a.dataset.ref); return; }
+        const doc = docOfRef(a.dataset.ref);
+        if (doc) openDocument(doc, a.dataset.ref[0] === 'D' ? null : a.dataset.ref);
+      };
+    });
+  }
+
+  const SH_AVATAR = '<span class="shavatar" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M6 14c0-5 4.5-8 10-8s10 3 10 8H6z" fill="#fbbf24"/><rect x="4" y="13" width="24" height="3" rx="1.5" fill="#d97706"/><circle cx="16" cy="21" r="5.5" fill="none" stroke="#e6ebf5" stroke-width="2.2"/><path d="M20 25l5 5" stroke="#e6ebf5" stroke-width="2.6" stroke-linecap="round"/></svg></span>';
+
+  /* One chat message: Sherlock on the left with his avatar, the officer on the right.
+   * Callers may still start the html with a <b>Label</b>; it is dropped - the officer talks
+   * to Sherlock, not to the agents behind him. Returns the bubble. */
+  function sherlockSay(who, html, cls = '') {
+    const body = String(html).replace(/^\s*<b>[^<]*<\/b>/, '');
+    const row = document.createElement('div');
+    row.className = `shrow ${who}`;
+    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    row.innerHTML = `${who === 'bot' ? SH_AVATAR : ''}<div class="shcol"><div class="shmsg ${who} ${cls}">${body}</div>
+      <div class="shtime">${who === 'bot' ? 'Sherlock · ' : ''}${time}</div></div>`;
+    $('sherlockLog').appendChild(row);
+    $('sherlockLog').scrollTop = $('sherlockLog').scrollHeight;
+    return row.querySelector('.shmsg');
+  }
+
+  // Which way a line reads: by the script most of its letters are in, not by its first
+  // word - "فیصل خاصخلی has 2 FIRs" is an English sentence that starts with an Urdu name.
+  function lineDir(text) {
+    const urdu = (String(text).match(/[\u0600-\u06FF]/g) || []).length;
+    const latin = (String(text).match(/[A-Za-z]/g) || []).length;
+    return urdu > latin ? 'rtl' : 'ltr';
+  }
+
+  // A reply as readable text: "• " lines become a list, a line ending in ":" a lead-in.
+  /* The Presenter's layout: **bold** answer first, bullets, | table | rows, > quotes from
+     the records, and Sherlock's view (a "VIEW:" line) in its own labelled block. */
+  function replyHtml(text) {
+    const out = [];
+    let group = null;
+    const push = (kind, line) => {
+      if (!group || group.kind !== kind) { group = { kind, lines: [] }; out.push(group); }
+      group.lines.push(line);
+    };
+    for (const raw of String(text || '').split('\n')) {
+      const line = raw.trim();
+      if (/^[•\-*]\s+/.test(line) && !/^\*\*/.test(line)) { push('list', line.replace(/^[•\-*]\s+/, '')); continue; }
+      if (/^\|.*\|$/.test(line)) { push('table', line); continue; }
+      if (/^>\s?/.test(line)) { push('quote', line.replace(/^>\s?/, '')); continue; }
+      group = null;
+      if (!line) continue;
+      if (/^VIEW:\s*/.test(line)) { out.push({ kind: 'view', lines: [line.replace(/^VIEW:\s*/, '')] }); continue; }
+      const ask = line.match(/^ASK:(red|orange|green):\s*(.*)$/);
+      if (ask) { out.push({ kind: 'ask', level: ask[1], lines: [ask[2]] }); continue; }
+      if (/^SOURCES:\s*/.test(line)) { out.push({ kind: 'sources', lines: [line.replace(/^SOURCES:\s*/, '')] }); continue; }
+      out.push({ kind: 'p', lines: [line] });
+    }
+    return out.map((g) => {
+      if (g.kind === 'list') return `<ul class="shbul">${g.lines.map((li) => `<li dir="${lineDir(li)}">${citeHtml(li)}</li>`).join('')}</ul>`;
+      if (g.kind === 'quote') return `<blockquote class="shquote" dir="auto">${g.lines.map(citeHtml).join('<br>')}</blockquote>`;
+      if (g.kind === 'view') return `<p class="shview" dir="${lineDir(g.lines[0])}">${citeHtml(g.lines[0])}</p>`;
+      if (g.kind === 'ask') {
+        const what = { red: 'Needed to move the case', orange: 'Important', green: 'Helpful' }[g.level];
+        return `<p class="shask ${g.level}" dir="${lineDir(g.lines[0])}" title="Sherlock's question - ${what}"><span class="askdot"></span>${citeHtml(g.lines[0])}</p>`;
+      }
+      if (g.kind === 'sources') {
+        const chips = g.lines[0].replace(/^\s*\[|\]\s*$/g, '').split(/\]\s*\[/)
+          .map((x) => citeHtml(`[${x}]`).replace(/^\[|\]$/g, '')).join(' ');
+        return `<p class="shsources"><span class="muted small">Sources</span> ${chips}</p>`;
+      }
+      if (g.kind === 'table') {
+        const rows = g.lines.map((l) => l.replace(/^\||\|$/g, '').split('|').map((c) => c.trim()));
+        const [head, ...body] = rows;
+        return `<div class="shtablewrap"><table class="shtable" dir="${lineDir(g.lines.join(' '))}"><thead><tr>${head.map((c) => `<th>${citeHtml(c)}</th>`).join('')}</tr></thead>`
+          + `<tbody>${body.map((r) => `<tr>${r.map((c) => `<td>${citeHtml(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+      }
+      const part = g.lines[0];
+      return `<p dir="${lineDir(part)}" class="${/:$/.test(part.replace(/\*\*$/, '')) ? 'shlead' : ''}">${citeHtml(part)}</p>`;
+    }).join('');
+  }
+
+  function openSherlock() {
+    const wasHidden = $('sherlockPanel').hidden;
+    $('sherlockPanel').hidden = false;
+    if (wasHidden) setTimeout(renderQuestions, 0);
+    $('sherlockFab').classList.add('open');
+    if (!$('sherlockLog').children.length && !state.runId) {
+      sherlockSay('bot', '<b>Sherlock</b>Start a search and I will investigate it with you while the graph builds: how the targets are connected, what the FIR files, case diaries and lab reports say, and who keeps reappearing.');
+    } else if (!$('sherlockLog').children.length) {
+      const docs = state.caseIndex?.counts?.documents;
+      sherlockSay('bot', `<b>Sherlock</b>I am working on this case${docs ? ` - ${docs} document(s) read so far` : ''}. Ask me how the targets are connected, what the FIR files, case diaries and lab reports say, or tell me to fetch a document (e.g. <i>"fetch the lab reports for FIR 45/2023"</i>). I cite every answer: click <span class="cite">F3</span> to open the quote.`);
+    }
+    $('sherlockInput').focus();
+  }
+
+  /* The waiting line: what Sherlock is doing right now, as shimmering text. Each line
+     stays up at least MIN_MS so quick steps don't flicker; after 8 s the seconds show. */
+  function statusLine(el) {
+    const MIN_MS = 450;
+    const text = el.querySelector('.shimmer');
+    const time = el.querySelector('.shelapsed');
+    const started = Date.now();
+    let shownAt = Date.now();
+    let pending = null;
+    let swap = null;
+    const show = (line) => {
+      text.textContent = line;
+      text.dir = /[\u0600-\u06FF]/.test(line) ? 'rtl' : 'ltr';
+      text.style.animation = 'none';
+      void text.offsetWidth;          // restart the sweep from the first character
+      text.style.animation = '';
+      shownAt = Date.now();
+    };
+    const clock = setInterval(() => {
+      const secs = Math.round((Date.now() - started) / 1000);
+      time.textContent = secs >= 8 ? `${secs}s` : '';
+    }, 1000);
+    return {
+      set(line) {
+        if (!line) return;
+        pending = line;
+        if (swap) return;
+        swap = setTimeout(() => { swap = null; show(pending); }, Math.max(0, MIN_MS - (Date.now() - shownAt)));
+      },
+      stop() { clearInterval(clock); clearTimeout(swap); },
+    };
+  }
+
+  async function askSherlock(question) {
+    if (!question || state.sherlockBusy) return;
+    if (!state.runId) {
+      sherlockSay('bot', '<b>Sherlock</b>Start a search first (enter the targets\' CNICs or numbers and press Build). I can answer as soon as the graph starts building.');
+      return;
+    }
+    state.sherlockBusy = true;
+    $('sherlockSend').disabled = true;
+    sherlockSay('you', `<b>You</b>${esc(question)}`);
+    // The agents' internal steps are not shown to the officer - only what runs now, then the reply.
+    const box = sherlockSay('bot', '<div class="shans" dir="auto"><div class="shstatus" role="status" aria-live="polite">'
+      + '<span class="shimmer">Sherlock is on it</span><span class="shelapsed"></span></div></div>');
+    const steps = document.createElement('ol');
+    const ans = box.querySelector('.shans');
+    const waiting = statusLine(ans.querySelector('.shstatus'));
+    const source = state.offline ? { graph: currentGraph() } : { run_id: state.runId };
+    try {
+      for await (const { event, data } of sseFetch('/graph/investigate', { ...source, question, history: state.sherlockTurns.slice(-4) })) {
+        if (event === 'start') {
+          /* the waiting line keeps showing until the reply arrives */
+        } else if (event === 'status') {
+          waiting.set(data.text);
+        } else if (event === 'agent') {
+          const li = document.createElement('li');
+          li.className = 'agentstep';
+          li.innerHTML = `<span class="agenttag">${esc(data.agent)}</span>${esc(data.text)}`;
+          steps.appendChild(li);
+          $('sherlockLog').scrollTop = $('sherlockLog').scrollHeight;
+        } else if (event === 'step') {
+          const li = document.createElement('li');
+          li.innerHTML = `<span class="agenttag">${esc(data.agent || 'Sherlock')}</span>${data.live ? '<span class="livetag" title="Queried a police system">LIVE</span>' : ''}<b>${esc(data.tool)}</b>`
+            + `${data.args_text ? ` <span class="muted">${esc(data.args_text)}</span>` : ''}<span class="sum">${esc(data.summary || data.thought || '')}</span>`;
+          steps.appendChild(li);
+          $('sherlockLog').scrollTop = $('sherlockLog').scrollHeight;
+        } else if (event === 'final') {
+          waiting.stop();
+          if (data.case) setCaseFull(data.case);
+          state.sherlockTurns.push({ q: question, a: data.answer });
+          ans.className = `shans${data.confident === false ? ' unsure' : ''}`;
+          ans.dir = 'auto';
+          ans.classList.toggle('urdu', data.language === 'ur');
+          const hyps = (data.hypotheses || []).map((h) => `<li>${tierBadge(h.tier)}${citeHtml(h.statement)}${(h.evidence || []).length
+            ? `<div class="muted small">${h.evidence.map(citeHtml).join(' · ')}</div>` : ''}</li>`).join('');
+          const next = (data.next_steps || []).map((n) => `<li>${esc(n)}</li>`).join('');
+          const cites = (data.citations || []).map((c) => `<a href="#" class="cite" data-ref="${esc(c.id)}" title="${esc(c.quote || c.title)}">${esc(c.id)}</a> ${esc((c.title || '').slice(0, 70))}`).join('<br>');
+          const detail = hyps || next || cites;
+          // Each line takes its own direction: Urdu right to left, English left to right.
+          ans.innerHTML = `<div class="shreply">${replyHtml(data.answer)}</div>
+            ${data.asking ? `<div class="qbtns" dir="ltr">${questionButtons(data.asking)}</div>` : ''}
+            ${detail ? `<details class="shdetail" dir="ltr"><summary>Evidence and sources</summary>
+              ${hyps ? `<div class="leadgroup">Hypotheses</div><ul class="shlist">${hyps}</ul>` : ''}
+              ${next ? `<div class="leadgroup">Next steps</div><ul class="shlist">${next}</ul>` : ''}
+              ${cites ? `<div class="leadgroup">Sources</div><div class="small">${cites}</div>` : ''}</details>` : ''}
+            ${data.checks && !data.checks.ok ? `<div dir="ltr" class="checks warn">⚠ Please verify: ${data.checks.issues.map(esc).join(' · ')}</div>` : ''}
+            ${data.model ? '' : '<div class="muted small" dir="ltr">Basic replies - the AI model is not connected</div>'}`;
+          wireCites(box);
+          if (data.asking) {
+            state.shownQuestions = state.shownQuestions || new Set();
+            state.shownQuestions.add(data.asking.id);
+            wireQuestion(ans, data.asking);
+          }
+          if ((data.key_people || []).length) highlightPeople(data.key_people.map((p) => p.id));
+          if (data.questions && state.caseIndex) { state.caseIndex.questions = data.questions; }
+          if (data.reading_documents) watchCase(); else refreshCase();
+          if (data.followup_pending) watchFollowups();   // part of the answer is still being worked out
+        }
+      }
+    } catch (err) {
+      ans.className = 'shans unsure';
+      ans.textContent = `Could not answer: ${err.message}`;
+    } finally {
+      waiting.stop();
+      state.sherlockBusy = false;
+      $('sherlockSend').disabled = false;
+      $('sherlockLog').scrollTop = $('sherlockLog').scrollHeight;
+    }
+  }
+
+  // ------------------------------------------------------------------ the case board: uploads, map, questions
+
+  const UPLOAD_TYPES = ['.jpg', '.jpeg', '.png', '.pdf', '.docx', '.xlsx'];
+
+  function boardRun() {
+    // Uploads, pins and answers need the run on the Sherlocks server.
+    return state.runId && state.runId !== 'saved' ? state.runId : null;
+  }
+
+  async function refreshCase() {
+    const id = boardRun();
+    if (!id || state.es) return;   // a live stream delivers case events itself
+    try {
+      state.caseIndex = await api(`/graph/runs/${encodeURIComponent(id)}/case`);
+      renderEvidence();
+    } catch (_) { /* a saved graph not held here */ }
+  }
+
+  function watchCase() {
+    clearTimeout(state.caseTimer);
+    let polls = 0;
+    const tick = async () => {
+      polls += 1;
+      await refreshCase();
+      const c = state.caseIndex;
+      const busy = (c?.counts?.pending || 0) > 0
+        || (c?.attempts || []).some((a) => a.status === 'accepted' && !(c.documents || []).some((d) => d.title.includes(a.key.replace(/^upload:/, ''))));
+      if ((busy || polls < 4) && polls < 400) state.caseTimer = setTimeout(tick, 2500);
+    };
+    state.caseTimer = setTimeout(tick, 800);
+  }
+
+  async function uploadFiles(files) {
+    openSherlock();
+    const id = boardRun();
+    if (!id) {
+      sherlockSay('bot', '<b>Document agent</b>Start a search first - uploads join the case of a graph held on the Sherlocks server.');
+      return;
+    }
+    const note = $('sherlockInput').value.trim();
+    for (const f of files) {
+      const ext = (f.name.match(/\.[^.]+$/) || [''])[0].toLowerCase();
+      if (!UPLOAD_TYPES.includes(ext)) {
+        sherlockSay('bot', `<b>Document agent</b>${esc(f.name)} is not accepted. Allowed: image (JPG, PNG), PDF, Word (.docx), Excel (.xlsx).`, 'unsure');
+        continue;
+      }
+      sherlockSay('you', `<b>You</b>📎 ${esc(f.name)}${note ? ` - ${esc(note)}` : ''}`);
+      const fd = new FormData();
+      fd.append('file', f);
+      if (note) fd.append('note', note);
+      const headers = authHeaders();
+      delete headers['Content-Type'];
+      try {
+        const r = await fetch(`${API}/graph/runs/${encodeURIComponent(id)}/uploads`, { method: 'POST', headers, body: fd });
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(body.detail || r.statusText);
+        sherlockSay('bot', `<b>Document agent</b>Received <b>${esc(f.name)}</b>. Reading it${ext === '.xlsx' ? ' - a CDR or tower dump goes to the CDR agent' : ''}; it appears under Case evidence when done.`);
+      } catch (err) {
+        sherlockSay('bot', `<b>Document agent</b>Could not take ${esc(f.name)}: ${esc(err.message)}`, 'unsure');
+      }
+    }
+    $('sherlockInput').value = '';
+    watchCase();
+  }
+
+  function renderQuestions() {
+    const qs = (state.caseIndex?.questions || []).filter((q) => q.status === 'open');
+    state.shownQuestions = state.shownQuestions || new Set();
+    $('sherlockFab').classList.toggle('asks', qs.length > 0);
+    // Questions are asked inside Sherlock's replies, one at a time (the Questioner chooses
+    // which); they are never posted as separate messages.
+  }
+
+  function questionButtons(q) {
+    if (q.action === 'pin_location') return '<button type="button" class="qbtn" data-act="pin">📍 Pin on map</button>';
+    if (q.action === 'upload') return '<button type="button" class="qbtn" data-act="upload">📎 Upload</button>';
+    if (q.action === 'choose_person') {
+      return (q.options || []).map((o) => `<button type="button" class="qbtn" data-pid="${esc(o.id)}">${esc(o.label)}</button>`).join('');
+    }
+    return '';
+  }
+
+  function wireQuestion(box, q) {
+    box.querySelectorAll('[data-act="pin"]').forEach((b) => { b.onclick = () => openMap(); });
+    box.querySelectorAll('[data-act="upload"]').forEach((b) => { b.onclick = () => $('sherlockFile').click(); });
+    box.querySelectorAll('[data-pid]').forEach((b) => {
+      b.onclick = () => {
+        box.querySelectorAll('[data-pid]').forEach((x) => { x.disabled = true; });
+        answerQuestion(q, b.textContent, b.dataset.pid === 'other' ? null : b.dataset.pid);
+      };
+    });
+  }
+
+  async function answerQuestion(q, label, pid) {
+    const id = boardRun();
+    if (!id) return;
+    sherlockSay('you', `<b>You</b>${esc(label)}`);
+    try {
+      await api(`/graph/runs/${encodeURIComponent(id)}/questions/${q.id}`, { method: 'POST', body: JSON.stringify({ answer: label, pid }) });
+      sherlockSay('bot', '<b>Fact collector</b>Noted on the case board.');
+    } catch (err) {
+      sherlockSay('bot', `<b>Fact collector</b>Could not save the answer: ${esc(err.message)}`, 'unsure');
+    }
+    watchCase();
+  }
+
+  // The incident map. Leaflet is served by Sherlocks itself (the server has no internet);
+  // the tiles come from the configured tile server.
+  function loadLeaflet() {
+    if (window.L) return Promise.resolve(window.L);
+    if (state.leafletLoading) return state.leafletLoading;
+    const base = `${API}/portal/vendor/leaflet`;
+    state.leafletLoading = new Promise((resolve, reject) => {
+      const css = document.createElement('link');
+      css.rel = 'stylesheet';
+      css.href = `${base}/leaflet.css`;
+      document.head.appendChild(css);
+      const js = document.createElement('script');
+      js.src = `${base}/leaflet.js`;
+      js.onload = () => resolve(window.L);
+      js.onerror = () => reject(new Error('map library not reachable'));
+      document.head.appendChild(js);
+    });
+    return state.leafletLoading;
+  }
+
+  async function openMap() {
+    if (!boardRun()) {
+      openSherlock();
+      sherlockSay('bot', '<b>Questioner</b>Start a search first, then pin the incident.');
+      return;
+    }
+    const inc = state.caseIndex?.incident || {};
+    $('incLat').value = inc.lat ?? '';
+    $('incLon').value = inc.lon ?? '';
+    $('incPlace').value = inc.place || '';
+    $('incDate').value = inc.date || '';
+    $('incTime').value = inc.time || '';
+    $('incFir').value = inc.fir || '';
+    $('mapMsg').textContent = '';
+    $('mapDlg').showModal();
+    try {
+      const L = await loadLeaflet();
+      L.Icon.Default.imagePath = `${API}/portal/vendor/leaflet/images/`;
+      const start = inc.lat != null ? [Number(inc.lat), Number(inc.lon)] : [24.8607, 67.0011];
+      if (!state.map) {
+        state.map = L.map('incidentMap').setView(start, inc.lat != null ? 15 : 11);
+        L.tileLayer(state.config?.map_tiles || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+          { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(state.map);
+        state.map.on('click', (e) => {
+          $('incLat').value = e.latlng.lat.toFixed(6);
+          $('incLon').value = e.latlng.lng.toFixed(6);
+          placePin();
+        });
+      } else {
+        state.map.setView(start, inc.lat != null ? 15 : state.map.getZoom());
+      }
+      setTimeout(() => state.map.invalidateSize(), 120);
+      placePin();
+    } catch (err) {
+      $('mapMsg').textContent = `Map unavailable (${err.message}) - type the coordinates instead.`;
+    }
+  }
+
+  function placePin() {
+    if (!state.map || !window.L) return;
+    const lat = Number($('incLat').value);
+    const lon = Number($('incLon').value);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) || ($('incLat').value === '' || $('incLon').value === '')) return;
+    if (state.pin) state.pin.setLatLng([lat, lon]);
+    else state.pin = window.L.marker([lat, lon]).addTo(state.map);
+  }
+
+  async function saveIncident() {
+    const id = boardRun();
+    const num = (v) => (v === '' ? null : Number(v));
+    const body = { lat: num($('incLat').value), lon: num($('incLon').value), place: $('incPlace').value.trim() || null,
+      date: $('incDate').value || null, time: $('incTime').value || null, fir: $('incFir').value.trim() || null };
+    if ((body.lat == null) !== (body.lon == null) || [body.lat, body.lon].some((v) => v != null && !Number.isFinite(v))) {
+      $('mapMsg').textContent = 'Give both latitude and longitude (or click the map).';
+      return;
+    }
+    try {
+      await api(`/graph/runs/${encodeURIComponent(id)}/incident`, { method: 'POST', body: JSON.stringify(body) });
+      $('mapDlg').close();
+      openSherlock();
+      sherlockSay('bot', `<b>Fact collector</b>Incident recorded${body.place ? `: ${esc(body.place)}` : ''}${body.lat != null ? ` (${body.lat.toFixed(5)}, ${body.lon.toFixed(5)})` : ''}${body.date ? `, ${esc(body.date)} ${esc(body.time || '')}` : ''}. The CDR agent is re-reading the uploaded CDRs against it; the API agent is finding the nearest police station.`);
+      watchCase();
+    } catch (err) {
+      $('mapMsg').textContent = `Could not save: ${err.message}`;
+    }
+  }
+
   function renderRun(run) {
     const seed = run.params.cnic ? dashCnic(run.params.cnic.replace(/\D/g, ''))
       : run.params.phone ? dashPhone(run.params.phone.replace(/\D/g, '')) : (run.params.email || '');
@@ -755,6 +1612,7 @@
     pill.className = `pill ${run.status}`;
     $('runMsg').textContent = run.message || '';
     $('cancelBtn').hidden = !running;
+    renderReportButtons();
     $('goBtn').disabled = running;
     $('goBtn').textContent = running ? 'Building…' : (state.mode === 'multi' ? 'Find relations' : 'Build link graph');
     const s = run.stats || {};
@@ -925,10 +1783,76 @@
     ['property', '#22c55e', 'Property / address', /landlord|tenant|tenancy|property|address|neighbour|lives near/],
     ['vehicle', '#2dd4bf', 'Vehicle / licence', /vehicle|driver|challan|licence|license/],
     ['phone', '#38bdf8', 'Phone / SIM / identifier', /sim\b|phone|number|identifier|subscriber|caller/],
-    ['work', '#a78bfa', 'Work / verification / guarantor', /employer|employee|workplace|works at|verification|vouched|reference|organisation/],
+    ['prvs', '#c084fc', 'PRVS / verification witness', /verification|vouched|prvs|guarantor/],
+    ['work', '#a78bfa', 'Work / employment', /employer|employee|workplace|works at|reference|organisation/],
     ['travel', '#d946ef', 'Hotel / travel', /hotel|stay|check-in/],
     ['online', '#fde047', 'Online (OSINT)', /osint|online/],
   ];
+
+  // Which connection types are drawn (the Connections filter). Remembered per browser.
+  const LINK_OTHER = ['other', '#94a3b8', 'Other links', /$^/];
+  state.hiddenTypes = new Set((() => { try { return JSON.parse(localStorage.getItem('sherlocks_hidden_types') || '[]'); } catch (_) { return []; } })());
+
+  function edgeTypeId(edge) {
+    return (linkType(`${edge.label || ''} ${edge.relation?.verb || ''}`) || LINK_OTHER)[0];
+  }
+
+  function renderConnFilter() {
+    const panel = $('connPanel');
+    if (!panel) return;
+    const counts = {};
+    for (const e of state.edges.values()) {
+      if (e.kind === 'found_in') continue;
+      const t = edgeTypeId(e);
+      counts[t] = (counts[t] || 0) + 1;
+    }
+    const rows = [...LINK_TYPES, LINK_OTHER].map(([id, colour, label]) => `<label class="connrow${counts[id] ? '' : ' none'}">
+        <input type="checkbox" data-type="${id}" ${state.hiddenTypes.has(id) ? '' : 'checked'}>
+        <span class="sw" style="background:${colour}"></span>${esc(label)}<span class="cnt">${counts[id] || 0}</span></label>`).join('');
+    panel.innerHTML = `<div class="connhead"><b>Show connections</b><span><a href="#" data-all="1">all</a> · <a href="#" data-all="0">none</a></span></div>${rows}
+      <div class="muted small">Only ticked links are drawn, with the people they connect. Searched people always stay.</div>`;
+    panel.querySelectorAll('input[data-type]').forEach((box) => {
+      box.onchange = () => {
+        if (box.checked) state.hiddenTypes.delete(box.dataset.type); else state.hiddenTypes.add(box.dataset.type);
+        saveConnFilter();
+      };
+    });
+    panel.querySelectorAll('[data-all]').forEach((a) => {
+      a.onclick = (e) => {
+        e.preventDefault();
+        state.hiddenTypes = new Set(a.dataset.all === '1' ? [] : [...LINK_TYPES, LINK_OTHER].map((t) => t[0]));
+        saveConnFilter();
+        renderConnFilter();
+      };
+    });
+    connButton();
+  }
+
+  function connButton() {
+    const shown = [...LINK_TYPES, LINK_OTHER].filter((t) => !state.hiddenTypes.has(t[0])).length;
+    $('connBtn').classList.toggle('active', state.hiddenTypes.size > 0);
+    $('connBtn').textContent = state.hiddenTypes.size ? `Connections (${shown}) ▾` : 'Connections ▾';
+  }
+
+  function saveConnFilter() {
+    try { localStorage.setItem('sherlocks_hidden_types', JSON.stringify([...state.hiddenTypes])); } catch (_) { /* private mode */ }
+    connButton();
+    syncView(true);
+  }
+
+  // Drop the unticked connection types, then everyone they alone connected.
+  function filterByType(nodes, edges) {
+    if (!state.hiddenTypes.size) return { nodes, edges };
+    const typed = edges.filter((e) => e.kind !== 'found_in' && !state.hiddenTypes.has(edgeTypeId(state.edges.get(e.ref) || e)));
+    const keep = new Set();
+    for (const e of typed) { keep.add(e.source); keep.add(e.target); }
+    // The owner of a record that is kept (its link to the record is "found in", not a type).
+    for (const e of edges) if (e.kind === 'found_in' && keep.has(e.target)) keep.add(e.source);
+    for (const n of state.nodes.values()) if (n.kind === 'person' && n.data.seed) keep.add(n.id);
+    const shown = nodes.filter((n) => keep.has(n.id));
+    const ids = new Set(shown.map((n) => n.id));
+    return { nodes: shown, edges: [...typed, ...edges.filter((e) => e.kind === 'found_in' && ids.has(e.source) && ids.has(e.target))] };
+  }
 
   function linkType(text) {
     const t = String(text || '').toLowerCase();
@@ -1017,12 +1941,15 @@
     const nodes = [];
     const edges = [];
     const owners = new Map();
+    const roleOn = new Map();   // "record|person" -> that person's role on the record
     for (const e of state.edges.values()) {
       if (e.kind === 'found_in') {
         if (!owners.has(e.target)) owners.set(e.target, []);
         owners.get(e.target).push(e.source);
+        roleOn.set(`${e.target}|${e.source}`, e.label || '');
       }
     }
+    const witnessRole = (r) => /witness|guarantor/i.test(r || '');
     // "Linking only": keep a record node when it names someone else, is shared by
     // several people (an FIR), or flags its subject. The rest stay in the details panel.
     const linking = new Set();
@@ -1046,14 +1973,28 @@
         } else if (e.kind === 'strong' && rel && !e.source.startsWith('s:')) {
           // person -> person statement: point the arrow the way the sentence reads
           edges.push({ id: e.id, source: rel.from, target: rel.to, kind: 'strong', label: relationLabel(rel, e.label), score: 0, color: colour, ref: e.id, sym: rel.symmetric ? 1 : 0 });
+        } else if (e.kind === 'strong' && rel && e.source.startsWith('s:') && rel.from === e.target) {
+          // A record naming its witness / landlord / guarantor: the person named is the
+          // subject of the sentence ("X is a witness in FIR … involving Y"), so the arrow
+          // runs from that person to the record, towards the one they are a witness for.
+          edges.push({ id: e.id, source: e.target, target: e.source, kind: 'strong', label: e.label, score: 0, color: colour, ref: e.id, sym: rel.symmetric ? 1 : 0 });
         } else {
           edges.push({ id: e.id, source: e.source, target: e.target, kind: e.kind, label: e.label, score: e.score ?? 0, color: colour, ref: e.id, sym: 0 });
         }
         continue;
       }
       // Records hidden: person -[relation]-> person, worded and directed as a sentence.
+      const primary = state.nodes.get(e.source)?.data?.owner;
       for (const owner of owners.get(e.source) || []) {
         if (owner === e.target) continue;
+        if (primary && owner !== primary && witnessRole(roleOn.get(`${e.source}|${owner}`)) && witnessRole(e.label)) {
+          // Two witnesses of the same case are not witnesses of each other: a weak link.
+          if (!showWeak) continue;
+          const fir = (e.label.match(/\d+\s*\/\s*\d{2,4}/) || [''])[0];
+          edges.push({ id: `w:${owner}>${e.id}`, source: owner, target: e.target, kind: 'weak',
+            label: `Both witnesses${fir ? ` in FIR ${fir}` : ''}`, score: 0.5, color: colour, ref: e.id, sym: 1 });
+          continue;
+        }
         const from = rel ? rel.from : owner;
         const to = rel ? rel.to : e.target;
         edges.push({ id: `d:${owner}>${e.id}`, source: from, target: to, kind: 'strong', label: relationLabel(rel, e.label), color: colour, ref: e.id, sym: rel?.symmetric ? 1 : 0 });
@@ -1070,7 +2011,7 @@
       seen.add(key);
       return true;
     });
-    return { nodes, edges: unique };
+    return filterByType(nodes, unique);
   }
 
   function mergeGraph(graph) {
@@ -1109,6 +2050,7 @@
       }
     });
     applyFilter();
+    if (!$('connPanel')?.hidden) renderConnFilter();
     if (added || forceLayout) scheduleLayout(forceLayout || !state.laidOut);
   }
 
@@ -1157,16 +2099,64 @@
     state.laidOut = true;
   }
 
+  // Names by sound, across scripts: "altaf" finds الطاف and the other way round. Same rules
+  // as sherlocks.linkgraph.normalize.sound_key - consonants as heard, similar letters merged,
+  // vowels / alef / ain / h / waw / ye dropped.
+  const URDU_SOUND = {
+    'ب': 'B', 'پ': 'P', 'ت': 'T', 'ٹ': 'T', 'ط': 'T', 'ث': 'S', 'س': 'S', 'ص': 'S', 'ش': 'S', 'ج': 'J',
+    'چ': 'C', 'خ': 'K', 'ق': 'K', 'ک': 'K', 'ك': 'K', 'د': 'D', 'ڈ': 'D', 'ذ': 'Z', 'ز': 'Z', 'ض': 'Z',
+    'ظ': 'Z', 'ژ': 'Z', 'ر': 'R', 'ڑ': 'R', 'غ': 'G', 'گ': 'G', 'ف': 'F', 'ل': 'L', 'م': 'M', 'ن': 'N', 'ں': 'N',
+  };
+  const EN_DIGRAPHS = [['kh', 'k'], ['gh', 'g'], ['sh', 's'], ['ch', 'c'], ['th', 't'], ['dh', 'd'], ['ph', 'f'],
+    ['zh', 'z'], ['ck', 'k'], ['q', 'k'], ['x', 'ks'], ['v', 'w']];
+
+  function soundKey(word) {
+    let w = String(word || '').toLowerCase();
+    let out;
+    if (/[\u0600-\u06FF]/.test(w)) {
+      out = [...w].map((c) => URDU_SOUND[c] || '').join('');
+    } else {
+      w = w.replace(/[^a-z]/g, '');
+      for (const [a, b] of EN_DIGRAPHS) w = w.split(a).join(b);
+      w = w.replace(/c(?=[eiy])/g, 's').replace(/c/g, 'k');
+      out = w.replace(/[aeiouyhw]/g, '').toUpperCase();
+    }
+    return out.replace(/(.)\1+/g, '$1');
+  }
+
+  function soundKeys(name) {
+    return (String(name || '').match(/[A-Za-z]+|[\u0600-\u06FF]+/g) || []).map(soundKey).filter(Boolean);
+  }
+
+  function soundsLike(query, name) {
+    const q = soundKeys(query).join('');
+    const keys = soundKeys(name);
+    if (!q || !keys.length) return false;
+    if (q.length === 1) return keys.includes(q);
+    const joined = keys.join('');
+    let pos = 0;
+    for (const k of keys) {
+      if (joined.startsWith(q, pos)) return true;
+      pos += k.length;
+    }
+    return false;
+  }
+
   function applyFilter() {
-    const q = $('filter').value.trim().toLowerCase();
+    const raw = $('filter').value.trim();
+    const q = raw.toLowerCase();
     cy.elements().removeClass('faded hit');
     if (!q) return;
     const digits = q.replace(/\D/g, '');
+    const byName = !digits.length && /[a-z\u0600-\u06FF]/i.test(raw);
     const hits = cy.nodes().filter((n) => {
       const src = state.nodes.get(n.id());
       const d = src?.data || {};
       const hay = [n.data('label'), d.cnic, ...(d.phones || []), ...(d.names || []), d.father_name, d.system_label].join(' ').toLowerCase();
-      return hay.includes(q) || (digits.length >= 4 && hay.replace(/\D/g, '').includes(digits));
+      if (hay.includes(q) || (digits.length >= 4 && hay.replace(/\D/g, '').includes(digits))) return true;
+      // The same name in the other script, or another spelling of it.
+      return byName && n.data('kind') !== 'system'
+        && [n.data('label'), ...(d.names || [])].some((name) => soundsLike(raw, name));
     });
     if (hits.empty()) return;
     cy.elements().addClass('faded');
@@ -1861,6 +2851,55 @@
       boot();
     }
   });
+  connButton();
+  $('connBtn').onclick = () => {
+    const panel = $('connPanel');
+    panel.hidden = !panel.hidden;
+    if (!panel.hidden) renderConnFilter();
+  };
+  document.addEventListener('click', (e) => {
+    const panel = $('connPanel');
+    // A click inside the panel may re-render it (the clicked link is then gone from the page).
+    if (panel && !panel.hidden && document.contains(e.target) && !e.target.closest('.connfilter')) panel.hidden = true;
+  });
+  $('reportBtn').onclick = (e) => downloadReport(e.shiftKey);
+  ensureBoardMarkup();
+  $('boardBtn').onclick = () => openBoard();
+  window.addEventListener('resize', () => { if ($('boardDlg')?.open) drawStrings($('boardBody')); });
+  $('reportBtn2').onclick = (e) => downloadReport(e.shiftKey);
+  $('sherlockFab').onclick = () => ($('sherlockPanel').hidden ? openSherlock() : ($('sherlockPanel').hidden = true, $('sherlockFab').classList.remove('open')));
+  $('sherlockClose').onclick = () => { $('sherlockPanel').hidden = true; $('sherlockFab').classList.remove('open'); };
+  $('sherlockForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const q = $('sherlockInput').value.trim();
+    $('sherlockInput').value = '';
+    $('sherlockInput').style.height = 'auto';
+    askSherlock(q);
+  });
+  // The message box grows with what is typed, up to a few lines.
+  $('sherlockInput').addEventListener('input', () => {
+    const t = $('sherlockInput');
+    t.style.height = 'auto';
+    t.style.height = `${Math.min(t.scrollHeight, 120)}px`;
+    t.style.overflowY = t.scrollHeight > 120 ? 'auto' : 'hidden';
+  });
+  $('sherlockInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('sherlockForm').requestSubmit(); }
+  });
+  $('sherlockAttach').onclick = () => $('sherlockFile').click();
+  $('sherlockFile').onchange = () => { uploadFiles([...$('sherlockFile').files]); $('sherlockFile').value = ''; };
+  $('sherlockPin').onclick = () => openMap();
+  $('incSave').onclick = saveIncident;
+  for (const id of ['incLat', 'incLon']) $(id).addEventListener('change', placePin);
+  const panel = $('sherlockPanel');
+  panel.addEventListener('dragover', (e) => { e.preventDefault(); panel.classList.add('dropping'); });
+  panel.addEventListener('dragleave', () => panel.classList.remove('dropping'));
+  panel.addEventListener('drop', (e) => {
+    e.preventDefault();
+    panel.classList.remove('dropping');
+    if (e.dataTransfer?.files?.length) uploadFiles([...e.dataTransfer.files]);
+  });
+  $('sherlockQuick').querySelectorAll('[data-q]').forEach((b) => { b.onclick = () => askSherlock(b.dataset.q); });
   $('pngBtn').onclick = () => download(`linkgraph_${(state.runId || 'graph').slice(0, 8)}.png`, cy.png({ full: true, scale: 2, bg: '#0a0f1c' }));
   $('jsonBtn').onclick = () => {
     if (!state.runId) return;
@@ -1878,6 +2917,7 @@
     state.depth = state.config.depth.default;
     $('maxPersons').value = state.config.max_persons.default;
     $('optFir').checked = state.config.include_fir_rosters;
+    $('sherlockStatus').textContent = state.config.ai_enabled ? 'online' : 'online · basic mode';
     $('optAi').checked = state.config.ai_enabled;
     $('optAi').disabled = !state.config.ai_enabled;
     $('aiLabel').textContent = state.config.ai_enabled
@@ -1923,6 +2963,8 @@
     openRun: (runId) => openRun(runId),
     setToken: (token) => { state.token = token || ''; },
     currentRun,
+    openChat: openSherlock,
+    downloadReport: () => downloadReport(false),
   };
 
   if (EMBED) {

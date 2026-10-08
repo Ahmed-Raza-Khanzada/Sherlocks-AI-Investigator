@@ -333,18 +333,18 @@ def test_cnic_found_elsewhere_is_fed_back_to_nadra():
     nadra_cnics: list[str] = []
 
     def subscriber(req):  # SIMs, but no CNIC on them
-        return 200, {"0": {"number": "3337315136", "name": "MUHAMMAD MAQBUL", "cnic": "", "address": "KHI"}}
+        return 200, {"0": {"number": "3330000991", "name": "MUHAMMAD TESTER", "cnic": "", "address": "KHI"}}
 
     def prvs(req):  # PRVS by mobile returns the person's CNIC
         if "by-mobile" in req.url:
-            return 200, {"success": True, "data": [{"case_id": 1, "name": "MUHAMMAD MAQBUL",
-                                                    "cnic": "42000-5372356-1", "mobile": "03337315136"}]}
+            return 200, {"success": True, "data": [{"case_id": 1, "name": "MUHAMMAD TESTER",
+                                                    "cnic": "42101-0000099-1", "mobile": "03330000991"}]}
         return 404, {"success": False, "message": "No record found"}
 
     def nadra(req):
         nadra_cnics.append((req.data or {}).get("cnic", ""))
         return 200, {"status": True, "message": "CNIC verified",
-                     "data": {"citizen_number": "4200053723561", "name": "MUHAMMAD MAQBUL",
+                     "data": {"citizen_number": "4210100000991", "name": "MUHAMMAD TESTER",
                               "father_husband_name": "X", "present_address": "KHI"}}
 
     backend = EmsBackend(http=FakeEmsHttp({"number_check.php": subscriber, "cases/": prvs, "admin/": nadra}))
@@ -352,11 +352,11 @@ def test_cnic_found_elsewhere_is_fed_back_to_nadra():
     s.ollama.enabled = False
     s.llm.enabled = False
     mgr = memory_manager(s, backends={"ems": backend})
-    run = mgr.get(mgr.start(GraphRunParams(phone="0333-7315136", depth=1, max_persons=1, backend="ems"), wait=True).id)
+    run = mgr.get(mgr.start(GraphRunParams(phone="0333-0000991", depth=1, max_persons=1, backend="ems"), wait=True).id)
     assert run["status"] == "completed"
-    assert "4200053723561" in nadra_cnics                       # NADRA queried with the found CNIC
+    assert "4210100000991" in nadra_cnics                       # NADRA queried with the found CNIC
     seed = next(n for n in run["graph"]["nodes"] if n["kind"] == "person" and n["data"].get("seed"))
-    assert seed["data"]["cnic"] == "4200053723561"
+    assert seed["data"]["cnic"] == "4210100000991"
     assert seed["data"]["lookups"]["nadra"]["status"] == "success"
 
 
@@ -670,3 +670,57 @@ def test_failures_log_skips_successful_calls(tmp_path):
     http.set_context("cro", CNIC)
     http.send(Req("GET", "https://cro.example/x", params={"cnic": CNIC}))
     assert not fail.exists() or fail.read_text() == ""     # a success is not a failure
+
+
+def _complaint(**over):
+    row = {"id": 1, "tracking_id": "130226-00000001", "created_at": "2026-02-13T10:58:11.000000Z", "subject": "others",
+           "other_subject": "Request for protection", "complainant_name": "AHMED ALI", "complainant_fathername": "ALI KHAN",
+           "complainant_address": "House 1, Malir", "complainant_cnic": CNIC_D, "complainant_phone": "0300-1234567",
+           "complainant_cell": "0300-1234567", "district_name": "Malir", "complaint_category": "safety life threats",
+           "status": "In Process", "complaint_against": [], "cnic_role": "complainant"}
+    return {**row, **over}
+
+
+def test_igp_cms_reads_complaints_filed_and_against_by_cnic_and_phone():
+    seen = []
+    filed = _complaint(complaint_against=[{"name": "RASHID KHAN", "cnic": "42101-7777777-7", "phone": "0311-2223334"}])
+    against = _complaint(id=2, tracking_id="070725-00000002", complainant_name="WAQAR AHMED", complainant_fathername="X",
+                         complainant_cnic="42101-5555555-5", complainant_phone="0322-1112223", complainant_cell=None,
+                         status="Resolved", cnic_role="complain_against",
+                         complaint_against=[{"name": "AHMED ALI", "cnic": CNIC_D}])
+
+    def igp(req):
+        seen.append(req.params)
+        body = {"success": True, "summary": {"total_records": 2},
+                "data": {"all_complaints": [filed, against], "as_complainant": [filed], "as_complain_against": [against]}}
+        return 200, body
+
+    b = EmsBackend(http=FakeEmsHttp({"search-complaints-by-cnic": igp}))
+    result, rec = _rec(b, "igp_cms", cnic=CNIC, phone="03001234567")
+    assert seen == [{"cnic": CNIC}, {"phone": "03001234567"}]                 # same endpoint, the parameter changes
+    assert result["hit"] and result["summary"] == "2 IGP CMS complaint(s): 1 filed, 1 against"
+    assert rec.subject.name == "AHMED ALI" and rec.subject.father_name == "ALI KHAN"
+    labels = {f.label for f in rec.fields}
+    assert {"IGP complaint filed", "IGP complaint against the subject"} <= labels
+    relations = {(r.ref.name, r.relation) for r in rec.related}
+    assert ("RASHID KHAN", "Complained against by the subject") in relations
+    assert ("WAQAR AHMED", "Filed a complaint against the subject") in relations
+
+
+def test_igp_cms_older_endpoint_still_read(monkeypatch):
+    from sherlocks.linkgraph import ems
+
+    monkeypatch.setitem(ems.CONF, "igp_url", "https://ems.test/api/complaint-details")
+    b = EmsBackend(http=FakeEmsHttp({"complaint-details": (200, {"success": True, "complaints": [_complaint()]})}))
+    result, rec = _rec(b, "igp_cms", cnic=CNIC)
+    assert result["hit"] and rec.subject.name == "AHMED ALI"
+
+
+def test_igp_cms_no_record_and_failure_are_told_apart():
+    none = {"success": False, "message": "No records found for the provided cnic", "search_type": "cnic",
+            "data": {"total_records": 0, "as_complainant": [], "as_complain_against": [], "all_complaints": []}}
+    b = EmsBackend(http=FakeEmsHttp({"search-complaints-by-cnic": (200, none)}))
+    assert b.lookup("igp_cms", CNIC, None)["status"] == "no_record"
+    bad = EmsBackend(http=FakeEmsHttp({"search-complaints-by-cnic": (401, {"success": False, "message": "Invalid API key"})}))
+    out = bad.lookup("igp_cms", CNIC, None)
+    assert out["status"] == "error" and "Invalid API key" in out["summary"]

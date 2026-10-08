@@ -51,13 +51,14 @@ class SherlocksController extends Controller
     {
         $run = $request->json()->all();   // keys: id, seed_label, params, stats, graph{nodes,edges}, events
 
-        // TODO (portal): store it however you like, e.g. one row per graph:
-        //   SherlocksGraph::create([
-        //       'user_id'  => $request->user()->id,
-        //       'run_id'   => $run['id'] ?? null,
-        //       'subject'  => $run['seed_label'] ?? null,
-        //       'payload'  => json_encode($run),        // longText / json column
-        //   ]);
+        // TODO (portal): store it however you like, e.g. one row per graph. The same run is
+        // posted again whenever its case changes after the search (uploads, incident pin,
+        // answers), so UPDATE the row for that run_id instead of adding a new one:
+        //   SherlocksGraph::updateOrCreate(
+        //       ['run_id' => $run['id'] ?? null, 'user_id' => $request->user()->id],
+        //       ['subject' => $run['seed_label'] ?? null,
+        //        'payload' => json_encode($run)]          // longText / json column
+        //   );
         // Reopen it later with route('sherlocks.graph', $id).
 
         return response()->json(['saved' => true]);
