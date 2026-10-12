@@ -128,7 +128,7 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
 
   <section class="panel" id="built">
     <h2>Built</h2>
-    <p class="sub">Every step of the build order is implemented and tested (415 tests). Where each part lives:</p>
+    <p class="sub">Every step of the build order is implemented and tested (439 tests). Where each part lives:</p>
     <div class="tablewrap">
       <table>
         <thead><tr><th>Part of the plan</th><th>Code</th><th>Tests</th></tr></thead>
@@ -140,6 +140,9 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
           <tr><td>Corrections</td><td><code>linkgraph/corrections.py</code></td><td><code>test_corrections.py</code></td></tr>
           <tr><td>Shared toolbox, API router</td><td><code>investigator.py</code> tools, <code>linkgraph/api_router.py</code>, <code>researcher.py</code></td><td><code>test_toolbox.py</code></td></tr>
           <tr><td>Presenter</td><td><code>linkgraph/presenter.py</code>, <code>web/app.js</code> (tables, quotes, view block)</td><td><code>test_presenter.py</code></td></tr>
+          <tr><td>Question reader: the model's reading is the ask <span class="pill new">new</span></td><td><code>linkgraph/question_reader.py</code></td><td><code>test_question_reader.py</code></td></tr>
+          <tr><td>Officer agent's chain: dossier, board and graph, live lookups, "not found" <span class="pill new">new</span></td><td><code>linkgraph/officer.py</code>, <code>sherlock_team.run_turn</code></td><td><code>test_officer_chain.py</code></td></tr>
+          <tr><td>Hotel stays checked against each FIR's date <span class="pill new">new</span></td><td><code>case_queries.hotels</code>, <code>narrate.py</code></td><td><code>test_officer_chain.py</code></td></tr>
           <tr><td>Officer team: briefer, budgets, quick view, follow-ups</td><td><code>briefer.py</code>, <code>budget.py</code>, <code>quick_view.py</code>, <code>sherlock_team.run_turn</code></td><td><code>test_officer_team.py</code></td></tr>
           <tr><td>Ingest: Graph analyst, Dossier</td><td><code>evidence/graph_analyst.py</code>, <code>dossiers.py</code></td><td><code>test_casework.py</code>, <code>test_toolbox.py</code></td></tr>
           <tr><td>CDR team R1-R6</td><td><code>evidence/cdr.py</code>, <code>cdr_team.py</code></td><td><code>test_cdr_team.py</code></td></tr>
@@ -151,6 +154,19 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
       </table>
     </div>
     <p class="sub">How it all works now: <code>docs/SHERLOCK_AGENTS.md</code>. Still open: the decisions at the end of this page, and a run against the live systems.</p>
+  </section>
+
+  <section class="panel">
+    <h2>Latest changes</h2>
+    <p class="sub">Built after testing on a live case. Each one is in the code and covered by tests.</p>
+    <div class="rules">
+      <div><b>The model reads the question</b>No keyword list decides what a question means. The model's reading is the ask; the rules are only the fallback when the model is off or fails.</div>
+      <div><b>A question stays a question</b>A message that asks something is answered, even when it names a person Sherlock had asked about. Before, it could be filed as an answer.</div>
+      <div><b>The Officer agent's chain</b>Dossier agent for a person, then the case board and graph, then live lookups at run time. See flow A below.</div>
+      <div><b>An honest "not found"</b>When no agent has the answer, the reply says so and lists every place checked. No guess, no general filler.</div>
+      <div><b>Hotel stays against FIR dates</b>"Was he in a hotel at the time of the FIR?" is checked for each of his FIRs and the new case's date. An FIR with no date on record is said to be unchecked, and its file is fetched.</div>
+      <div><b>40-second reply cap</b>Raised from 20 s, with longer limits per step. <a href="#latency">Section</a></div>
+    </div>
   </section>
 
   <section class="panel">
@@ -336,14 +352,14 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
       <div>
         <h3 style="margin-bottom:8px">A · The user asks a question</h3>
         <ol class="steps">
-          <li><b>O4 Case briefer</b> hands O1 the context pack: the whole chat, the case summary, Sherlock's latest view, and the facts that match this message.</li>
-          <li><b>O1</b> reads the message with that context: language, who it is about, what exactly is asked.</li>
-          <li>If the pack is not enough, <b>O1</b> asks the toolbox: a report page, CDR query, or the API router.</li>
-          <li>Still not in the facts, or the user asks for an opinion ("kya ye shamil hai?")? <b>O1</b> asks <b>Sherlock</b> what he thinks.</li>
-          <li><b>O1</b> drafts the answer as content, not final wording: the direct answer, facts with sources, evidence quotes, Sherlock's view labelled as his view.</li>
-          <li><b>O2</b> checks the draft. If it fails, it goes back to O1 once with the reasons.</li>
-          <li><b>O5 Presenter</b> writes the checked answer for the user: in their language and a layout that is easy to read.</li>
-          <li>Then <b>O1</b> takes the top approved question from the <b>Gatekeeper</b>, if one is waiting, and asks it after the answer.</li>
+          <li><b>O0 Question reader</b> reads the message in one model call: is it a question, what is wanted, how much detail, which role, which people, and whether it is about a person, the case or a link. The model's reading decides. Keyword rules only run when the model is off or fails. A message that asks anything is a question, even if it names someone Sherlock asked about.</li>
+          <li><b>A4 Dossier agent</b> goes first when the question is about a person: that person's card, with role, FIRs, links, documents, the user's own words and Sherlock's hypotheses.</li>
+          <li><b>Case board and graph</b> next: the Facts agent's computed answer, every fact and document on the board, the connections. <b>O4 Case briefer</b> packs it with the chat, the summary and Sherlock's latest view.</li>
+          <li><b>API agent</b> when neither has the answer, or O1's draft says it needs more: the police systems and FIR files are called at run time through the guard. What comes back goes on the board and O1 drafts again from it.</li>
+          <li><b>Sherlock</b> gives his view on every question, in one model call alongside the rest. It is shown apart from the facts, labelled as his view.</li>
+          <li><b>O2</b> checks the draft. If it fails, it goes back to O1 once with the reasons. <b>O5 Presenter</b> then lays it out in the user's language, with the evidence and its sources.</li>
+          <li><b>Nothing found anywhere?</b> The user is told so plainly, "I did not find an answer", with every place that was checked, and asked where it may be recorded. Never a guess. A lookup that returns "no record" is listed as checked, not given as the answer.</li>
+          <li>Then <b>O1</b> takes the top approved question from the <b>Gatekeeper</b>, if one is waiting, and asks it after the answer, in its colour.</li>
         </ol>
       </div>
       <div>
@@ -513,8 +529,8 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
       <div>
         <h3 style="margin-bottom:8px">Asking Sherlock</h3>
         <ol class="steps">
-          <li><b>When.</b> The toolbox found no fact, or the user asks for a judgment: why, how, is he involved, what next.</li>
-          <li><b>Quick, not full.</b> One model call, no tool rounds, with a 4-second budget. Sherlock answers only from his stored assessment and the context pack. He does not start a full background run while the user waits. Over budget: the reply says "Sherlock is looking into it" and his view comes later as a follow-up.</li>
+          <li><b>When.</b> On every question when the model is on. Without the model, his assessment comes from the board: which earlier FIRs bear on the new case, and his hypotheses about the people asked.</li>
+          <li><b>Quick, not full.</b> One model call, no tool rounds, with a 10-second budget. Sherlock answers only from his stored assessment and the context pack. He does not start a full background run while the user waits. Over budget: the reply says "Sherlock is looking into it" and his view comes later as a follow-up.</li>
           <li><b>Labelled.</b> The reply keeps facts and opinion apart: "Records mein ye nahi hai. Sherlock ka andaza: …". The Answer checker enforces this.</li>
           <li><b>Remembered.</b> The question and Sherlock's view go on the board. If the question needs real work, Sherlock picks it up in the next background run and the user is told when he has more.</li>
         </ol>
@@ -524,25 +540,26 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
 
   <section class="panel" id="latency">
     <h2>Reply time budget</h2>
-    <p class="sub">Everything runs on our own model server (Qwen 27B, <code>configs/default.yaml</code>). A chain of six model calls in a row would take too long, so each step has a time limit and a fallback, and most steps are code. Target: <b>first words on screen within 3 s; the whole reply usually under 8 s, never over 20 s.</b></p>
+    <p class="sub">Everything runs on our own model server (Qwen 27B, <code>configs/default.yaml</code>). A chain of six model calls in a row would take too long, so each step has a time limit and a fallback, and most steps are code. Target: <b>first words on screen within 3 s; the whole reply never over 40 s.</b> The cap was 20 s; it was raised so live lookups and a second draft can finish inside the reply. Each step is also capped by what is left of the 40 s.</p>
     <div class="tablewrap">
       <table>
         <thead><tr><th>Step</th><th>Model?</th><th>Budget</th><th>If it runs over</th></tr></thead>
         <tbody>
           <tr><td>O4 Case briefer</td><td>no (old chat summary is updated in the background, never while the user waits)</td><td>300 ms</td><td>Use the last pack and add what's new</td></tr>
-          <tr><td>O1 understand + draft</td><td>yes, one call, which also picks the tools</td><td>4 s</td><td>Answer from the board and a template, with "partial answer"</td></tr>
-          <tr><td>Toolbox calls</td><td>no</td><td>3 s in total, run in parallel</td><td>Answer without them; the slow call finishes in the background and its result is sent as a follow-up</td></tr>
-          <tr><td>Sherlock quick view</td><td>yes, one call, only when asked for</td><td>4 s, runs alongside the toolbox calls</td><td>"Sherlock is looking into it", sent later as a follow-up</td></tr>
-          <tr><td>O2 Answer checker</td><td>code first; model only when the draft has a claim that no query computed</td><td>200 ms code, 3 s model</td><td>Remove the unchecked claim and say it was not verified</td></tr>
-          <tr><td>O1 revise (once)</td><td>yes</td><td>3 s</td><td>Send the checked parts only</td></tr>
+          <tr><td>O1 understand + draft</td><td>yes, one call; a second one after live lookups bring something new</td><td>10 s</td><td>Answer from the board and a template, with "partial answer"</td></tr>
+          <tr><td>Toolbox calls</td><td>no</td><td>10 s in total, run in parallel</td><td>Answer without them; the slow call finishes in the background and its result is sent as a follow-up</td></tr>
+          <tr><td>Sherlock quick view</td><td>yes, one call, on every question</td><td>10 s, runs alongside the toolbox calls</td><td>"Sherlock is looking into it", sent later as a follow-up</td></tr>
+          <tr><td>O2 Answer checker</td><td>code first; model only when the draft has a claim that no query computed</td><td>200 ms code, 6 s model</td><td>Remove the unchecked claim and say it was not verified</td></tr>
+          <tr><td>Deep investigation</td><td>yes, a tool loop, only when the draft and the live lookups are not enough</td><td>25 s</td><td>Send what is checked; his conclusion follows as a follow-up</td></tr>
+          <tr><td>O1 revise (once)</td><td>yes</td><td>6 s</td><td>Send the checked parts only</td></tr>
           <tr><td>O5 Presenter</td><td>templates in all three languages by default; model only for free-form answers. Streamed</td><td>2 s</td><td>Use the template version</td></tr>
         </tbody>
       </table>
     </div>
     <div class="rules">
-      <div><b>At most 2 model calls on most turns</b>O1 drafts, then O5 uses templates. The O2 model check, the revise and Sherlock's quick view only run when needed. Every turn records how many model calls it made.</div>
+      <div><b>Few model calls in a row</b>The Question reader reads, O1 drafts, Sherlock gives his view alongside, then O5 uses templates. The O2 model check, the revise and the deep investigation only run when needed. Every turn records how many model calls it made.</div>
       <div><b>In parallel, not one after another</b>Toolbox calls and Sherlock's quick view run at the same time. O1 doesn't wait for anything it doesn't need.</div>
-      <div><b>Partial beats late</b>When a budget runs out, the user gets the checked part now and the rest as a follow-up message in the same thread. A spinner for 30 seconds is a failure.</div>
+      <div><b>Partial beats late</b>When a budget runs out, the user gets the checked part now and the rest as a follow-up message in the same thread. The status line shows which step is running the whole time.</div>
       <div><b>Measured</b>Every turn logs each step's time. The test set fails a change if the typical reply time gets slower than the current agent's.</div>
     </div>
   </section>
