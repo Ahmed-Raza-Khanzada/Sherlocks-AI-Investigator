@@ -387,3 +387,91 @@ def test_llm_address_parse_cannot_invent_values():
     assert parse.calls == 1
     parse("Gulshan Iqbal Blk 13D Khi")
     assert parse.calls == 1  # memoised
+
+
+# -- same address means the same place; whose name is shown ------------------------------
+
+
+def test_the_same_city_or_district_alone_is_never_the_same_address():
+    assert _score("Karachi", "Karachi") == 0
+    assert _score("District Hyderabad, Sindh", "Hyderabad") == 0
+    assert _score("Karachi, Sindh, Pakistan", "KARACHI SINDH") == 0
+    assert _score("Tehsil Kotri, District Jamshoro", "Kotri Jamshoro") == 0
+    # The same premises still match, and so does the same named locality - as a locality.
+    assert _score("House 45, Block 13-D, Gulshan-e-Iqbal, Karachi", "House 45 Block 13-D Gulshan-e-Iqbal Karachi") >= 0.8
+    score, reason = address_score(*(2 * ["Mohalla Qazi, Tando Adam"]), *(2 * [parse_address("Mohalla Qazi, Tando Adam")]))
+    assert score == 0.5 and "Same locality" in reason
+    # One side with a house, the other with only the city: nothing to call the same.
+    assert _score("House 45, Block 13-D, Gulshan-e-Iqbal, Karachi", "Karachi") == 0
+
+
+def test_two_people_in_the_same_city_get_no_address_link():
+    b = GraphBuilder()
+    b.upsert_person(PersonRef(cnic=C1, name="Kamran Ahmed", addresses=["Hyderabad, Sindh"]), depth=0)
+    b.upsert_person(PersonRef(cnic=C2, name="Rashid Memon", addresses=["District Hyderabad Sindh"]), depth=1)
+    assert compute_weak_links(b, min_score=0.0) == 0
+
+    from sherlocks.linkgraph.weak_links import LlmPairReviewer
+
+    class _SaysSameAddress:
+        def generate_structured(self, *, prompt, schema, **_):
+            return schema.model_validate({"relation": "same_address", "confidence": 0.9, "evidence": ["Hyderabad"],
+                                          "explanation": "Both are in Hyderabad."}), None
+
+    # The model calling a shared city "the same address" is not believed either.
+    assert compute_weak_links(b, min_score=0.0, reviewer=LlmPairReviewer(_SaysSameAddress(), budget=5)) == 0
+
+
+def test_the_name_shown_comes_from_our_own_registers_before_the_subscriber_api():
+    from sherlocks.linkgraph.models import SystemRecord
+
+    b = GraphBuilder()
+    pid, _ = b.upsert_person(PersonRef(cnic=C1, phones=["03990000101"]), depth=0, seed=True)
+
+    def record(system, name, father=None):
+        return SystemRecord(system=system, status="found", hit=True, subject=PersonRef(cnic=C1, name=name, father_name=father))
+
+    b.add_record(pid, record("subscriber", "KAMRAN TRADERS", "N AHMED"))       # answers first, with a franchise's typing
+    assert b.nodes[pid].label == "Kamran Traders"
+    b.add_record(pid, record("old_tenant", "Kamran Ahmad"))                    # a tenant register outranks it
+    assert b.nodes[pid].label == "Kamran Ahmad"
+    b.add_record(pid, record("dls", "Kamran Ahmed Khan"))                      # the driving licence outranks that
+    assert b.nodes[pid].label == "Kamran Ahmed Khan"
+    b.add_record(pid, record("nadra", "KAMRAN AHMED", "Nadeem Ahmed"))         # NADRA is first of all
+    data = b.nodes[pid].data
+    assert b.nodes[pid].label == "Kamran Ahmed" and data["father_name"] == "Nadeem Ahmed"
+    b.add_record(pid, record("subscriber", "K AHMED"))                         # and the subscriber API never takes it back
+    b.add_record(pid, record("psrms", "Kamran s/o Nadeem"))
+    assert b.nodes[pid].label == "Kamran Ahmed"
+    assert set(data["names"][1:]) >= {"KAMRAN TRADERS", "Kamran Ahmed Khan"}      # kept, as "also recorded as"
+    assert "Kamran Ahmad" not in data["names"]             # the same name: shown as NADRA spells it
+    # With only the subscriber API and another police system, the police system's spelling is shown.
+    other, _ = b.upsert_person(PersonRef(cnic=C2), depth=1)
+    b.add_record(other, record("subscriber", "RASHID M").model_copy(update={"subject": PersonRef(cnic=C2, name="RASHID M")}))
+    b.add_record(other, record("psrms", "Rashid Memon").model_copy(update={"subject": PersonRef(cnic=C2, name="Rashid Memon")}))
+    assert b.nodes[other].label == "Rashid Memon"
+
+
+def test_two_witnesses_of_the_same_tenancy_are_co_witnesses_not_the_same_address():
+    from sherlocks.linkgraph.models import RelatedPerson, SystemRecord
+
+    b = GraphBuilder()
+    tenant, _ = b.upsert_person(PersonRef(cnic=C1, name="Kamran Ahmed"), depth=0, seed=True)
+    sid, tenant = b.add_record(tenant, SystemRecord(system="prvs", status="found", hit=True,
+                                                    subject=PersonRef(cnic=C1, name="Kamran Ahmed")))
+    form = "House 12, Street 4, Block 13-D, Gulshan-e-Iqbal, Karachi"         # the address written on the form
+    w1, _ = b.link_related(sid, RelatedPerson(ref=PersonRef(cnic=C2, name="Rashid Memon", addresses=[form]),
+                                              relation="Verification witness (PRVS)", detail="case 77"), depth=1, from_pid=tenant)
+    w2, _ = b.link_related(sid, RelatedPerson(ref=PersonRef(cnic="4210199999993", name="Sajid Ali", addresses=[form]),
+                                              relation="Verification witness (PRVS)", detail="case 77"), depth=1, from_pid=tenant)
+    between = [e for e in b.edges.values() if {e.source, e.target} == {w1, w2}]
+    assert [e.label for e in between] == ["Both witnesses in the same verification (of Kamran Ahmed)"]
+    compute_weak_links(b, min_score=0.0)
+    between = [e for e in b.edges.values() if {e.source, e.target} == {w1, w2}]
+    assert len(between) == 1 and "address" not in " ".join([between[0].label, *between[0].reasons]).lower()
+    # Each still vouched for the tenant: that stated link stays.
+    assert any(e.kind == "strong" and e.label.startswith("Verification witness") and e.target == w1 for e in b.edges.values())
+    # Someone else at that very address, who witnessed nothing, is still "same address".
+    b.upsert_person(PersonRef(cnic="4210199999994", name="Bilal Khan", addresses=[form]), depth=1)
+    compute_weak_links(b, min_score=0.0)
+    assert any("Same address" in e.label for e in b.edges.values() if e.kind == "weak")

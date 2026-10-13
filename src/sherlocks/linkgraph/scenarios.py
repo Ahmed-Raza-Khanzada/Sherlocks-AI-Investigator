@@ -49,15 +49,15 @@ SCENARIOS: dict[str, tuple[str, str]] = {
     "safe_house": ("Landlord with many tenants", "One landlord houses several people in this network - a possible safe house when any is flagged."),
     "tenancy_witness": ("Recurring tenancy witness", "The same person signs as witness on several tenancies."),
     "recurring_guarantor": ("Recurring guarantor", "The same person vouches as PRVS verification witness for several people."),
-    "sim_front": ("SIMs in someone else's name", "SIMs used by others are registered on one CNIC - a front or SIM supplier."),
+    "sim_front": ("SIMs in someone else's name", "SIMs used by others are registered on one CNIC. Common - a fact to note, not a lead by itself."),
     "insider": ("Possible insider", "An employee/servant of a complainant is tied to the accused side."),
     "police_link": ("Officer linked to a criminal", "A police officer is linked to a person with a criminal footprint (not as investigator)."),
     "travel_together": ("Travelled together", "Overlapping hotel stays, more than once."),
     "dual_identity": ("Possible second identity", "Same name and father's name under different CNICs."),
     "alias": ("Aliases", "One person recorded under clearly different names."),
     "multi_source_link": ("Corroborated link", "Two people linked by two or more independent systems."),
-    "hidden_associate": ("Hidden associate", "No direct link, but several shared contacts."),
-    "broker": ("Broker", "Sits between clusters of this network - its connector."),
+    "hidden_associate": ("Contacts in common, no direct link", "No direct link between them, but several contacts in common."),
+    "broker": ("Go-between", "Links groups of people who have no other link to each other."),
     "criminal_proximity": ("Close to a criminal", "A target is one or two stated hops from a person with a criminal footprint."),
 }
 
@@ -95,6 +95,26 @@ def sections(text: object) -> set[str]:
     return {s.replace("-", "") for s in _SECTION.findall(str(text or "").upper())} - _GENERIC_SECTIONS
 
 
+# Patterns about ONE person and whoever gathers around them (a landlord and his tenants, a
+# witness and the tenancies he signed): the pattern stays the same pattern as people are added.
+AROUND_ONE = ("safe_house", "recurring_guarantor", "tenancy_witness", "broker", "alias", "sim_front",
+              "recurring_witness", "recurring_officer", "criminal_proximity")
+# Patterns over a whole group, which is what identifies them.
+WHOLE_GROUP = ("same_method", "shared_vehicle")
+
+
+def subject_of(scenario: str, people: list[str]) -> str:
+    """What a pattern is about - the same value when the graph grows and the pattern is
+    stated again with more people in it."""
+    if scenario in AROUND_ONE:
+        who = people[:1]
+    elif scenario in WHOLE_GROUP:
+        who = sorted(people)
+    else:                                   # a pattern between two people
+        who = sorted(people[:2])
+    return f"{scenario}:{','.join(who)}"
+
+
 @dataclass
 class Finding:
     scenario: str
@@ -108,6 +128,7 @@ class Finding:
     def to_dict(self, net: PersonNetwork) -> dict[str, Any]:
         title, meaning = SCENARIOS[self.scenario]
         return {"id": f"{self.scenario}:{','.join(sorted(self.people))}", "scenario": self.scenario,
+                "subject": subject_of(self.scenario, self.people),
                 "title": title, "meaning": meaning, "tier": self.tier, "score": round(self.score, 2),
                 "people": self.people, "names": [net.name(p) for p in self.people],
                 "summary": self.summary, "evidence": self.evidence[:8], "sensitive": self.sensitive}
@@ -454,13 +475,13 @@ def _structure(ctx: _Context) -> list[Finding]:
     net, out = ctx.net, []
     for h in net.hidden_associates(top=5):
         out.append(Finding("hidden_associate", "inferred", min(0.7, 0.3 + 0.1 * h["score"]), [h["a"], h["b"], *h["shared_ids"]],
-                           f"{h['a_name']} and {h['b_name']} have no direct link but share {len(h['shared'])} contacts: "
+                           f"{h['a_name']} and {h['b_name']} have no direct link but have {len(h['shared'])} contacts in common: "
                            f"{', '.join(h['shared'])}.", [_ev(f"shared contact: {s}") for s in h["shared"]]))
     for b in net.brokers(top=3):
         if b["bridges_clusters"] >= 2 and not b["hub"]:
             out.append(Finding("broker", "inferred", min(0.8, 0.4 + b["betweenness"]), [b["id"]],
-                               f"{b['name']} connects {b['bridges_clusters']} clusters of this network "
-                               f"(on {b['betweenness']:.0%} of the shortest routes).", []))
+                               f"{b['name']} links {b['bridges_clusters']} groups of people on this graph who have "
+                               "no other link to each other.", []))
     for seed in net.seeds():
         prox = net.criminal_proximity(seed)
         if prox and prox.get("nearest") and prox["hops"] <= 2 and not prox["route"]["inferred"]:

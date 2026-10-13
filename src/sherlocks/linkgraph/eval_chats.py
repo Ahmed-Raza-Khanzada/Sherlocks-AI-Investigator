@@ -72,7 +72,7 @@ def score(chat: dict[str, Any]) -> dict[str, Any]:
             first = re.split(r"(?<=[.!?:؟۔])\s|\n", f["answer"].replace("**", "").strip(), maxsplit=1)[0]
             opened += str(f["facts"]["count"]) in first
         for ref in re.findall(r"\[([A-Za-z]{1,8}\d{0,4})\]", f["answer"]):
-            if re.fullmatch(r"[DFLHQ]\d+", ref) and ref not in known:
+            if re.fullmatch(r"[DFLHQWXK]\d+", ref) and ref not in known:
                 bad_ids.append(ref)
     asked = [t["final"]["checks"].get("asked") for t in chat["turns"]]
     real = [a for a in asked if a]

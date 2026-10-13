@@ -134,11 +134,13 @@ All of it comes from Sherlocks' own page script: deploying Sherlocks updates the
   - takes corrections ("nahi, 2 March tha"): the old answer is kept but no longer used, and what rested on it is redone;
   - sends what takes longer (a slow lookup, Sherlock's own view) as a follow-up message;
   - works the case in the background (Sherlock's hypotheses, summary, next questions); the downloaded case report is his full, current assessment.
+  - **asks which case this is** when the target already has FIRs on record - naming the recent crimes - because only the officer knows whether this is a new matter (the old FIRs are then history) or the very case of one of those FIRs (the target was arrested first, the investigation follows). Until the officer says, a past FIR's date, place or offence is never given as "this case";
+  - keeps a **trace of every question** (which agent ran, what it was given, what it answered, who handed what to whom) - no screen for it, read it over the API (below).
 - **Uploads in the chat** (📎 or drag and drop): image (JPG, PNG), PDF, Word (.docx), Excel (.xlsx) only, up to 25 MB. CDRs and tower dumps go to the CDR agent (and the CDR server). The browser sends them straight to Sherlocks; if a proxy sits in front of Sherlocks, allow 30 MB bodies there.
 - **Incident map** (📍): the officer pins where and when it happened. Map tiles load from OpenStreetMap in the officer's browser (or a tile server set on the Sherlocks side).
 - **Find in graph** understands names by sound across scripts: "altaf" finds الطاف, and the other way round.
 - **Connections filter** (toolbar): tick which kinds of link to show - co-accused, complaint (FIR filed), FIR witness, PRVS / verification witness, police, family, property, vehicle, phone/SIM, work, hotel, online; only those links and the people they connect are drawn.
-- **Case report (PDF)** for senior officers: written automatically when the graph finishes or is stopped; the "📑 Case report" button downloads it. Every assessment cites its evidence.
+- **Case report (PDF)**: written automatically when the graph finishes or is stopped, and again whenever the case changes; the "📑 Case report" button downloads it, "Court file version" gives the same report without suspicions and leads. One fixed structure, everything under headings and in points: **1 Case summary · 2 Person by person** (the target, then each related person: identity, how tied to the target, FIRs, medical and other reports, what they said, police system records) **· 3 Who said what · 4 People and their relations · 5 Timeline** (each FIR as a story in date order: the people in it, what each said, the medical and laboratory reports and what they found) **· 6 Contradictions with the evidence · 7 Hints and leads · 8 Next steps**, then an annex with the working (evidence register, references). While the officer has not said what case is being investigated, the report assumes nothing about it: it describes the target, the connections and the earlier cases only.
 - **Token renewal:** when the token expires, the page calls `/sherlocks/token` and carries on.
 - `onRunComplete(run)` fires once per finished search → POST to `store()`.
 
@@ -147,6 +149,46 @@ saves it the same way as `onRunComplete`.
 
 `window.Sherlocks` also exposes `loadGraph(run)`, `openRun(runId)`, `setToken(token)` and
 `currentRun()`, in case the portal wants to drive the page from its own buttons.
+
+---
+
+## This version (October 2026): what changes for the portal
+
+**Nothing has to be copied again and no Laravel code changes.** The tab's script, styles
+and every new behaviour are served by the Sherlocks server. Check these four things:
+
+| | What | Do |
+|---|---|---|
+| 1 | The saved graph is a little larger: `graph.case` now also holds `traces` (how the agents worked on the last 30 questions, up to about 1 MB) | keep `payload` as `longText` and the 16 MB body limit on the save route - nothing new if step 3 was followed |
+| 2 | The case report PDF has a new fixed structure (8 sections + annex) and a second version, `?version=file` | nothing, unless the portal has its own download button: see `API.md` |
+| 3 | Sherlock asks one more kind of question ("which case is this?", key `case:which`); answers are plain text | nothing with the bundled page; an own chat client must show `final.asking` like any other text question |
+| 4 | Two new read-only endpoints: the agent trace | optional - for developers and admins, not for officers (next section) |
+
+If the portal built its **own** chat client instead of loading `app.js`, read "The
+`investigate` stream" in `API.md` again: the reply text uses `## ` for a section heading
+and `FINDING: ` for a finding of the Sherlock team.
+
+## Checking how a question was answered: the agent trace
+
+When an answer looks wrong, nobody has to guess which part failed. Every chat question
+leaves a trace on the Sherlocks server, readable with the same token as the tab:
+
+```bash
+# every question of a run, in brief - and the background runs of the Sherlock team
+curl -H "X-Session-Token: $TOKEN" "$SHERLOCKS_API_BASE/graph/runs/$RUN_ID/trace"
+
+# one question in full (its number in the conversation, or "latest")
+curl -H "X-Session-Token: $TOKEN" "$SHERLOCKS_API_BASE/graph/runs/$RUN_ID/trace/latest"
+```
+
+`$RUN_ID` is the id in the tab's address (`#run=<id>`) and in every saved graph (`id`).
+The answer names each agent in the order it worked, what it did, how long it took, every
+call to the language model (what it was given, what it answered, failed or not) and who
+handed what to whom. For a graph the portal saved and Sherlocks no longer holds, the same
+traces are inside the saved payload: `graph.case.traces`. Fields: `API.md`, "Agent trace".
+
+The trace holds what the case holds (names, numbers, record text). Show it to developers
+and admins only - not on an officer's screen, not in logs outside the police network.
 
 ---
 
@@ -160,7 +202,11 @@ saves it the same way as `onRunComplete`.
 | Browser console: **mixed content** | the portal is **https** and Sherlocks is **http**. The Sherlocks admin must put Sherlocks behind https (tell them) |
 | Browser console: **CORS** error | the Sherlocks admin must add the portal's address to `SHERLOCKS_CORS_ORIGINS` |
 | Graph appears only at the end, not live | a proxy is buffering: `proxy_buffering off;` for `/sindhpolice-sherlocks/graph/runs/` and `/graph/investigate` |
+| A chat reply is cut off, or the chat shows an error after about a minute | a chat reply may take up to 40 seconds and stays open as one stream: give the proxy in front of Sherlocks `proxy_read_timeout 120s;` (nginx's default is 60 s) for `/graph/investigate` |
 | `419` when saving | the page lacks the CSRF meta tag (it is in `tab.blade.php`; keep it) |
+| An answer is wrong, slow or says "not known" | read its trace: `GET /graph/runs/{id}/trace/latest` shows which agent gave what (section above) and send it to the Sherlocks admin |
+| `404` on `/trace/{turn}` | the question was asked before this version was deployed, or more than 30 questions ago; or Sherlocks no longer holds the run - read `graph.case.traces` in the saved graph |
+| The report still shows old wording ("has an inferred link", SIM items as findings) | it was written before this version: download it with `?rebuild=true`; old leads on a run are tidied by the next background run (any new statement or upload) |
 
 ---
 

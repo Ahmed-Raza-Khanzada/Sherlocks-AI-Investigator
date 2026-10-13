@@ -66,9 +66,42 @@ def analyse(case: Any, graph: dict[str, Any], *, limit: int = 40) -> list[str]:
                                 trust=TRUST_SYSTEM if f["tier"] == "stated" else TRUST_DERIVED,
                                 pids=list(f.get("people") or []), people=list(f.get("names") or []),
                                 rests_on=[e["record"] for e in f.get("evidence") or [] if e.get("record")][:6])
+            if fid:
+                case.facts[fid]["pattern"] = f["subject"]
             if fid and fid not in before:
                 new.append(fid)
+        restated(case)
     return new
+
+
+def pattern_of(fact: dict[str, Any]) -> str | None:
+    """The pattern a graph fact states (also for facts written before patterns were kept)."""
+    from sherlocks.linkgraph.scenarios import subject_of
+
+    kind = str(fact.get("kind") or "")
+    if not kind.startswith("graph_"):
+        return None
+    return fact.get("pattern") or subject_of(kind.removeprefix("graph_"), list(fact.get("pids") or []))
+
+
+def restated(case: Any) -> int:
+    """As the graph grows the same pattern is stated again ("links 2 groups", then 3, then 4).
+    Only the latest statement stays in use: the earlier ones are marked replaced by it, so no
+    answer, lead or question is built twice on one pattern."""
+    latest: dict[str, str] = {}
+    done = 0
+    with case._lock:
+        for fid, fact in case.facts.items():                 # in the order they were written
+            pattern = pattern_of(fact)
+            if pattern is None or fact.get("replaced_by") or fact.get("stale"):
+                continue
+            old = latest.get(pattern)
+            if old is not None:
+                case.facts[old]["replaced_by"] = fid
+                case._bump("fact", old)
+                done += 1
+            latest[pattern] = fid
+    return done
 
 
 def link_co_accused(builder: Any, case: Any = None) -> list[tuple[str, str, str]]:

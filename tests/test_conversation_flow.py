@@ -95,6 +95,9 @@ def test_the_questioner_asks_throughout_and_remembers_answers():
         asked.append(final["checks"].get("asked"))
         return final
 
+    # The officer has already said this is a new matter (which case it is comes first, see
+    # test_sherlock_asks_which_case_this_is_and_takes_the_officers_word).
+    case.dialog["case_basis"] = "new_matter"
     assert say("salam")["asking"]["key"] == "incident:place"
     assert say("Gulshan mein university road par")["intent"] == "answer"
     say("kamran ki kitni firs hain?")                                   # a question in between

@@ -6,7 +6,7 @@ the most useful first, never the same question twice:
 1. Where did the incident happen? (opens the map to pin it) - everything about who
    was near the scene depends on it.
 2. When? (date and time) - the crime day in every CDR.
-3. Who is the main suspect? - when there are targets and no roles yet.
+3. Who is the main suspect? - when there are several targets and no roles yet.
 4. Whose CDR is this file? - an uploaded CDR whose subscriber is not on the graph.
 5. Upload the main suspect's CDR? - once the incident is known and no CDR covers them.
 
@@ -23,7 +23,7 @@ from sherlocks.evidence.case_file import CaseFile
 MAX_OPEN = 3
 # How much the case needs each answer: red - the investigation is blocked without it (what,
 # where, when, who); orange - important; green - helpful. Shown as the question's colour.
-PRIORITY = {"incident:what": "red", "incident:when": "red", "incident:place": "red", "roles:main": "red",
+PRIORITY = {"case:which": "red", "incident:what": "red", "incident:when": "red", "incident:place": "red", "roles:main": "red",
             "cdr_owner": "red", "incident:pin": "orange", "incident:fir": "orange", "roles:victim": "orange",
             "cdr_of": "orange", "confirm_lookup": "orange", "incident:vehicle": "green", "link:why": "green",
             "suspects:other": "green"}
@@ -44,6 +44,38 @@ def _options(graph: dict[str, Any], first: list[str] | None = None, limit: int =
     return [{"id": pid, "label": people[pid].get("label") or pid} for pid in order if pid in people][:limit]
 
 
+def recent_crimes(graph: dict[str, Any], seeds: list[str], limit: int = 3) -> list[str]:
+    """The targets' own FIRs, the latest first, each as the officer would recognise it: number,
+    police station, the offence, the target's role in it and the register it comes from."""
+    from sherlocks.linkgraph.systems import system_label
+
+    people = _people(graph)
+    rows: dict[str, dict[str, Any]] = {}
+    for pid in seeds:
+        for f in people[pid]["data"].get("firs") or []:
+            if not f.get("label"):
+                continue
+            row = rows.setdefault(f.get("key") or f["label"], {"label": f["label"], "ps": "", "offence": "", "role": "",
+                                                               "systems": []})
+            for field in ("ps", "offence", "role"):
+                row[field] = row[field] or str(f.get(field) or "").strip()
+            if f.get("system") and system_label(f["system"]) not in row["systems"]:
+                row["systems"].append(system_label(f["system"]))
+
+    def year(row: dict[str, Any]) -> int:
+        tail = "".join(ch for ch in row["label"].rpartition("/")[2] if ch.isdigit())
+        return (int(tail) % 100) if tail else -1
+
+    out = []
+    for row in sorted(rows.values(), key=year, reverse=True)[:limit]:
+        text = f"FIR {row['label']}" + (f", PS {row['ps']}" if row["ps"] else "")
+        text += f" - {row['offence'][:60]}" if row["offence"] else ""
+        detail = ", ".join(x for x in (f"as {row['role']}" if row["role"] else "", "per " + "/".join(row["systems"][:3])
+                                       if row["systems"] else "") if x)
+        out.append(text + (f" ({detail})" if detail else ""))
+    return out
+
+
 def gaps(case: CaseFile, graph: dict[str, Any]) -> list[dict[str, Any]]:
     """Every question the board currently calls for, most useful first. A question whose
     answer is already on the board (stated in chat, pinned, answered) is not a gap."""
@@ -52,6 +84,26 @@ def gaps(case: CaseFile, graph: dict[str, Any]) -> list[dict[str, Any]]:
     people = _people(graph)
     seeds = [p for p, n in people.items() if n["data"].get("seed")]
     roles = set(case.roles.values())
+    on_file = [f"{f.get('label')}" for p in seeds for f in (people[p]["data"].get("firs") or []) if f.get("label")]
+    for doc in case.documents.values():            # an FIR file on the board, whoever it names
+        ref = doc.get("ref") or {}
+        if doc.get("kind") == "fir" and ref.get("fir_no"):
+            on_file.append(f"{ref['fir_no']}/{ref.get('fir_year') or ''}".rstrip("/"))
+    if on_file and not inc.get("fir") and not case.dialog.get("case_basis"):
+        # The target is already on record. Three things this can be, and only the officer knows:
+        # no link to the new case (his history), the same kind of crime again, or THIS very case
+        # (he was arrested in it first and the investigation follows). So the crimes are named
+        # and the officer is asked which it is.
+        name = people[seeds[0]].get("label") or "the target"
+        crimes = recent_crimes(graph, seeds)
+        if crimes:
+            said = f"{name} is already on record: " + "; ".join(crimes) + ". "
+        else:
+            said = f"FIR {', '.join(dict.fromkeys(on_file[:3]))} is on file. "
+        out.append({"key": "case:which", "action": "text",
+                    "text": said + f"Are you investigating {name} for one of these same crimes (which one - and has "
+                                   f"{name} already been arrested in it), or is this a new matter and these are only "
+                                   "the earlier record?"})
     if inc.get("lat") is None and not inc.get("place"):
         out.append({"key": "incident:place", "action": "pin_location",
                     "text": "Where did the incident happen? Pin it on the map - I will then check whose phones were "
@@ -63,10 +115,12 @@ def gaps(case: CaseFile, graph: dict[str, Any]) -> list[dict[str, Any]]:
     if not inc.get("offence"):
         out.append({"key": "incident:what", "action": "text",
                     "text": "What happened in this case - which crime (robbery, murder, kidnapping, fraud...)?"})
-    if not inc.get("date"):
+    if not inc.get("date") and not inc.get("date_as_recorded"):
         out.append({"key": "incident:when", "action": "text",
                     "text": "When did the incident happen - date and time? I need it to read the crime day in the CDRs."})
-    if seeds and "main suspect" not in roles:
+    if len(seeds) >= 2 and "main suspect" not in roles and not inc.get("target_status"):
+        # One target is the person the officer is investigating - asking who the main suspect is
+        # would ask back what they told us by entering him. With several targets it is a question.
         out.append({"key": "roles:main", "action": "choose_person", "options": _options(graph, seeds),
                     "text": "Who is the main suspect in this case?"})
     if not inc.get("fir"):
@@ -120,7 +174,7 @@ def gaps(case: CaseFile, graph: dict[str, Any]) -> list[dict[str, Any]]:
                 "text": "Is there anyone else you suspect who is not on the graph yet? Give me a name with a CNIC "
                         "or number and I will tell you what is known."})
     if inc.get("lat") is not None:
-        main = next((p for p, r in case.roles.items() if r == "main suspect"), None)
+        main = next((p for p, r in case.roles.items() if r == "main suspect"), seeds[0] if len(seeds) == 1 else None)
         covered = {o for d in case.documents.values() if d["kind"] == "cdr" for o in d.get("owners") or []}
         covered |= {pid for d in case.documents.values() if d["kind"] == "cdr"
                     for pid, n in people.items()
@@ -143,7 +197,7 @@ def next_question(case: CaseFile, *, recent: set[str]) -> dict[str, Any] | None:
     return min(candidates, key=lambda q: (q.get("times", 0), order[q["id"]]))
 
 
-def ask_gaps(case: CaseFile, graph: dict[str, Any]) -> list[dict[str, Any]]:
+def ask_gaps(case: CaseFile, graph: dict[str, Any], *, rules: bool = True) -> list[dict[str, Any]]:
     """Ask the most useful open gaps (keeping at most ``MAX_OPEN`` open). Returns the new
     questions. Open questions whose answer has reached the board another way (stated in
     chat, pinned on the map) are closed first."""
@@ -151,12 +205,12 @@ def ask_gaps(case: CaseFile, graph: dict[str, Any]) -> list[dict[str, Any]]:
 
     current = {g["key"] for g in gaps(case, graph)}
     for q in case.open_questions():
-        if q["key"] not in current and not q["key"].startswith("free:"):
+        if q["key"] not in current and not q["key"].startswith(("free:", "source:")):
             case.close_question(q["key"], "known from the case board")
     asked = []
-    desk = Gatekeeper(case, graph)
+    desk = Gatekeeper(case, graph, rules=rules)
     for gap in gaps(case, graph):
-        if len(case.open_questions()) >= MAX_OPEN:
+        if len([q for q in case.open_questions() if not q["key"].startswith("source:")]) >= MAX_OPEN:
             break
         if any(q["key"] == gap["key"] for q in case.questions):
             continue

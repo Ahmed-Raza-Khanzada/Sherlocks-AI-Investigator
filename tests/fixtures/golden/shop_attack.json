@@ -1,0 +1,34 @@
+{
+  "name": "shop attack (made up)",
+  "about": "A made-up case with two planted contradictions (the FIR's weapon against the MLO's wound; Imran's two accounts of the night), one planted lead (a parcel that waited 19 days before reaching the laboratory) and one name-only mention that must not be merged.",
+  "graph": {
+    "nodes": [
+      {"id": "p1", "kind": "person", "label": "Kamran Aslam", "data": {"seed": true, "cnic": "9999900000011", "father_name": "Aslam"}},
+      {"id": "p2", "kind": "person", "label": "Imran Rashid", "data": {"cnic": "9999900000022", "father_name": "Rashid"}},
+      {"id": "p3", "kind": "person", "label": "Naveed Rafiq", "data": {"cnic": "9999900000033"}}
+    ],
+    "edges": []
+  },
+  "incident": {"date": "2023-03-01", "time": "22:00", "place": "Main Boulevard, Gulberg"},
+  "documents": [
+    {"kind": "fir", "key": "fir:488", "title": "FIR 488/25", "source": "PSRMS",
+     "text": "FIR 488/25, PS Gulberg. Registered 2023-03-02 03:15.\nIncident: 1 March 2023 at about 22:00, outside Asif General Store, Main Boulevard, Gulberg.\nComplainant Asif s/o Rafiq states: Kamran s/o Aslam fired at my brother Naveed with a pistol.\nAccused: Kamran s/o Aslam; Imran s/o Rashid. DNA report of the blood-stained cloth is awaited."},
+    {"kind": "lab", "key": "lab:mlo", "title": "Medico-legal report of Naveed", "source": "Labs",
+     "text": "Medico-legal report of Naveed s/o Rafiq, examined 2023-03-01 23:40.\nInjury 1: incised wound 4 x 1 cm on the right thigh, caused by a sharp-edged weapon. No firearm injury noted.\nParcel P-1 (blood-stained cloth) collected on 2023-03-02. Parcel P-1 sent to the laboratory on 2023-03-21."},
+    {"kind": "upload", "key": "st:1", "title": "161 statement of Imran", "source": "upload",
+     "text": "Statement under section 161 of Imran s/o Rashid, recorded 2023-03-06 by SI Zahid: Main saari raat ghar par tha."},
+    {"kind": "upload", "key": "st:2", "title": "Supplementary statement of Imran", "source": "upload",
+     "text": "Supplementary statement of Imran s/o Rashid, recorded 2023-03-10 by SI Zahid: Main raat 8 baje tak dukaan par tha, phir ghar gaya."}
+  ],
+  "facts": [
+    {"document": "fir:488", "statement": "FIR 488/25 names Kamran Aslam as the accused who fired", "quote": "Kamran s/o Aslam fired at my brother", "pids": ["p1"], "people": ["Kamran Aslam"]}
+  ],
+  "chat": [],
+  "key": {
+    "contradictions": [{"between": ["fir:488", "lab:mlo"]}, {"between": ["st:1", "st:2"]}],
+    "lead": {"kind": "custody_gap"},
+    "culprit": "p1",
+    "same": {"Kamran Aslam": "p1", "Imran Rashid": "p2"},
+    "different": []
+  }
+}

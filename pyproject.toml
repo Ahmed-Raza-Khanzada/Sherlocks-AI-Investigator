@@ -30,6 +30,9 @@ dependencies = [
     "beautifulsoup4>=4.12",
     "uharfbuzz>=0.40",
     "Pillow>=10.0",
+    # The agent teams are LangGraph graphs (src/sherlocks/team). The model still runs on
+    # the police network: LangSmith tracing is switched off in team/runtime.py.
+    "langgraph>=1.0,<2",
 ]
 
 [project.optional-dependencies]

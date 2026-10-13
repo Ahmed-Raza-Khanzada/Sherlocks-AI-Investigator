@@ -202,8 +202,8 @@ def _named(net: PersonNetwork, text: str) -> str | None:
 
 
 class _Check(BaseModel):
-    consistent: bool = Field(description="True when the answer agrees with the officer's statements, the earlier "
-                                         "conversation and the cited facts.")
+    consistent: bool = Field(description="True when the answer agrees with the officer's statements and the "
+                                         "records given.")
     issues: list[str] = Field(default_factory=list, description="Each contradiction or unsupported claim, one sentence.")
 
 
@@ -211,10 +211,17 @@ class _Revision(BaseModel):
     answer: str = Field(description="The corrected answer, same sources in [brackets].")
 
 
-_CHECK_SYSTEM = ("The draft may be in Urdu, Roman Urdu or English. You are the Validator of a police investigation team. Compare the draft answer with what the officer "
-                 "has stated, the earlier conversation and the cited facts. Flag only real problems: a contradiction "
-                 "(another date, place, person or role than stated), a claim with no support in the facts, a person "
-                 "the facts do not mention. Do not flag style.")
+_CHECK_SYSTEM = ("The draft may be in Urdu, Roman Urdu or English. You are the Validator of a police investigation team. Compare the draft answer with what the OFFICER "
+                 "has stated and with the RECORDS given (the records the draft was written from). Flag only real "
+                 "problems: a contradiction with what the officer stated (another date, place, person or role); a "
+                 "claim the records given contradict; a person, number or date the records given do not contain. "
+                 "The assistant's own earlier replies are NOT evidence - they may be wrong - so never flag the draft "
+                 "for differing from them. Do not flag an answer for being short or leaving something out. When you are "
+                 "not sure a claim is unsupported, do not flag it. The new case is only what the officer described: "
+                 "a past FIR's date or place is NOT the new case's - never ask the draft to use one for it, and flag "
+                 "a draft that does. Also flag any use of a person's sect, caste, ethnicity, "
+                 "religion or family name as evidence of anything, and any past record presented as proof about "
+                 "this incident. Do not flag style.")
 
 
 _COUNTING = ("count_cases", "criminals_near", "criminals_all", "graph_stats", "fir_status")
@@ -255,7 +262,8 @@ def _first_part(answer: str) -> str:
     return first[:300]
 
 
-def validate(case: CaseFile, net: PersonNetwork, final: dict[str, Any], llm: Any = None) -> dict[str, Any]:
+def validate(case: CaseFile, net: PersonNetwork, final: dict[str, Any], llm: Any = None,
+             given: Any = None) -> dict[str, Any]:
     """The Answer checker: ``{ok, issues, checked, rules}`` for a draft answer.
 
     Code first - answered what was asked, correct numbers, real and current sources,
@@ -331,13 +339,19 @@ def validate(case: CaseFile, net: PersonNetwork, final: dict[str, Any], llm: Any
         cited = case.citations_in(" ".join([answer] + [e for h in final.get("hypotheses") or [] for e in h.get("evidence") or []]))
         prompt = json.dumps({
             "officer_statements": (notes or {}).get("text", "")[-3000:],
-            "earlier_conversation": [{"q": t["q"][:300], "a": t["a"][:500]} for t in case.conversation[-4:]],
+            # What the officer wrote earlier - their words only. Our own replies are not evidence.
+            "officer_said_earlier": [t["q"][:300] for t in case.conversation[-6:] if t.get("q")],
             "cited_facts": [{"id": c["id"], "text": c["title"], "quote": c.get("quote")} for c in cited][:20],
-            "incident": case.incident, "roles": {net.name(p): r for p, r in case.roles.items()},
+            # The text of each document the draft cites: a claim that cites [D1] is checked against D1 itself.
+            "cited_documents": [{"id": c["id"], "title": c["title"], "text": (case.documents.get(c["id"]) or {}).get("text", "")[:2500]}
+                                for c in cited if c.get("type") == "document"][:4],
+            "records_given": given,
+            "the_new_case_as_the_officer_described_it": case.incident or "not described yet",
+            "roles": {net.name(p): r for p, r in case.roles.items()},
             "draft_answer": answer}, ensure_ascii=False, default=str)
         try:
             check, _ = llm.generate_structured(prompt=prompt, schema=_Check, system=_CHECK_SYSTEM,
-                                               cache_kind="validator", prompt_version="v1")
+                                               cache_kind="validator", prompt_version="v4")
             found = [i for i in check.issues[:4] if i.strip()]
             issues += found
             if found:
@@ -550,6 +564,15 @@ def _take_answer(case: CaseFile, net: PersonNetwork, message: str, q: dict[str, 
     elif key == "incident:what":
         case.set_incident({"offence": text[:200]})
         done.append(f"offence: {text[:80]}")
+    elif key == "case:which":
+        m = re.search(r"(\d{1,5})\s*/\s*(\d{2,4})", text)
+        if m:                           # the officer named the FIR: it is this case
+            case.dialog["case_basis"] = "fir_on_record"
+            case.set_incident({"fir": f"{m.group(1)}/{m.group(2)}"})
+            done.append(f"this case is FIR {m.group(0)}, already on record")
+        else:
+            case.dialog["case_basis"] = "new_matter"
+            done.append("a new matter: the FIRs on file are earlier cases")
     elif key == "incident:fir":
         m = re.search(r"(\d{1,5})\s*/\s*(\d{2,4})", text)
         case.set_incident({"fir": f"{m.group(1)}/{m.group(2)}" if m else text[:60], "police_station": text[:120]})
@@ -678,11 +701,14 @@ def answer_from_knowledge(llm: Any, question: str, language: str, hits: list[Any
         return None, False
 
 
-def run_turn(graph: dict[str, Any], question: str, *, llm: Any = None, history: list[dict] | None = None,
-             case: CaseFile | None = None, agents: Any = None, backend: Any = None,
-             live_calls: int = 0, officer: dict[str, Any] | None = None,
-             on_late: Any = None, settings: Any = None) -> Iterator[dict[str, Any]]:
-    """One chat turn, worked by the Officer team (docs/SHERLOCK_AGENTS.md):
+def rule_turn(graph: dict[str, Any], question: str, *, llm: Any = None, history: list[dict] | None = None,
+              case: CaseFile | None = None, agents: Any = None, backend: Any = None,
+              live_calls: int = 0, officer: dict[str, Any] | None = None,
+              on_late: Any = None, settings: Any = None, ask: dict[str, Any] | None = None) -> Iterator[dict[str, Any]]:
+    """One chat turn on rules (``ask``: the model's reading of the message, when there is one -
+    then the message is not read again by keywords): the fallback of the Officer team's graph when the model is
+    off or not answering (``team/officer_graph.py`` is the turn; see ``run_turn``).
+
 
     corrections and statements (O3) -> O1 understands -> O4 Case briefer's context pack ->
     the toolbox (board, Facts agent, API router, research) and Sherlock's quick view, in
@@ -722,8 +748,9 @@ def run_turn(graph: dict[str, Any], question: str, *, llm: Any = None, history: 
     # O0 Question reader: what is asked (any wording - the model reads it; rules without one).
     from sherlocks.linkgraph import question_reader
 
-    ask = question_reader.read_message(message, net, case, [p for p in case.dialog.get("focus") or []], llm) \
-        if message else {"act": "greeting"}
+    if ask is None:
+        ask = question_reader.read_message(message, net, case, [p for p in case.dialog.get("focus") or []], llm) \
+            if message else {"act": "greeting"}
     intent = ask["act"]
     focus = [p for p in case.dialog.get("focus") or [] if p in net.people]
     yield {"type": "start", "question": message, "people": len(net.people), "targets": [net.name(p) for p in net.seeds()],
@@ -1217,3 +1244,16 @@ def _mentioned_any(net: PersonNetwork, message: str) -> bool:
     from sherlocks.linkgraph.investigator import _mentioned
 
     return bool(_mentioned(net, message))
+
+
+def run_turn(graph: dict[str, Any], question: str, *, llm: Any = None, history: list[dict] | None = None,
+             case: CaseFile | None = None, agents: Any = None, backend: Any = None,
+             live_calls: int = 0, officer: dict[str, Any] | None = None,
+             on_late: Any = None, settings: Any = None) -> Iterator[dict[str, Any]]:
+    """One chat turn, worked by the Officer team as a LangGraph graph
+    (``team/officer_graph.py``, docs/SHERLOCK_AGENTS.md). Yields the same events as ever:
+    ``start``, ``status``, ``agent`` ... and one ``final``."""
+    from sherlocks.team.officer_graph import stream_turn
+
+    yield from stream_turn(graph, question, llm=llm, history=history, case=case, agents=agents, backend=backend,
+                           live_calls=live_calls, officer=officer, on_late=on_late, settings=settings)

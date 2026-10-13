@@ -30,7 +30,7 @@ import json
 import logging
 import re
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -41,7 +41,7 @@ from sherlocks.linkgraph.systems import system_label
 
 logger = logging.getLogger(__name__)
 
-_ID = re.compile(r"\b([GDFLHQ]\d{1,4})\b")
+_ID = re.compile(r"\b([GDFLHQWXK]\d{1,4})\b")
 _ROLE_ORDER = ("accused", "suspect", "complainant", "witness", "victim")
 
 
@@ -271,6 +271,101 @@ def board_sections(case: CaseFile, net: PersonNetwork, graph: dict[str, Any], ll
         "next_steps": list(dict.fromkeys(next_steps))[:10], "audit": audit_summary(case),
         "timeline_board": summary.get("timeline") or [],
         "assessment_model": assessment.get("model"),
+        **casework_sections(case, net),
+    }
+
+
+# What the file report (for court and the case file) leaves out: suspicions, the ranking
+# of hypotheses, views on persons, and leads. Speculation in a court file can do real harm.
+FILE_LEAVES_OUT = ("suspicions", "matrix", "leads", "challenges", "views", "hypotheses", "assessments", "conclusion",
+                   "concerns", "history")
+
+
+def file_version(report: dict[str, Any]) -> dict[str, Any]:
+    """The *file* report from the internal one: the same board version, without what is
+    Sherlock's opinion. The records, statements, contradictions between sources, the
+    presence matrix, the CDR analysis and the evidence register stay."""
+    out = {k: ([] if isinstance(v, list) else None if isinstance(v, dict) else "") if k in FILE_LEAVES_OUT else v
+           for k, v in report.items()}
+    out["kind"] = "file"
+    out["title"] = "Case File Report"
+    if report.get("summary_parts"):
+        from sherlocks.team.report_graph import summary_text
+
+        # The summary without leads, and the lines of inquiry in place of Sherlock's ranking and view.
+        out["summary_parts"] = {**report["summary_parts"], "leads": [], "stands": report["summary_parts"].get("stands_file") or ""}
+        out["executive_summary"] = summary_text(report["summary_parts"], file=True)
+    if report.get("parts"):
+        d = report["parts"].get("D") or {}
+        # Part D keeps the contradictions, as conflicts between sources; the rest is internal only.
+        kept = {k: v for k, v in d.items() if k not in (d.get("internal_only") or [])}
+        annex = {**(report["parts"].get("annex") or {})}
+        annex["index_by_person"] = [{k: v for k, v in row.items() if k not in ("leads", "hypotheses")}
+                                    for row in annex.get("index_by_person") or []]
+        points = [pt for pt in (report["parts"].get("F") or {}).get("open_points") or [] if not str(pt.get("ref")).startswith("K")]
+        out["parts"] = {**report["parts"], "D": kept, "annex": annex,
+                        "F": {**(report["parts"].get("F") or {}), "open_points": points}}
+    return out
+
+
+def casework_sections(case: CaseFile, net: PersonNetwork) -> dict[str, Any]:
+    """The Sherlock team's casework (plan v5), laid out from the board: the hypothesis
+    matrix, every contradiction with both sides quoted, each person's recorded statements
+    and what changed, who was where in the incident window, the leads, the Skeptic's
+    challenges with S1's replies, and the evidence register's custody and pending reports."""
+    from sherlocks.evidence.trust import RANKS
+    from sherlocks.team import matrix as matrix_mod
+
+    def side(x: dict[str, Any]) -> str:
+        return (f"{x.get('said_by') or '-'}: {x.get('value') or ''}" + (f" \"{x['quote'][:140]}\"" if x.get("quote") else "")
+                + f" [{x.get('source')}" + (f" p.{x['page']}" if x.get("page") else "") + "]")
+
+    table = matrix_mod.table(case)
+    found = sorted(case.contradictions.values(), key=lambda x: ({"critical": 0, "major": 1, "minor": 2}.get(x["severity"], 3)))
+    recorded = []
+    for a in case.analysis.values():
+        rows = [case.statements[w] for w in a.get("statements") or [] if w in case.statements]
+        recorded.append({"name": a.get("name"), "role": a.get("role"), "summary": a.get("summary") or "",
+                         "statements": [{"id": w["id"], "kind": w["kind"], "date": w.get("date") or "-",
+                                         "recorded_by": w.get("recorded_by") or "-", "page": w.get("page"),
+                                         "text": w["text"][:400]} for w in rows],
+                         "changes": a.get("changes") or [], "clashes": a.get("clashes") or [],
+                         "relations": a.get("relations") or [], "notes": a.get("notes") or []})
+    analysed = {w for a in case.analysis.values() for w in a.get("statements") or []}
+    loose = [w for w in case.statements.values() if w["id"] not in analysed]
+    if loose:
+        recorded.append({"name": "Other recorded statements", "role": "", "summary": "", "changes": [], "clashes": [],
+                         "relations": [], "notes": [],
+                         "statements": [{"id": w["id"], "kind": w["kind"], "date": w.get("date") or "-",
+                                         "recorded_by": w.get("recorded_by") or "-", "page": w.get("page"),
+                                         "text": f"{w['speaker']} ({w['role']}): {w['text'][:360]}"} for w in loose]})
+    presence = case.presence or {}
+    return {
+        "kind": "internal",
+        "matrix": None if not table else {
+            "hypotheses": table["hypotheses"], "ranking": table["ranking"], "leader": table["leader"], "score": table["score"],
+            "rows": [{"id": r["id"], "text": r["text"][:160], "marks": r["marks"], "reasons": r["reasons"]}
+                     for r in table["rows"]]},
+        "contradictions_found": [{"id": x["id"], "severity": x["severity"], "status": x["status"], "topic": x["topic"],
+                                  "person": x.get("person_name") or "-", "text": x["text"], "first": side(x["a"]),
+                                  "second": side(x["b"]), "settle": x.get("settle") or "-",
+                                  "leads": f"{x['a'].get('source')} ({RANKS.get(x['a'].get('trust'), 'unranked')})",
+                                  "reason": x.get("reason") or ""} for x in found],
+        "recorded": recorded,
+        "presence": {"window": presence.get("window"),
+                     "rows": [{"name": r["name"], "role": r.get("role") or "-",
+                               "cells": [f"{c['text']} [{c['source']}] - {c['note']}" for c in r["cells"]]}
+                              for r in presence.get("rows") or []]} if presence else None,
+        "leads": [{"id": k["id"], "hint": k["hint"], "why": k.get("why") or "", "next_step": k.get("next_step") or "",
+                   "hypothesis": k.get("hypothesis") or "-", "bears": k.get("bears") or "-", "status": k["status"],
+                   "reason": k.get("reason") or ""} for k in case.leads.values() if not k.get("silent")],
+        "challenges": [{"kind": c["kind"], "hypothesis": c.get("hypothesis"), "text": c["text"],
+                        "verdict": c.get("verdict") or "unanswered", "note": c.get("note") or ""} for c in case.challenges],
+        "custody": case.register.get("custody") or [],
+        "pending_reports": case.register.get("pending") or [],
+        "register_records": [{"doc": d, "record": c["record"], "title": c["title"], "fields": len(c.get("fields") or []),
+                              "background": bool(c.get("background"))}
+                             for d, c in (case.register.get("cards") or {}).items()],
     }
 
 

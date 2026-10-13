@@ -41,10 +41,13 @@ from sherlocks.evidence.guard import DATA_NOT_INSTRUCTIONS
 logger = logging.getLogger(__name__)
 
 TEAM = {"S1 Sherlock", "S2 Summarizer", "S4 Questioner", "Q1 Gatekeeper", "A4 Dossier agent", "S3 Report writer",
-        "Sherlock team"}
+        "Sherlock team", "S5 Claim extractor", "S6 Contradiction finder", "S7 Statement analyst", "S8 Lead spotter",
+        "S9 Skeptic", "S10 Fact collector", "A5 Entity resolver", "A2 Card reader", "Q3 Insight desk",
+        "Presence matrix", "P1 Report editor"}
 # Entries that never wake the Sherlock team: its own output and bookkeeping.
 QUIET = {"turn", "desk", "view", "followup", "call", "report", "agenda", "dossier", "summary", "gaps", "hypothesis",
-         "assessment", "attempt", "board"}
+         "assessment", "attempt", "board", "claim", "contradiction", "lead", "entity", "register", "matrix",
+         "challenge", "presence", "analysis", "insight", "recorded"}
 FACTS_TO_WAKE = 15
 DEBOUNCE_S = 2.0
 
@@ -147,7 +150,14 @@ class _Assessment(BaseModel):
 _SYSTEM = ("You are Sherlock, the lead detective, working a case from its case board. Update your hypotheses: keep "
            "each one's id when it is the same idea, change its status only when the evidence moved, and cite the ids "
            "for and against it - only ids that are on the board. Keep facts, inferences and speculation apart. A "
-           "tower contact is not presence; an unconfirmed CDR owner is a number, not a person. Use the answers the "
+           "tower contact is not presence; an unconfirmed CDR owner is a number, not a person. Write in the plain "
+           "words an investigating officer uses - never network-analysis words (broker, gatekeeper, cluster, hub, "
+           "centrality): say what the records show. A SIM registered in another person's name is common and is not "
+           "suspicious by itself. Call records never show what was said. The case you are solving is the NEW case, "
+           "as the officer described it (new_case): the FIRs already on file are the people's past records - other "
+           "cases. Never take a past FIR's date, place or offence as the new case's; hypotheses are about the new "
+           "case, and when the officer has not described it yet, say what must be asked instead of building a theory "
+           "on an old FIR. Use the answers the "
            "officer already gave (known_answers) - never ask them again. Check your quick views given in chat. "
            + DATA_NOT_INSTRUCTIONS)
 
@@ -181,18 +191,29 @@ def assess(case: Any, graph: dict[str, Any], net: Any, llm: Any = None) -> dict[
     if llm is not None:
         pack = build(case, graph, net, " ".join(h["statement"] for h in case.hypotheses.values())[:400] or "the case",
                      people=list(case.roles) or net.seeds(), chars=12000)
-        payload = {"summary": (case.summary or {}).get("text"), "timeline": (case.summary or {}).get("timeline", [])[:40],
+        from sherlocks.linkgraph.relevance import the_new_case
+
+        payload = {"new_case": the_new_case(case), "summary": (case.summary or {}).get("text"), "timeline": (case.summary or {}).get("timeline", [])[:40],
                    "facts": [{"id": f["id"], "fact": f["statement"][:220], "tier": f.get("tier"), "trust": f.get("trust")}
                              for f in case.live_facts()][-80:],
                    "hypotheses": [{k: h.get(k) for k in ("id", "statement", "status", "confidence", "for", "against")}
                                   for h in case.hypotheses.values()],
                    "conflicts": pack.get("conflicts"), "officer_said": pack.get("statements"),
                    "known_answers": known_answers(case),
+                   "officer_asked_you": (case.dialog.get("asked_of_sherlock") or [])[-5:],
+                   # What the specialists found: contradictions, statement changes, and leads
+                   # (a lead is a hint to weigh, never evidence for or against).
+                   "contradictions_found": [{"id": x["id"], "severity": x["severity"], "status": x["status"],
+                                             "text": x["text"]} for x in case.contradictions.values()][-20:],
+                   "statement_analysis": [{"person": a.get("name"), "summary": a.get("summary"),
+                                           "statements": a.get("statements")} for a in case.analysis.values()][:10],
+                   "leads_not_evidence": [{"id": k["id"], "hint": k["hint"], "status": k["status"]}
+                                          for k in case.leads.values()][-15:],
                    "quick_views": [{"id": v["id"], "question": v["question"], "view": v["view"]} for v in case.views
                                    if v.get("status") == "given"][-6:]}
         try:
             got, _ = llm.generate_structured(prompt=json.dumps(payload, ensure_ascii=False, default=str), schema=_Assessment,
-                                             system=_SYSTEM, cache_kind="sherlock_assessment", prompt_version="v1",
+                                             system=_SYSTEM, cache_kind="sherlock_assessment", prompt_version="v3",
                                              max_tokens=2500)
             out = got.model_dump()
         except Exception as exc:  # noqa: BLE001 - the rules below still assess
@@ -233,14 +254,24 @@ def assess(case: Any, graph: dict[str, Any], net: Any, llm: Any = None) -> dict[
 def rank_gaps(case: Any, graph: dict[str, Any]) -> list[dict[str, Any]]:
     """S4: the gaps that would move the case most - the board's rules first, then
     Sherlock's own questions - each through the Gatekeeper."""
-    from sherlocks.evidence.question_desk import Gatekeeper
+    from sherlocks.evidence.question_desk import Gatekeeper, free_key
     from sherlocks.evidence.questioner import ask_gaps, gaps
 
     with case.acting("S4 Questioner"):          # the team's own writes: they never wake it again
         ask_gaps(case, graph)
         desk = Gatekeeper(case, graph)
         ranked = [{"key": g["key"], "text": g["text"], "why": "the board needs it"} for g in gaps(case, graph)]
-        for item in ((case.assessment or {}).get("questions") or [])[:4]:
+        wanted = ((case.assessment or {}).get("questions") or [])[:2]
+        keep = {free_key(str(i.get("text") if isinstance(i, dict) else i)) for i in wanted}
+        with case._lock:
+            for old in case.questions:
+                # Written from an older board (before the officer said what the case is, say) and never
+                # put to the officer: withdrawn, so a stale question is not asked after its answer.
+                if old["status"] == "open" and old["key"].startswith("free:") and old["key"] not in keep \
+                        and not old.get("times"):
+                    old["status"], old["withdrawn"] = "withdrawn", "replaced by Sherlock's newer questions"
+                    case._bump("question", old["id"])
+        for item in wanted:
             text, priority = (item.get("text"), item.get("priority")) if isinstance(item, dict) else (item, "orange")
             q = desk.admit({"text": text, "priority": priority}, by="S4 Questioner")
             decision = case.desk[-1] if case.desk else {}
@@ -297,6 +328,9 @@ class Casework:
             return                               # never woken by its own writes
         if change["entry"] == "batch":
             board.batches.append(change)
+        elif change["entry"] == "agenda" and change.get("id") == "sherlock" and any(
+                a["task"] == "sherlock" for a in board.case.agenda):
+            pass                                 # work planned for Sherlock (the officer asked): run
         elif change["entry"] in QUIET:
             return
         self._schedule(board)
@@ -342,7 +376,7 @@ class Casework:
             board.running = True
         try:
             self.work(board)
-        except Exception:  # noqa: BLE001 - background work must not kill the server
+        except Exception:
             logger.exception("Sherlock team run on %s failed", board.run_id)
         finally:
             with board.lock:
@@ -378,16 +412,16 @@ class Casework:
                 elif task == "incident:ps" and case.incident:
                     case.incident.pop("nearest_ps", None)     # found again when the officer pins the new place
                 # "summary" and "gaps" are part of every Sherlock team run below.
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("Agenda task %s on %s failed", task, board.run_id)
             case.done(task)
             done.append(task)
         return done
 
     def work(self, board: Board, *, force: bool = False) -> dict[str, Any] | None:
-        """One Sherlock team run: the agenda, then S2 -> S1 -> S4. Skipped when nothing
+        """One Sherlock team run: the agenda, then the team's graph (S10 -> S5 -> S6, S7, S8 ->
+        S2 -> S1 -> S9 -> S1 -> S4 -> Q1, Q3). Skipped when nothing
         new came from outside (unless ``force``) or the case's run budget is used up."""
-        from sherlocks.evidence import dossiers
         from sherlocks.linkgraph.network import PersonNetwork
 
         case = board.case
@@ -405,13 +439,20 @@ class Casework:
         graph = board.graph()
         net = PersonNetwork(graph)
         seq = case.change_seq
-        with case.acting("S2 Summarizer"):
-            case.set_summary(summarize(case, graph, net))
-        dossiers.refresh(case, net)
         llm = self.llm() if self.llm else None
-        assessment = assess(case, graph, net, llm)
-        rank_gaps(case, graph)
+        # One run of the team: the LangGraph graph in team/sherlock_graph.py.
+        from sherlocks.team.sherlock_graph import run_team
+
+        run_team(case, graph, net, llm, settings=self.settings, reason=reason)
+        assessment = case.assessment
         case.done("sherlock")
+        # The Report team prebuilds the report for this board version, so a download is instant.
+        try:
+            from sherlocks.team.report_graph import build_report
+
+            build_report(case, graph, llm=llm, run={"id": board.run_id})
+        except Exception:
+            logger.exception("Report team on %s failed", board.run_id)
         case.dialog["sherlock_runs"] = runs + 1
         case.dialog["sherlock_seq"] = board.last_seq = max(seq, board.last_seq)
         board.batches = [b for b in board.batches if b["seq"] > board.last_seq]

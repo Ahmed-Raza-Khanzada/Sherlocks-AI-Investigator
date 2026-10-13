@@ -38,9 +38,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from sherlocks.evidence.guard import DATA_NOT_INSTRUCTIONS
 from sherlocks.linkgraph.compare import compare_people
 from sherlocks.linkgraph.dossier import person_facts
-from sherlocks.evidence.guard import DATA_NOT_INSTRUCTIONS
 from sherlocks.linkgraph.network import PersonNetwork
 from sherlocks.linkgraph.normalize import name_key, sound_key, sound_shape
 from sherlocks.linkgraph.scenarios import SCENARIOS, TIERS, find_scenarios
@@ -56,7 +56,9 @@ AGENT_OF = {"fetch_fir": "API agent", "fetch_lab_reports": "API agent", "fetch_c
             "lookup": "API agent", "cdr_lookup": "API agent", "evidence": "Document agent",
             "read_document": "Document agent", "search_evidence": "Document agent", "incident": "Case board",
             "uploads": "CDR agent", "board": "Board reader", "dossier": "A4 Dossier agent", "chat_memory": "Chat memory",
-            "cdr_query": "CDR query", "api_router": "API router"}
+            "cdr_query": "CDR query", "api_router": "API router", "statements": "Statements",
+            "presence": "Presence matrix", "evidence_register": "Evidence register", "contradictions": "S6 Contradiction finder",
+            "case_leads": "S8 Lead spotter", "hypotheses": "S1 Sherlock"}
 _RESULT_CHARS = 3500
 
 
@@ -312,53 +314,72 @@ class _Tools:
         tools = self._graph_tools(scenarios)
         if self.case is not None:
             tools.update({
-                "evidence": ("Case documents read so far (FIR files, lab reports, CRO dossiers), their quoted facts "
-                             "and the people found in them. args: who?, kind? (fir|lab|cro)", self.evidence),
+                "evidence": (("Case documents read so far (FIR files, lab reports, CRO dossiers), their quoted facts "
+                             "and the people found in them. args: who?, kind? (fir|lab|cro)"), self.evidence),
                 "read_document": ("One document in full: summary, facts with quotes, people, text. args: id (e.g. D2)",
                                   self.read_document),
-                "search_evidence": ("Lines of any document containing these words (a number, name, IMEI, plate). "
-                                    "args: text", self.search_evidence),
+                "search_evidence": (("Lines of any document containing these words (a number, name, IMEI, plate). "
+                                    "args: text"), self.search_evidence),
             })
         if self.agents is not None and self.live_left > 0:
             tools.update({
-                "fetch_fir": ("LIVE: fetch and read the FIR file (complainant, accused, witnesses, case diaries). "
-                              "args: fir ('604/2025'), ps_id?", self.fetch_fir),
-                "fetch_lab_reports": ("LIVE: DNA / chemical / FSL / medico-legal reports filed for a FIR, read. "
-                                      "args: fir, ps_id?", self.fetch_lab_reports),
-                "fetch_cro": ("LIVE: a criminal's CRO dossier (particulars, poses, fingerprints), read. "
-                              "args: cro_no or who", self.fetch_cro),
+                "fetch_fir": (("LIVE: fetch and read the FIR file (complainant, accused, witnesses, case diaries). "
+                              "args: fir ('604/2025'), ps_id?"), self.fetch_fir),
+                "fetch_lab_reports": (("LIVE: DNA / chemical / FSL / medico-legal reports filed for a FIR, read. "
+                                      "args: fir, ps_id?"), self.fetch_lab_reports),
+                "fetch_cro": (("LIVE: a criminal's CRO dossier (particulars, poses, fingerprints), read. "
+                              "args: cro_no or who"), self.fetch_cro),
             })
         if self.backend is not None and self.live_left > 0:
-            tools["lookup"] = ("LIVE: ask ONE police system about one person, to verify something. args: system "
+            tools["lookup"] = (("LIVE: ask ONE police system about one person, to verify something. args: system "
                                "(nadra, cro, psrms, hotel_eye, prvs, subscriber, sbvs, dls, tracs, arms, watchlist, "
                                "cfms, evs, hope, hrmis, old_tenant, trust, milap, excise, avlc, igp_cms, pfc), "
-                               "who | cnic | phone", self.lookup)
+                               "who | cnic | phone"), self.lookup)
         if self._cdr_server() is not None and self.live_left > 0:
-            tools["cdr_lookup"] = ("LIVE: the CDR server's lookups: provider 'imei' (args: imei) -> the phone and owner "
+            tools["cdr_lookup"] = (("LIVE: the CDR server's lookups: provider 'imei' (args: imei) -> the phone and owner "
                                    "behind a device; 'nearest_ps' (args: lat, lon) -> nearest police station; or any "
-                                   "police provider by cnic/phone. args: provider, imei?, lat?, lon?, cnic?, phone?",
+                                   "police provider by cnic/phone. args: provider, imei?, lat?, lon?, cnic?, phone?"),
                                    self.cdr_lookup)
         if self.case is not None:
             tools.update({
-                "board": ("Board reader: what the case board holds on a question - facts with tier and source, the "
-                          "officer's statements, Sherlock's hypotheses. args: query, who?", self.board),
-                "dossier": ("Everything the case holds on one person in one card: identity, role, FIRs, links, documents, "
-                            "statements, CDRs, open hypotheses. args: who", self.dossier),
+                "board": (("Board reader: what the case board holds on a question - facts with tier and source, the "
+                          "officer's statements, Sherlock's hypotheses. args: query, who?"), self.board),
+                "dossier": (("Everything the case holds on one person in one card: identity, role, FIRs, links, documents, "
+                            "statements, CDRs, open hypotheses. args: who"), self.dossier),
                 "chat_memory": ("What the officer said in this chat about something, with the turn. args: query",
                                 self.chat_memory),
-                "cdr_query": ("The CDR team's facts for a person or a number: calls, towers, distances, IMEIs, with row "
-                              "references. args: who | number", self.cdr_query),
+                "cdr_query": (("The CDR team's facts for a person or a number: calls, towers, distances, IMEIs, with row "
+                              "references. args: who | number"), self.cdr_query),
+            })
+        if self.case is not None:
+            tools.update({
+                "statements": (("Statements tool: every recorded statement (FIR account, 161, 164, interrogation) and "
+                               "claim by or about a person, in order, with what changed between versions. args: who?"),
+                               self.statements),
+                "presence": (("Presence matrix: who was where in the incident window - CDR, hotel, statements, each "
+                             "cell saying which kind of evidence it is. args: who?"), self.presence),
+                "evidence_register": (("Evidence register: what every record (FIR, MLO, postmortem, DNA, chemical, "
+                                      "forensic, recovery memo, site plan) says, by person, topic, record or exhibit, "
+                                      "with chain of custody and pending reports. args: who?, topic? (injury, weapon, "
+                                      "time, place, recovery, identity, sample, custody, status), record?, exhibit?"),
+                                      self.evidence_register),
+                "contradictions": (("Contradictions the team found between sources (X#), both sides quoted, with "
+                                   "severity, status and what would settle each. args: who?"), self.contradictions),
+                "case_leads": (("Leads being followed (K#): the hint, why it matters, the next step, its status. A lead "
+                               "is not evidence. args: none"), self.case_leads),
+                "hypotheses": (("Sherlock's hypothesis matrix: each hypothesis against each piece of evidence, the "
+                               "ranking by evidence against, and the Skeptic's challenges. args: none"), self.hypotheses),
             })
         if self.backend is not None and self.live_left > 0:
-            tools["api_router"] = ("LIVE: ask the police systems that hold a topic about one person - the catalog picks "
+            tools["api_router"] = (("LIVE: ask the police systems that hold a topic about one person - the catalog picks "
                                    "the systems (identity, work, vehicle, phone, address, family, record, complaint, "
-                                   "hotel). args: who, topic", self.api_router)
+                                   "hotel). args: who, topic"), self.api_router)
         if self.case is not None:
-            tools["incident"] = ("The incident as the officer gave it (place pinned on the map, date, time, FIR), the "
-                                 "nearest police station, and what the uploaded CDRs show near it. args: none",
+            tools["incident"] = (("The incident as the officer gave it (place pinned on the map, date, time, FIR), the "
+                                 "nearest police station, and what the uploaded CDRs show near it. args: none"),
                                  self.incident)
-            tools["uploads"] = ("Files the officer uploaded (CDRs, tower dumps, documents, photos): what each shows, "
-                                "numbers on the graph, records near the incident. args: none", self.uploads)
+            tools["uploads"] = (("Files the officer uploaded (CDRs, tower dumps, documents, photos): what each shows, "
+                                "numbers on the graph, records near the incident. args: none"), self.uploads)
         return tools
 
     # -- the CDR agent and the case board ------------------------------------------------
@@ -470,9 +491,49 @@ class _Tools:
         return {"topic": topic, "results": out, "already_searched": planned["skipped"],
                 "result": None if any(r["found"] for r in out) else "checked, nothing found"}
 
+    def statements(self, args: dict[str, str]) -> dict:
+        from sherlocks.team import statements
+
+        return statements.of(self.case, self.net, args.get("who") or None)
+
+    def presence(self, args: dict[str, str]) -> dict:
+        from sherlocks.team import presence
+
+        return presence.lookup(self.case, self.net, args.get("who") or None)
+
+    def evidence_register(self, args: dict[str, str]) -> dict:
+        from sherlocks.team import register
+
+        return register.lookup(self.case, self.net, person=args.get("who") or None, topic=args.get("topic") or None,
+                               record=args.get("record") or None, exhibit=args.get("exhibit") or None)
+
+    def contradictions(self, args: dict[str, str]) -> dict:
+        from sherlocks.team import contradictions
+
+        pids = [self._who(args)] if args.get("who") else None
+        found = contradictions.about(self.case, pids, only_open=False)
+        return {"count": len(found), "empty": not found,
+                "contradictions": [{k: x.get(k) for k in ("id", "topic", "person_name", "severity", "status", "text",
+                                                          "settle", "a", "b", "reason")} for x in found[:20]]}
+
+    def case_leads(self, _: dict[str, str]) -> dict:
+        leads = list(self.case.leads.values())
+        return {"count": len(leads), "empty": not leads, "note": "A lead is a hint to check, never evidence.",
+                "leads": [{k: lead.get(k) for k in ("id", "hint", "why", "next_step", "hypothesis", "bears", "status",
+                                                    "reason")} for lead in leads[:25]]}
+
+    def hypotheses(self, _: dict[str, str]) -> dict:
+        from sherlocks.team import matrix
+
+        table = matrix.table(self.case)
+        return table or {"empty": True, "hypotheses": [{k: h.get(k) for k in ("id", "statement", "status", "confidence",
+                                                                             "tier")}
+                                                       for h in self.case.hypotheses.values() if not h.get("stale")]}
+
     def _graph_tools(self, scenarios: str) -> dict[str, tuple[str, Callable[[dict[str, str]], dict]]]:
         return {
-            "findings": (f"Scenario findings (patterns found by rule). args: scenario? (one of: {scenarios}), who?",
+            "findings": (f"Scenario findings (patterns found by rule) across the whole case. args: scenario? (one of: "
+                         f"{scenarios}), who? (only to narrow to one person - leave out for the whole case)",
                          self.findings_tool),
             "person": ("Everything known about one person, each fact with its source. args: who", self.person),
             "neighbours": ("Who one person is directly linked to, and how. args: who", self.neighbours),

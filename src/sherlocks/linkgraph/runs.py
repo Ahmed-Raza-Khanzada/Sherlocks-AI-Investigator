@@ -519,19 +519,17 @@ class RunManager:
 
     def _write_report(self, graph: dict[str, Any], case: CaseFile, run_id: str | None,
                       run: dict[str, Any] | None) -> dict[str, Any]:
-        """S3: bring Sherlock's assessment up to date (within ``report_wait_s``), lay the
-        board out, check it, keep it with the board version it was built from."""
-        from sherlocks.evidence.case_report import assemble, check_report
+        """Bring Sherlock's assessment up to date (within ``report_wait_s``), then the Report
+        team (P1-P6, ``team/report_graph.py``) writes the report from one board version,
+        checks it and keeps it with that version."""
+        from sherlocks.team.report_graph import build_report
 
         board = self.casework.boards.get(run_id) if run_id else None
         if board is not None and board.case is case:
             self.casework.bring_up_to_date(board, timeout=self.settings.evidence.report_wait_s)
-        report = assemble(graph, case, llm=self._llm(), run=run)
-        report["checked"] = check_report(report, case)
-        with case.acting("S3 Report writer"):
-            case.set_report(report, "ready")
-        report["saved_at_version"] = case.version
-        return report
+            if self._report_current(case):            # the team prebuilt it at the end of that run
+                return case.report
+        return build_report(case, graph, llm=self._llm(), run=run)
 
     @staticmethod
     def _report_current(case: CaseFile) -> bool:
@@ -541,9 +539,13 @@ class RunManager:
         return at is not None and not [c for c in case.changes if c["version"] > at and c["entry"] not in (
             "report", "followup", "view", "call", "desk")]
 
-    def report_pdf(self, graph: dict[str, Any], run_id: str | None = None, *, rebuild: bool = False) -> bytes:
+    def report_pdf(self, graph: dict[str, Any], run_id: str | None = None, *, rebuild: bool = False,
+                   version: str = "internal") -> bytes:
         """The case report PDF: Sherlock's full, current assessment. Kept per board
-        version - a newer board means a new report (``rebuild`` forces one)."""
+        version - a newer board means a new report (``rebuild`` forces one). ``version``
+        "file" is the report for court and the case file: the same board version, without
+        suspicions, the hypothesis ranking, views on persons and leads."""
+        from sherlocks.evidence.case_report import file_version
         from sherlocks.evidence.report_pdf import render
 
         case = self.case_of(graph, run_id)
@@ -555,7 +557,7 @@ class RunManager:
                 run.setdefault("graph", graph)["case"] = case.to_dict()
                 self.store.save(run)
                 self.save_board(run_id, case)
-        return render(report, case, graph, self.images)
+        return render(file_version(report) if version == "file" else report, case, graph, self.images)
 
     def live(self, run_id: str) -> RunHandle | None:
         """The in-memory handle of a run this process holds, for streaming it."""

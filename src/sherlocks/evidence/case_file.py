@@ -9,7 +9,10 @@ report is written from it. Everything in it is citable:
 * ``F12`` - a fact, always with the verbatim ``quote`` it rests on and the document it
   came from;
 * ``L4``  - an evidence link: a person of the graph found in a document by CNIC, phone,
-  IMEI, plate or name, with the line that shows it.
+  IMEI, plate or name, with the line that shows it;
+* ``W3``  - a recorded statement (complainant, 161, 164, interrogation), with its speaker;
+* ``X2``  - a contradiction between two claims, both sides quoted;
+* ``K5``  - a lead: a hint worth following, with its next step and status.
 
 It is also the **case board** every agent shares. The rules that keep it trustworthy:
 
@@ -45,10 +48,12 @@ from typing import Any
 
 _MAX_TEXT = 60_000
 _SPACE = re.compile(r"\s+")
-CITATION = re.compile(r"\b([DFLHQ]\d{1,4})\b")
+CITATION = re.compile(r"\b([DFLHQWXK]\d{1,4})\b")
 TIERS = ("fact", "inference", "speculation")
 # Trust rank of a source (1 = most trusted). See trust.py for how conflicts are settled.
-TRUST_SYSTEM, TRUST_DOCUMENT, TRUST_OFFICER, TRUST_DERIVED, TRUST_UNVERIFIED = 1, 2, 3, 4, 5
+# A recorded statement (161, 164, interrogation) is a reliable record that it was SAID, not
+# that it is true: it ranks below the officer's own word and above what we derive.
+TRUST_SYSTEM, TRUST_DOCUMENT, TRUST_OFFICER, TRUST_RECORDED, TRUST_DERIVED, TRUST_UNVERIFIED = 1, 2, 3, 4, 5, 6
 _MAX_CHANGES = 3000
 
 KIND_LABELS = {"fir": "FIR document", "lab": "Forensic / medical report", "cro": "CRO dossier",
@@ -128,6 +133,20 @@ class CaseFile:
         self.agenda: list[dict[str, Any]] = []            # background work still to do
         self.changes: list[dict[str, Any]] = []           # every change, with agent and event
         self.change_seq = 0
+        # The Sherlock team's casework (plan v5).
+        self.statements: dict[str, dict[str, Any]] = {}       # W#: recorded statements, by speaker
+        self.claims: dict[str, dict[str, Any]] = {}           # C#: who said what, about whom, when, where
+        self.contradictions: dict[str, dict[str, Any]] = {}   # X#: two claims that disagree
+        self.leads: dict[str, dict[str, Any]] = {}            # K#: hints, with next step and status
+        self.entities: dict[str, dict[str, Any]] = {}         # A5: a mention -> same / maybe / different
+        self.register: dict[str, Any] = {"cards": {}, "pending": [], "custody": []}   # S10
+        self.matrix: dict[str, Any] | None = None             # S1: evidence x hypothesis
+        self.challenges: list[dict[str, Any]] = []            # S9: the Skeptic's, and S1's replies
+        self.presence: dict[str, Any] | None = None           # who was where in the incident window
+        self.analysis: dict[str, dict[str, Any]] = {}         # S7: each person's versions
+        self.insights: list[dict[str, Any]] = []              # Q3: findings told to the officer
+        self.claimed: dict[str, int] = {}                     # source id -> board version S5 read it at
+        self.traces: list[dict[str, Any]] = []                # how the agents worked on each question (team/trace.py)
 
     # -- writing -----------------------------------------------------------------------
 
@@ -199,7 +218,7 @@ class CaseFile:
         for fn in list(self._listeners):
             try:
                 fn(change)
-            except Exception:  # noqa: BLE001 - a listener must never break a write
+            except Exception:
                 import logging
 
                 logging.getLogger(__name__).exception("Case board listener failed")
@@ -373,6 +392,13 @@ class CaseFile:
                     q["answer_turn"] = len(self.conversation) + 1
                     self._bump("question", q["id"])
 
+    def add_trace(self, trace: dict[str, Any], keep: int = 30) -> None:
+        """The trace of one chat turn (which agent did what). Not part of the board's version:
+        it describes the work, it is not evidence."""
+        with self._lock:
+            self.traces.append(trace)
+            del self.traces[:-keep]
+
     def open_questions(self) -> list[dict[str, Any]]:
         with self._lock:
             return [q for q in self.questions if q["status"] == "open"]
@@ -536,7 +562,10 @@ class CaseFile:
     def log_call(self, call: dict[str, Any]) -> None:
         """One live call to a police system or the CDR server, for the audit trail."""
         with self._lock:
-            self.calls.append({**call, "agent": call.get("agent") or self.current_agent(), "at": _now()})
+            seq = int(self.dialog.get("call_seq") or 0) + 1
+            self.dialog["call_seq"] = seq
+            self.calls.append({"id": f"call {seq}", **call, "agent": call.get("agent") or self.current_agent(),
+                               "at": _now()})
             del self.calls[:-2000]
             self._bump("call", call.get("system"))
 
@@ -553,6 +582,121 @@ class CaseFile:
             self.agenda = [a for a in self.agenda if a["task"] != task]
             if len(self.agenda) != before:
                 self._bump("agenda", task)
+
+
+    # -- plan v5: statements, claims, contradictions, leads, the matrix -------------------
+
+    def _entry(self, store: dict[str, dict[str, Any]], prefix: str, entry: str, key: str, data: dict[str, Any],
+               *, keep: tuple[str, ...] = ()) -> str:
+        """Add an entry under a stable ``key`` (so a re-run updates it and never makes a
+        second one), or update the one already there. ``keep``: fields a re-run must not
+        reset (a status the officer's answer set)."""
+        with self._lock:
+            old = next((e for e in store.values() if e.get("key") == key), None)
+            if old is not None:
+                held = {k: old[k] for k in keep if k in old}
+                changed = any(old.get(k) != v for k, v in data.items() if k not in keep)
+                old.update({**data, **held, "updated_at": _now()})
+                if changed:
+                    self._bump(entry, old["id"])
+                return old["id"]
+            ref = f"{prefix}{len(store) + 1}"
+            store[ref] = {"id": ref, "key": key, **data, "agent": self.current_agent(), "event": self.current_event(),
+                          "at": _now(), "board_version": self.version}
+            self._bump(entry, ref)
+            return ref
+
+    def add_statement(self, doc_id: str, *, speaker: str, role: str, kind: str, text: str, date: str | None = None,
+                      recorded_by: str = "", page: int | None = None, pid: str | None = None,
+                      father: str = "") -> str | None:
+        """A recorded statement ``W#``: what a complainant, witness or accused said, as
+        the record has it. It proves that it was said - not that it is true."""
+        text = squash(text)
+        doc = self.documents.get(doc_id)
+        if doc is None or len(text) < 12 or not quote_in(text[:200], doc["text"]):
+            return None
+        key = f"{doc_id}:{squash(speaker).lower()}:{kind}:{date or ''}:{text[:60].lower()}"
+        return self._entry(self.statements, "W", "recorded", key, {
+            "doc": doc_id, "speaker": squash(speaker)[:120], "role": role, "kind": kind, "date": date,
+            "recorded_by": squash(recorded_by)[:120], "page": page, "pid": pid, "text": text[:4000],
+            "father": squash(father)[:80]})
+
+    def add_claim(self, source: str, *, said_by: str, about: str, topic: str, value: str, quote: str,
+                  when_from: str | None = None, when_to: str | None = None, where: str = "",
+                  tolerance_min: int = 0, trust: int = TRUST_DOCUMENT, said_pid: str | None = None,
+                  about_pid: str | None = None, about_state: str = "maybe", page: int | None = None,
+                  certainty: str = "stated", event: str = "", background: bool = False, kind: str = "record") -> str:
+        key = f"{source}:{squash(about).lower()}:{topic}:{squash(value).lower()[:80]}:{when_from or ''}"
+        return self._entry(self.claims, "C", "claim", key, {
+            "source": source, "said_by": squash(said_by)[:120], "said_pid": said_pid, "about": squash(about)[:120],
+            "about_pid": about_pid, "about_state": about_state, "topic": topic, "value": squash(value)[:300],
+            "when_from": when_from, "when_to": when_to, "where": squash(where)[:160], "tolerance_min": tolerance_min,
+            "quote": squash(quote)[:400], "trust": trust, "page": page, "certainty": certainty,
+            "occasion": squash(event)[:80], "background": background, "kind": kind})
+
+    def set_contradiction(self, key: str, data: dict[str, Any]) -> str:
+        """``X#``. A re-run keeps the status an answer gave it (explained, resolved)."""
+        return self._entry(self.contradictions, "X", "contradiction", key, {"status": "open", **data},
+                           keep=("status", "explained_by"))
+
+    def set_lead(self, key: str, data: dict[str, Any]) -> str:
+        return self._entry(self.leads, "K", "lead", key, {"status": "open", **data}, keep=("status", "reason"))
+
+    def move(self, ref: str, status: str, reason: str = "") -> dict[str, Any] | None:
+        """Change the status of a contradiction or a lead, with why (an answer, a record)."""
+        with self._lock:
+            entry = self.contradictions.get(ref) or self.leads.get(ref)
+            if entry is None or entry.get("status") == status:
+                return entry
+            entry.setdefault("trail", []).append({"from": entry.get("status"), "to": status, "why": reason[:300],
+                                                   "at": _now()})
+            entry["status"], entry["reason"], entry["updated_at"] = status, reason[:300], _now()
+            self._bump("contradiction" if ref in self.contradictions else "lead", ref)
+            return entry
+
+    def set_entity(self, key: str, data: dict[str, Any]) -> str:
+        return self._entry(self.entities, "E", "entity", key, data, keep=("decided",))
+
+    def set_card(self, doc_id: str, card: dict[str, Any]) -> None:
+        """S10: the typed card of one record (FIR, MLO, DNA...), every field with its quote."""
+        with self._lock:
+            self.register.setdefault("cards", {})[doc_id] = {**card, "doc": doc_id, "at": _now()}
+            self._bump("register", doc_id)
+
+    def set_register(self, *, pending: list[dict[str, Any]], custody: list[dict[str, Any]]) -> None:
+        with self._lock:
+            if self.register.get("pending") != pending or self.register.get("custody") != custody:
+                self.register["pending"], self.register["custody"] = pending, custody
+                self._bump("register", "S10")
+
+    def set_matrix(self, matrix: dict[str, Any]) -> None:
+        with self._lock:
+            self.matrix = {**matrix, "at": _now(), "board_version": self.version}
+            self._bump("matrix", "S1")
+
+    def set_challenges(self, challenges: list[dict[str, Any]]) -> None:
+        with self._lock:
+            self.challenges = [{**c, "at": c.get("at") or _now()} for c in challenges][-40:]
+            self._bump("challenge", "S9")
+
+    def set_presence(self, presence: dict[str, Any]) -> None:
+        with self._lock:
+            self.presence = {**presence, "at": _now(), "board_version": self.version}
+            self._bump("presence", "matrix")
+
+    def set_analysis(self, pid: str, analysis: dict[str, Any]) -> None:
+        with self._lock:
+            self.analysis[pid] = {**analysis, "at": _now()}
+            self._bump("analysis", pid)
+
+    def tell(self, ref: str, text: str, *, turn: int, state: str = "") -> dict[str, Any]:
+        """Q3's ledger: a finding told to the officer, so it is never told twice."""
+        with self._lock:
+            told = {"ref": ref, "state": state, "text": text[:1200], "turn": turn, "at": _now()}
+            self.insights.append(told)
+            del self.insights[:-300]
+            self._bump("insight", ref)
+            return told
 
     # -- reading -----------------------------------------------------------------------
 
@@ -592,6 +736,18 @@ class CaseFile:
                 h = self.hypotheses[ref]
                 return {"id": ref, "type": "hypothesis", "title": h["statement"], "quote": f"{h['status']}, {h['confidence']}",
                         "doc": None, "source": "Sherlock's assessment"}
+            if ref.startswith("W") and ref in self.statements:
+                w = self.statements[ref]
+                return {"id": ref, "type": "statement", "title": f"{w['speaker']} ({w['role']}, {w['kind']})",
+                        "quote": w["text"][:400], "doc": w["doc"], "source": self.documents[w["doc"]]["title"]}
+            if ref.startswith("X") and ref in self.contradictions:
+                x = self.contradictions[ref]
+                return {"id": ref, "type": "contradiction", "title": x.get("text") or "", "doc": None,
+                        "quote": f"{x.get('severity')}, {x.get('status')}", "source": "Contradiction finder"}
+            if ref.startswith("K") and ref in self.leads:
+                k = self.leads[ref]
+                return {"id": ref, "type": "lead", "title": k.get("hint") or "", "quote": k.get("status") or "",
+                        "doc": None, "source": "Lead spotter"}
             q = next((q for q in self.questions if q["id"] == ref), None) if ref.startswith("Q") else None
             if q is not None:
                 return {"id": ref, "type": "question", "title": q["text"], "quote": q.get("answer") or "",
@@ -602,7 +758,8 @@ class CaseFile:
         """Every id an answer or the report may cite."""
         with self._lock:
             return (set(self.documents) | set(self.facts) | set(self.links) | set(self.hypotheses)
-                    | {q["id"] for q in self.questions})
+                    | {q["id"] for q in self.questions} | set(self.statements) | set(self.contradictions)
+                    | set(self.leads))
 
     def citations_in(self, text: str) -> list[dict[str, Any]]:
         seen: list[dict[str, Any]] = []
@@ -643,6 +800,14 @@ class CaseFile:
                 "assessment": self.assessment, "turns": len(self.conversation),
                 "hypotheses": list(self.hypotheses.values()), "summary": self.summary, "gaps": self.gaps[:10],
                 "followups": self.followups[-20:], "agenda": list(self.agenda),
+                "statements": [{k: v for k, v in w.items() if k != "text"} | {"text": w["text"][:600]}
+                               for w in self.statements.values()],
+                "contradictions": list(self.contradictions.values()), "leads": list(self.leads.values()),
+                "matrix": self.matrix, "challenges": self.challenges[-12:], "presence": self.presence,
+                "register": {"cards": len(self.register.get("cards") or {}),
+                             "pending": self.register.get("pending") or []},
+                "claims": len(self.claims), "critical_waiting": list(self.dialog.get("critical_waiting") or []),
+                "analysis": list(self.analysis.values()), "team_run": (self.dialog.get("team_runs") or [None])[-1],
             }
 
     def document(self, doc_id: str) -> dict[str, Any] | None:
@@ -663,7 +828,13 @@ class CaseFile:
                     "dialog": dict(self.dialog), "hypotheses": list(self.hypotheses.values()), "summary": self.summary,
                     "gaps": list(self.gaps), "dossiers": dict(self.dossiers), "views": list(self.views),
                     "desk": list(self.desk), "followups": list(self.followups), "calls": list(self.calls),
-                    "history": list(self.history), "agenda": list(self.agenda), "change_seq": self.change_seq}
+                    "history": list(self.history), "agenda": list(self.agenda), "change_seq": self.change_seq,
+                    "statements": list(self.statements.values()), "claims": list(self.claims.values()),
+                    "contradictions": list(self.contradictions.values()), "leads": list(self.leads.values()),
+                    "entities": list(self.entities.values()), "register": dict(self.register),
+                    "matrix": self.matrix, "challenges": list(self.challenges), "presence": self.presence,
+                    "analysis": dict(self.analysis), "insights": list(self.insights), "claimed": dict(self.claimed),
+                    "traces": list(self.traces)}
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> CaseFile:
@@ -701,4 +872,15 @@ class CaseFile:
         for name in ("gaps", "views", "desk", "followups", "calls", "history", "agenda"):
             setattr(case, name, [x for x in data.get(name) or [] if isinstance(x, dict)])
         case.change_seq = int(data.get("change_seq") or 0)
+        for name in ("statements", "claims", "contradictions", "leads", "entities"):
+            setattr(case, name, {e["id"]: e for e in data.get(name) or [] if isinstance(e, dict) and e.get("id")})
+        if isinstance(data.get("register"), dict):
+            case.register = {"cards": {}, "pending": [], "custody": [], **data["register"]}
+        for name in ("matrix", "presence"):
+            setattr(case, name, data.get(name) if isinstance(data.get(name), dict) else None)
+        case.challenges = [c for c in data.get("challenges") or [] if isinstance(c, dict)]
+        case.insights = [c for c in data.get("insights") or [] if isinstance(c, dict)]
+        case.analysis = {str(k): v for k, v in (data.get("analysis") or {}).items() if isinstance(v, dict)}
+        case.claimed = {str(k): int(v) for k, v in (data.get("claimed") or {}).items() if isinstance(v, int)}
+        case.traces = [t for t in data.get("traces") or [] if isinstance(t, dict)][-30:]
         return case

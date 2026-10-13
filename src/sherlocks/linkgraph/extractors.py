@@ -89,7 +89,7 @@ _DEFAULT_RELATION = {
     "psrms": "Same identifier in an FIR record",
     "hotel_eye": "Used same phone/CNIC at hotel check-in",
     "sbvs": "Named in verification record",
-    "trust": "Named in property record",
+    "trust": "Named on a tenancy record (role not stated)",
     "prvs": "Named in tenancy verification",
     "watchlist": "Named in watchlist entry",
     "tracs": "Named on traffic challan",
@@ -738,7 +738,7 @@ def _sbvs(ctx: _Ctx, data: dict, raw: Any) -> None:
 def _trust(ctx: _Ctx, data: dict, raw: Any) -> None:
     """Tenant register (comprehensive-info): the tenant, their landlord, their family
     members and any co-tenants of the same property - each with the relation named, not
-    left to the generic walker to call "named in property record"."""
+    left to the generic walker. The register's tenancy lists are read by `_trust_tenancies`."""
     details = data.get("details") if isinstance(data.get("details"), dict) else {}
     payload = raw.get("data") if isinstance(raw, dict) and isinstance(raw.get("data"), dict) else {}
     person = payload.get("person_details") if isinstance(payload.get("person_details"), dict) else details
@@ -767,6 +767,77 @@ def _trust(ctx: _Ctx, data: dict, raw: Any) -> None:
                 ctx.relate(ref, label, where)
     for label, key in (("Name", "name"), ("CNIC", "cnic"), ("Mobile", "mobile"), ("Address", "present_address")):
         ctx.rec.add_field(label, person.get(key))
+    _trust_tenancies(ctx, payload)
+
+
+# How a family member is related, when the register says so. The register's `relation` field
+# usually holds the FATHER'S NAME ("s/o ..."), so anything that is not one of these is a name.
+_KIN = {"wife", "husband", "son", "daughter", "father", "mother", "brother", "sister", "uncle", "aunt", "nephew",
+        "niece", "cousin", "grandfather", "grandmother", "grandson", "friend", "servant", "driver", "employee",
+        "relative", "spouse", "child", "بیوی", "شوہر", "بیٹا", "بیٹی", "والد", "والدہ", "بھائی", "بہن"}
+
+
+def _tenancy_person(block: Any) -> tuple[PersonRef, str | None]:
+    """A person named on a tenancy (a witness, a family member): the reference, and how
+    they are related when the register says it in words."""
+    if not isinstance(block, dict):
+        return _ref(), None
+    said = clean_text(block.get("relation") or block.get("relationship")) or ""
+    kin = said if said.lower() in _KIN else None
+    father = block.get("father_name") or (None if kin else said or None)
+    return _ref(block.get("name") or block.get("full_name"), father, block.get("cnic"),
+                [block.get("mobile"), block.get("contact")], [block.get("address")]), kin
+
+
+def _trust_tenancies(ctx: _Ctx, payload: dict) -> None:
+    """The tenant register's own answer: every tenancy the person is on, by the part they
+    have in it - as the tenant (with its landlord, its two witnesses and the family living
+    there), as a witness of someone else's tenancy, as a family member in someone's rented
+    home, or as the owner of the property. Each named person gets that relation, with the
+    property and the lease - never "named in property record"."""
+    def lease(row: dict) -> str:
+        parts = [f"property: {clean_text(row.get('property_address'))}" if row.get("property_address") else "",
+                 f"landlord: {clean_text(row.get('landlord_name'))}" if row.get("landlord_name") else "",
+                 (f"lease {row.get('lease_start') or '?'} to {row.get('lease_end') or '?'}"
+                  if row.get("lease_start") or row.get("lease_end") else ""),
+                 f"PS {clean_text(row.get('police_station'))}" if row.get("police_station") else "",
+                 clean_text(row.get("status")) or ""]
+        return "; ".join(p for p in parts if p)
+
+    def people(row: dict, witness: str, family: str, tenant: str | None, landlord: str | None) -> None:
+        detail = lease(row)
+        if tenant:
+            ref = _ref(row.get("tenant_name"), row.get("tenant_father_name"), row.get("tenant_cnic"), [row.get("tenant_mobile")])
+            ctx.absorb(ref) if ctx.is_subject(ref) else ctx.relate(ref, tenant, detail)
+        if landlord and row.get("landlord_name"):
+            ctx.relate(_ref(row.get("landlord_name"), None, row.get("landlord_cnic"), [row.get("landlord_mobile")]),
+                       landlord, detail)
+        for key, block in row.items():
+            if str(key).lower().startswith("witness") and isinstance(block, dict):
+                ref, _ = _tenancy_person(block)
+                ctx.absorb(ref) if ctx.is_subject(ref) else ctx.relate(ref, witness, detail)
+        for block in _rows(row.get("family_members")):
+            ref, kin = _tenancy_person(block)
+            if ctx.is_subject(ref):
+                ctx.absorb(ref)
+            else:
+                ctx.relate(ref, f"{family} ({kin})" if kin else family, detail)
+
+    for row in _rows(payload.get("tenacies_as_tenant") or payload.get("tenancies_as_tenant")):
+        ctx.rec.add_field("Tenancy (as the tenant)", lease(row))
+        people(row, "Tenancy witness", "Family member", None, "Landlord")
+    for row in _rows(payload.get("tenacies_as_witness") or payload.get("tenancies_as_witness")):
+        ctx.rec.add_field("Tenancy (as a witness)", lease(row))
+        people(row, "Co-witness of a tenancy", "Family of a tenant whose tenancy the subject witnessed",
+               "Tenancy witnessed by the subject", None)
+    for row in _rows(payload.get("tenacies_as_family_member") or payload.get("tenancies_as_family_member")):
+        ctx.rec.add_field("Tenancy (living there as a family member)", lease(row))
+        people(row, "Tenancy witness (home the subject lives in)", "Family member, same rented home",
+               "Tenant (home the subject lives in)", "Landlord (home the subject lives in)")
+    for row in _rows(payload.get("properties_owned")):
+        ctx.rec.add_field("Property owned", lease(row))
+        people(row, "Tenancy witness (property the subject owns)", "Family of a tenant of the subject",
+               "Tenant of owned property", None)
 
 
 def _milap(ctx: _Ctx, data: dict, raw: Any) -> None:

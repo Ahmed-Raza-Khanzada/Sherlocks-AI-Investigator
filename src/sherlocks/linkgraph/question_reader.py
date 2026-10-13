@@ -30,19 +30,29 @@ import logging
 import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import Field
+
+from sherlocks.team.runtime import Typed
 
 logger = logging.getLogger(__name__)
 
 
-class _Reading(BaseModel):
+class _Reading(Typed):
     act: Literal["question", "statement", "answer", "correction", "greeting"] = Field(
         description="question = anything asked or requested (incl. 'explain', 'tell me', 'batao'); statement = the "
                     "officer gives information; answer = replies to Sherlock's last question; correction = changes "
                     "something said before.")
-    asks_something: bool = Field(default=False, description="True when the officer asks for information or wants "
-                                 "something done - even if the message also names a person or replies in part to "
-                                 "Sherlock's last question.")
+    asks_something: bool = Field(default=False, description="True only when the message asks for information or an "
+                                 "explanation - even if it also names a person or replies in part to Sherlock's last "
+                                 "question. A message that only reports what happened ('he cheated me of 5 lakh') "
+                                 "asks nothing.")
+    states_something: bool = Field(default=False, description="True when the message tells us something about the case: "
+                                   "what happened, when, where, who, a role, which case this is, an arrest - also "
+                                   "when the same message asks a question too.")
+    whole_picture: bool = Field(default=True, description="True when the officer wants the whole picture of an FIR, a "
+                                "person or the incident ('who is he', 'tell me about this FIR', 'poori tafseel'). False "
+                                "when they ask one particular thing about it (whose name a number is in, where he "
+                                "stayed, when it was registered).")
     type: str = Field(default="open", description="What is wanted - one of: cases (which FIRs), count_cases, "
                       "fir_details (what each FIR / the case is about, its story, charges explained), fir_status, "
                       "serious_cases, io_report, criminals_near, criminals_all, profile, associates, connection, "
@@ -53,7 +63,9 @@ class _Reading(BaseModel):
                                    "'filed by', 'darj karwaya' = complainant; 'gawah' = witness; else any.")
     depth: Literal["brief", "detailed"] = Field(
         default="brief", description="detailed when the officer wants an explanation, the story, details, what the "
-                                     "case is; brief for yes / no, a count or a list.")
+                                     "case is - and whenever the officer asks about an FIR, a person, the incident, "
+                                     "a statement or a link without asking for short; brief only for a bare yes / no, "
+                                     "a bare count, or when the officer asks for short ('sirf number', 'short mein').")
     yes_no: bool = Field(default=False, description="True for a yes / no question.")
     opinion: bool = Field(default=False, description="True when the officer asks for a judgment (why, is he involved).")
     topics: list[str] = Field(default_factory=list, description="Details of a person asked about, from: work, "
@@ -71,13 +83,35 @@ class _Reading(BaseModel):
                           "'weapon used', 'court', 'sections', 'complainant'), or '' when the officer wants a whole "
                           "picture (a summary, an explanation, a list).")
     uses_pronoun: bool = False
+    language: Literal["en", "roman", "ur"] | None = Field(
+        default=None, description="The language the officer wrote in: en (English), roman (Urdu in Latin letters), "
+                                  "ur (Urdu script).")
+    shape: Literal["fir", "person", "incident", "statement", "link", "phone", "count", "yes_no", "what_next",
+                   "other"] = Field(
+        default="other", description="The kind of answer wanted: fir (about an FIR, or the whole case - what is known, "
+                                     "what has been found so far, a summary of it), person (about "
+                                     "ONE named person: who he is, his record - never for a question about several "
+                                     "people or the whole case), incident (how / when / where it happened), statement "
+                                     "(what someone said), link (how people are connected), phone (a number, a CDR), "
+                                     "count (how many, a list), yes_no, what_next (ONLY what should be done now - the "
+                                     "next steps; never for what is already known), other.")
+    wants_view: bool = Field(default=False, description="True when Sherlock's own judgment helps: a question about a "
+                             "person's involvement, why something happened, or what to do next. False for counts, "
+                             "lists and plain lookups.")
 
 
 _READER_SYSTEM = (
     "You read one message a police officer sends to an investigation assistant (English, Urdu or Roman Urdu) and say "
-    "exactly what is being asked, so the right information is fetched. Read the meaning, not keywords. A message that "
-    "asks for anything is a question (act question, asks_something true), even if it names a person Sherlock asked "
-    "about - 'answer' is only a reply to Sherlock's question that asks nothing back. Requests like "
+    "what it does and what it wants. Read the meaning, not keywords. FIRST decide what the message does. It TELLS us "
+    "something (act statement, states_something true): it reports what happened, names a suspect, gives a date or a "
+    "place, says which case this is, says someone was arrested. It ASKS for something (act question, asks_something "
+    "true): it wants information or an explanation. It can do both. A message with no question and no request for "
+    "information in it is NOT a question, however much it says. Examples: 'Kamran main suspect hai, waqia kal raat "
+    "hua' -> act statement, asks_something false, states_something true. 'usne mere saath fraud kiya, 5 lakh liye aur "
+    "wapas nahi kiye' -> act statement, asks_something false, states_something true. 'usne mere saath fraud kiya, uska "
+    "record kya hai?' -> act question, asks_something true, states_something true. 'Kamran kaun hai?' -> act question, "
+    "asks_something true, states_something false. A message that asks for anything is a question even if it names a "
+    "person Sherlock asked about - 'answer' is only a reply to Sherlock's question that asks nothing back. Requests like "
     "'explain me the FIR filed by X' are questions; 'what is the case filed by X' wants the case's details (type "
     "fir_details, depth detailed, role complainant). Use the recent conversation to resolve who 'he / ye / wo' is "
     "and what 'that' refers to. When one specific fact is asked ('who is the IO of this case', 'kab hua', 'which "
@@ -86,7 +120,11 @@ _READER_SYSTEM = (
     "case'), it is a whole picture: depth detailed, asks_for ''. Never invent a narrower fact than the officer asked. "
     "scope person = about one person (his record, job, phones, family); case = the case, FIRs, documents, evidence; "
     "connection = how people are linked. about_new_case = the officer means the case being investigated now "
-    "('this case', the incident he described), not one of the old FIRs.")
+    "('this case', the incident he described), not one of the old FIRs. shape is the kind of answer, decided by what "
+    "is wanted and not by single words: what is KNOWN about the whole case ('is case mein ab tak kya pata chala hai', "
+    "'case ka khulasa do', 'where do we stand') -> fir. What to DO ('ab mujhe kya karna chahiye', 'agla qadam kya "
+    "ho', 'what should I do next') -> what_next. How it happened -> incident. One named person -> person. How two "
+    "people are tied -> link.")
 
 # A request is a question too: "explain me the FIR", "tell me about...", "tafseel batao".
 REQUEST = re.compile(r"(?<![\w؀-ۿ])(explain\w*|describe|elaborate|tell me|tell us|show me|give me|list|summari[sz]e|"
@@ -180,7 +218,7 @@ def model_reading(message: str, case: Any, llm: Any) -> dict[str, Any] | None:
     try:
         out, _ = llm.generate_structured(prompt=f"Recent conversation: {recent}\nSherlock last asked: {asked}\n"
                                                 f"Message: {message}", schema=_Reading, system=_READER_SYSTEM,
-                                         cache_kind="question_reader", prompt_version="v3", max_tokens=300)
+                                         cache_kind="question_reader", prompt_version="v10", max_tokens=600)
         return out.model_dump()
     except Exception as exc:  # noqa: BLE001 - the rules read it instead
         logger.info("Question reader model failed: %s", exc)
@@ -202,7 +240,7 @@ def read_message(message: str, net: Any, case: Any, focus: list[str], llm: Any =
             act = "greeting"
         else:                       # information: an answer when Sherlock has a question open
             act = "answer" if said == "answer" and case.open_questions() else "statement"
-        ask = {"act": act, "reading": reading}
+        ask = {"act": act, "reading": reading, "tells": bool(reading.get("states_something"))}
         if act == "question":
             ask.update(from_reading(message, net, case, focus, reading))
         return ask
@@ -244,7 +282,24 @@ def from_reading(message: str, net: Any, case: Any, focus: list[str], reading: d
             "yes_no": bool(reading.get("yes_no")), "opinion": bool(reading.get("opinion")), "depth": depth,
             "asks_for": asks_for if one_fact(asks_for, kind, depth) else "",
             "this_case": bool(reading.get("about_new_case")), "scope": reading.get("scope") or "case",
-            "topics": [t for t in reading.get("topics") or [] if t in _PERSON_TOPICS or t == "complaints"]}
+            "topics": [t for t in reading.get("topics") or [] if t in _PERSON_TOPICS or t == "complaints"],
+            "shape": _shape(reading, people, asks_for if one_fact(asks_for, kind, depth) else "",
+                            [m.group(0) for m in FIR_NO.finditer(message)]),
+            "wants_view": bool(reading.get("wants_view"))}
+
+
+def _shape(reading: dict[str, Any], people: list[str], asks_for: str, firs: list[str] | None = None) -> str:
+    """The answer shape, from the model's own reading - made consistent with the rest of it:
+    how two people are connected is a *link* answer; one thing asked about a person gets a
+    focused answer (``other``: only what bears on it), not the whole form on that person."""
+    shape = reading.get("shape") or "other"
+    if reading.get("scope") == "connection" and len(people) >= 2 and shape in ("person", "other"):
+        return "link"
+    if (asks_for or reading.get("whole_picture") is False) and shape in ("person", "fir", "incident", "statement", "phone"):
+        return "other"          # one particular thing: a focused answer, as a person would give
+    if shape == "other" and firs and reading.get("whole_picture") and not people:
+        return "fir"            # the whole picture of an FIR named by its number
+    return shape
 
 
 def read(message: str, net: Any, case: Any, focus: list[str], llm: Any = None,

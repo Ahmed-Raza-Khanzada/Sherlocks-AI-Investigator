@@ -563,6 +563,45 @@ def test_trust_names_landlord_family_and_co_tenants():
     assert by_name["CO TENANT"] == "Co-tenant"
 
 
+def test_trust_tenancies_name_each_persons_part_never_named_in_property_record():
+    """The tenant register answers with the tenancies a person is on. A witness of the
+    tenancy is a tenancy witness; the register's `relation` field is the father's name."""
+    from sherlocks.linkgraph.relations import describe
+
+    lease = {"property_address": "Flat 12, Garden West", "landlord_name": "LANDLORD SAHIB", "lease_start": "2024-01-01",
+             "lease_end": "2024-12-31", "status": "active", "police_station": "Soldier Bazar"}
+    body = {"success": True, "data": {
+        "person_details": {"name": "AHMED ALI", "cnic": CNIC_D, "mobile": "03001234567"},
+        "roles": {"is_tenant": True, "is_family_member": True},
+        "tenacies_as_tenant": [{**lease, "tenant_mobile": "03001234567",
+                                "witness1": {"name": "WITNESS ONE", "cnic": "4210155555555", "relation": "Abdul Ghaffar",
+                                             "mobile": "03005555555"},
+                                "witness2": {"name": "WITNESS TWO", "cnic": "4210166666666", "relation": "Sabir Shah"},
+                                "family_members": [{"name": "HIS WIFE", "cnic": "4210177777777", "relation": "Wife"}]}],
+        "tenacies_as_witness": [],
+        "tenacies_as_family_member": [{**lease, "property_address": "A-99 Naya Nazimabad", "tenant_mobile": "03009999999",
+                                       "witness1": {"name": "OTHER WITNESS", "cnic": "4210188888888", "relation": "Abid"},
+                                       "family_members": [{"name": "AHMED", "cnic": CNIC_D, "relation": "Murad Ali"},
+                                                          {"name": "HIS BROTHER", "cnic": "4210199999999", "relation": "Murad Ali"}]}],
+        "properties_owned": []}}
+    b = EmsBackend(http=FakeEmsHttp({"comprehensive-info": (200, body)}))
+    _, rec = _rec(b, "trust", cnic=CNIC)
+    by_name = {r.ref.name: r for r in rec.related}
+    assert by_name["WITNESS ONE"].relation == "Tenancy witness" and by_name["WITNESS TWO"].relation == "Tenancy witness"
+    assert by_name["WITNESS ONE"].ref.father_name == "Abdul Ghaffar"            # a name, not a relation
+    assert "Flat 12, Garden West" in by_name["WITNESS ONE"].detail and "LANDLORD SAHIB" in by_name["WITNESS ONE"].detail
+    assert by_name["LANDLORD SAHIB"].relation == "Landlord" and by_name["HIS WIFE"].relation == "Family member (Wife)"
+    assert by_name["HIS BROTHER"].relation == "Family member, same rented home"
+    assert by_name["OTHER WITNESS"].relation == "Tenancy witness (home the subject lives in)"
+    assert "AHMED" not in by_name                                                # the subject himself, in the family list
+    assert not any("property record" in r.relation.lower() or "role not stated" in r.relation for r in rec.related)
+    # ... and each reads as a sentence.
+    names = {"w": "Witness One", "t": "Ahmed Ali"}
+    assert describe("Tenancy witness", "w", "t").sentence(names) == "Witness One was witness to the tenancy of Ahmed Ali"
+    assert describe("Tenancy witness (home the subject lives in)", "w", "t").sentence(names) == \
+        "Witness One was witness to the tenancy of the home of Ahmed Ali"
+
+
 def test_milap_links_the_missing_person_to_the_reporter():
     body = {"status": "success", "data": [{
         "record_no": "M-1", "record_type": "Missing person", "status": "Open", "police_station": "Gulshan",

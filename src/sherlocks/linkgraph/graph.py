@@ -28,12 +28,33 @@ from sherlocks.linkgraph.normalize import name_key, normalize_address
 from sherlocks.linkgraph.relations import describe, weak_relation
 from sherlocks.linkgraph.systems import SYSTEMS, system_label
 
+# Whose spelling of a person's name is shown. Our own registers first - NADRA, the driving
+# licence, the tenant registers, then the other police systems; the telecom subscriber API
+# only after all of them (its names are typed by a franchise, often short or wrong); name
+# tags and the open web last. A name typed in by hand ranks with the other police systems.
+NAME_PRIORITY = {"nadra": 0, "dls": 1, "prvs": 2, "old_tenant": 2, "trust": 2, "simsdb": 5, "subscriber": 6,
+                 "caller_id": 7, "osint": 8}
+_OTHER_SYSTEM, _NO_SOURCE = 3, 4
+
+
+def name_rank(system: str | None) -> int:
+    if not system:
+        return _NO_SOURCE
+    return NAME_PRIORITY.get(system, _OTHER_SYSTEM)
+
+
+def _best_name(names: list[str], sources: dict[str, list[str]]) -> str | None:
+    """The name from the most trusted register that gave one; among equals, the first seen."""
+    if not names:
+        return None
+    return min(names, key=lambda n: min((name_rank(s or None) for s in sources.get(name_key(n)) or [""]),
+                                        default=_NO_SOURCE))
+
 
 def _display_name(names: list[str]) -> str | None:
-    """The first name recorded for this identity, de-shouted ("KAMRAN AHMED" -> "Kamran Ahmed").
-
-    First-seen, not "best-looking": identity systems answer first, so the first name is
-    the one tied to the CNIC. Later spellings are kept as "also recorded as".
+    """The person's name as shown, de-shouted ("KAMRAN AHMED" -> "Kamran Ahmed"): the first
+    of ``names``, which ``_merge_ref`` keeps as the one from the most trusted register
+    (``NAME_PRIORITY``). Other spellings are kept as "also recorded as".
     """
     if not names:
         return None
@@ -60,6 +81,9 @@ class GraphBuilder:
         self._phone_owners: dict[str, set[str]] = {}
         self._by_name_father: dict[tuple[str, str], str] = {}
         self._merged: dict[str, str] = {}
+        # People who witnessed the same tenancy / verification / case, per record.
+        self._witness_groups: dict[str, set[str]] = {}
+        self._co_witness: set[frozenset[str]] = set()
         self._ids = itertools.count(1)
         self.version = 0
         # A phone held by more than this many different people is a shared/office line;
@@ -125,12 +149,13 @@ class GraphBuilder:
             data["seed"] = data["seed"] or seed
             if via and via not in data["discovered_via"] and len(data["discovered_via"]) < 25:
                 data["discovered_via"].append(via)
-            self._merge_ref(pid, ref)
+            self._merge_ref(pid, ref, (via or {}).get("system"))
             self.version += 1
             return pid, created
 
-    def apply_subject(self, pid: str, ref: PersonRef) -> str:
-        """Fold what a record says about its own subject into that person's node."""
+    def apply_subject(self, pid: str, ref: PersonRef, system: str | None = None) -> str:
+        """Fold what a record says about its own subject into that person's node.
+        ``system``: the register the record came from - it decides whose name is shown."""
         with self._lock:
             pid = self.canonical(pid)
             data = self.nodes[pid].data
@@ -142,22 +167,38 @@ class GraphBuilder:
                 # Should not happen - extractors match subjects by CNIC - but if it does,
                 # nothing of that other person may be grafted onto this one.
                 return pid
-            self._merge_ref(pid, ref)
+            self._merge_ref(pid, ref, system)
             self.version += 1
             return pid
 
-    def _merge_ref(self, pid: str, ref: PersonRef) -> None:
+    def _merge_ref(self, pid: str, ref: PersonRef, system: str | None = None) -> None:
         node = self.nodes[pid]
         data = node.data
-        if ref.name and all(name_key(ref.name) != name_key(n) for n in data["names"]):
-            data["names"].append(ref.name)
+        sources = data.setdefault("name_sources", {})
+        if ref.name:
+            key = name_key(ref.name)
+            seen = sources.setdefault(key, [])
+            same = next((i for i, n in enumerate(data["names"]) if name_key(n) == key), None)
+            if same is None:
+                data["names"].append(ref.name)
+            elif name_rank(system) < min((name_rank(x or None) for x in seen), default=_NO_SOURCE + 1):
+                data["names"][same] = ref.name      # the same name, as the more trusted register spells it
+            if (system or "") not in seen:
+                seen.append(system or "")
+        best = _best_name(data["names"], sources)
+        if best is not None and data["names"][0] != best:
+            # The name from the most trusted register leads; the rest are "also recorded as".
+            data["names"].remove(best)
+            data["names"].insert(0, best)
         for alias in (ref.extra.get("aliases") or "").split(";"):
             alias = alias.strip()
             if alias and alias not in data["extra"].get("aliases", []):
                 data["extra"].setdefault("aliases", []).append(alias)
         data["name"] = _display_name(data["names"])
-        if ref.father_name and not data["father_name"]:
+        if ref.father_name and (not data["father_name"] or name_rank(system) < data.get("father_rank", _NO_SOURCE)):
+            # The father's name follows the same order of registers as the person's own.
             data["father_name"] = ref.father_name.title() if ref.father_name.isupper() else ref.father_name
+            data["father_rank"] = name_rank(system)
         if ref.cnic and not data["cnic"]:
             data["cnic"] = ref.cnic
             self._by_cnic[ref.cnic] = pid
@@ -218,6 +259,11 @@ class GraphBuilder:
         for name in dropped["names"]:
             if all(name_key(name) != name_key(n) for n in kept["names"]):
                 kept["names"].append(name)
+        merged = kept.setdefault("name_sources", {})
+        for key, systems in (dropped.get("name_sources") or {}).items():
+            merged[key] = list(dict.fromkeys([*merged.get(key, []), *systems]))
+        if dropped["father_name"] and dropped.get("father_rank", _NO_SOURCE) < kept.get("father_rank", _NO_SOURCE):
+            kept["father_name"], kept["father_rank"] = dropped["father_name"], dropped["father_rank"]
         self._merge_ref(keep, ref)
         kept["depth"] = min(kept["depth"], dropped["depth"])
         kept["seed"] = kept["seed"] or dropped["seed"]
@@ -250,7 +296,11 @@ class GraphBuilder:
 
     def note_lookup(self, pid: str, system: str, status: str, summary: str) -> None:
         with self._lock:
-            self.person(pid)["lookups"][system] = {"status": status, "summary": summary[:200]}
+            lookups = self.person(pid)["lookups"]
+            had = (lookups.get(system) or {}).get("status")
+            if had == "success" and status != "success":
+                return      # found by one identifier: a miss by the other does not make it "no record"
+            lookups[system] = {"status": status, "summary": summary[:200]}
 
     # -- system records -------------------------------------------------------------
 
@@ -258,7 +308,7 @@ class GraphBuilder:
                    edge_label: str | None = None) -> tuple[str, str]:
         """Attach ``rec`` to ``pid``. Returns ``(system_node_id, canonical_pid)``."""
         with self._lock:
-            pid = self.apply_subject(pid, rec.subject)
+            pid = self.apply_subject(pid, rec.subject, rec.system)
             # Every photo this record carried came from this system - remember which,
             # so the analyst sees where a face was taken from (DLS licence, SBVS, NADRA…).
             for image in rec.subject.images:
@@ -327,16 +377,29 @@ class GraphBuilder:
                 "system": system, "relation": rel.relation, "from": self.canonical(from_pid)})
             if pid == self.canonical(from_pid):
                 return pid, False
-            if rel.relation.lower().startswith(("co-witness", "co-witness on a tenancy")):
-                # Both are witnesses of someone else's case: they share the case, they do not
-                # vouch for each other. An inferred link between them, not a stated one.
-                a, b = sorted((self.canonical(from_pid), pid))
-                fir = rel.relation.split(" in ", 1)[-1] if " in " in rel.relation else "the same tenancy"
-                self._add_edge(GraphEdge(id=_edge_id("weak", a, b, "co_witness"), source=a, target=b, kind="weak",
-                                         label=f"Both witnesses in {fir}", score=0.5, system=system,
-                                         reasons=[f"Both are witnesses in {fir} ({system_label(system)})"]))
+            relation = rel.relation.lower()
+            co = relation.startswith("co-witness")
+            if co or relation == "tenancy witness" or relation.startswith("verification witness"):
+                # People who witnessed the same tenancy, verification or case share that record:
+                # they are CO-WITNESSES. They do not vouch for each other, and the address on
+                # the form does not make them "the same address" (weak_links skips it for them).
+                group = self._witness_groups.setdefault(f"{sid}|{rel.detail or ''}|{'co' if co else 'of'}", set())
+                together = {self.canonical(p) for p in group} | ({self.canonical(from_pid)} if co else set())
+                group.add(pid)
+                if co:
+                    what = rel.relation.split(" in ", 1)[-1] if " in " in rel.relation else "the same tenancy"
+                else:
+                    what = (f"the same {'tenancy' if 'tenan' in relation else 'verification'} "
+                            f"(of {self.nodes[self.canonical(from_pid)].label or 'the same person'})")
+                for other in together - {pid}:
+                    a, b = sorted((other, pid))
+                    self._co_witness.add(frozenset((a, b)))
+                    self._add_edge(GraphEdge(id=_edge_id("weak", a, b, "co_witness"), source=a, target=b, kind="weak",
+                                             label=f"Both witnesses in {what}", score=0.5, system=system,
+                                             reasons=[f"Both are witnesses in {what} ({system_label(system)})"]))
                 self.version += 1
-                return pid, created
+                if co:
+                    return pid, created
             already_in = any(e.kind == "found_in" and e.source == pid and e.target == sid for e in self.edges.values())
             if not already_in:
                 self._add_edge(GraphEdge(id=_edge_id("strong", sid, pid, rel.relation), source=sid, target=pid,
@@ -350,6 +413,11 @@ class GraphBuilder:
         if edge.source == edge.target:
             return
         self.edges.setdefault(edge.id, edge)
+
+    def co_witness_pairs(self) -> set[frozenset[str]]:
+        """Pairs of people who witnessed the same tenancy, verification or case."""
+        with self._lock:
+            return {frozenset(self.canonical(p) for p in pair) for pair in self._co_witness}
 
     def add_weak(self, a: str, b: str, *, score: float, label: str, reasons: list[str], source: str) -> None:
         with self._lock:

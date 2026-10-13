@@ -34,6 +34,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from sherlocks.team.runtime import Typed
+
 logger = logging.getLogger(__name__)
 
 MAX_ASKS = 2
@@ -67,13 +69,16 @@ class Gatekeeper:
     """Decides which proposed question the officer sees. Stateless: everything it knows
     is on the board (ledger, conversation, gaps, desk log)."""
 
-    def __init__(self, case: Any, graph: dict[str, Any], llm: Any = None) -> None:
+    def __init__(self, case: Any, graph: dict[str, Any], llm: Any = None, *, rules: bool = True) -> None:
         from sherlocks.linkgraph.network import PersonNetwork
 
         self.case = case
         self.graph = graph
         self.net = PersonNetwork(graph)
         self.llm = llm
+        # ``rules``: match the officer's earlier messages by pattern. Off when a model reads
+        # the chat instead (the recorder says which question a message answers; ``sweep``).
+        self.rules = rules
 
     # -- the checks -------------------------------------------------------------------
 
@@ -126,14 +131,24 @@ class Gatekeeper:
                 else f"answered: {mine.get('answer')}"
             return {"ok": False, "reason": f"Already {what}" + (f" (turn {turn})" if turn else ""),
                     "answer": mine.get("answer"), "turn": turn}
-        if mine is not None and mine.get("times", 0) >= MAX_ASKS:
-            return {"ok": False, "reason": f"Asked {MAX_ASKS} times without an answer.", "answer": None, "turn": None}
-        if not key.startswith(("free:", "confirm_lookup:")):
+        # A task (get a CDR, ask the doctor) cannot be answered from memory: asked once, then tracked.
+        limit = 1 if (mine or {}).get("task") else MAX_ASKS
+        if mine is not None and mine.get("times", 0) >= limit:
+            return {"ok": False, "reason": f"Asked {limit} time(s) without an answer.", "answer": None, "turn": None}
+        if key.startswith("source:"):
+            # A question from a contradiction, a lead, a statement change or an identity check:
+            # it stands while the entry it came from is still open.
+            if not source_open(self.case, key.split(":", 1)[1]):
+                return {"ok": False, "reason": "The entry it came from is settled.", "answer": None, "turn": None}
+        elif not key.startswith(("free:", "confirm_lookup:")):
             from sherlocks.evidence.questioner import gaps
 
             if key not in {g["key"] for g in gaps(self.case, self.graph)}:
                 return {"ok": False, "reason": "The board already holds the answer.", "answer": None, "turn": None}
-        found = self._in_chat(q) if not key.startswith("free:") else self._free_form_known(q)
+        if key.startswith(("free:", "source:")):
+            found = self._free_form_known(q)
+        else:
+            found = self._in_chat(q) if self.rules else None
         if found:
             turn, said = found
             return {"ok": False, "reason": f"Already answered in turn {turn}: \"{str(said)[:160]}\"" if turn
@@ -184,8 +199,10 @@ class Gatekeeper:
         if last_asked in {q["key"] for q in case.open_questions()} and intent == "question":
             return None            # the officer is busy with something else: let them answer first
         order = {q["id"]: i for i, q in enumerate(case.questions)}
+        rank = {"red": 0, "orange": 1, "green": 2}
+        # What the case cannot move without first (which case this is, what happened), then the rest.
         candidates = sorted((q for q in case.open_questions() if q.get("times", 0) < MAX_ASKS and q["key"] not in recent),
-                            key=lambda q: (q.get("times", 0), order[q["id"]]))
+                            key=lambda q: (q.get("times", 0), rank.get(q.get("priority"), 1), order[q["id"]]))
         for q in candidates:
             if intent == "question" and q.get("times", 0) >= 1:
                 continue           # asked once: comes back only while the officer is telling, not asking
@@ -213,6 +230,67 @@ class Gatekeeper:
                 q["status"] = "muted"
         self.case.log_desk({"key": key, "decision": "muted", "reason": "The officer asked not to be asked this.",
                             "by": "Q1 Gatekeeper"})
+
+
+class _Answered(Typed):
+    id: str = Field(description="The id (Q#) of a question the conversation already answers.")
+    turn: int | None = Field(default=None, description="The turn in which the officer answered it.")
+    answer: str = Field(description="The answer, in the officer's own words.")
+
+
+class _Sweep(Typed):
+    answered: list[_Answered] = Field(default_factory=list)
+
+
+def sweep(case: Any, llm: Any, message: str = "") -> list[dict[str, Any]] | None:
+    """The Gatekeeper reads the whole chat: which open questions did the officer already
+    answer - in other words, in passing, while asking something else? Returns them
+    (``[{q, turn, answer}]``), or None when the model did not answer (then nothing new is
+    asked this turn rather than risk asking twice)."""
+    # Which case this is, is settled by the statement recorder alone (it knows what each FIR is about).
+    waiting = [q for q in case.open_questions() if not q["key"].startswith("confirm_lookup:") and q["key"] != "case:which"]
+    said = [{"turn": t.get("turn") or i, "officer": str(t.get("q") or "")[:400]}
+            for i, t in enumerate(case.conversation[-20:], 1) if t.get("q")]
+    if (message or "").strip():                 # what the officer is saying right now counts too
+        said.append({"turn": len(case.conversation) + 1, "officer": message.strip()[:400]})
+    if not waiting or not said:
+        return []
+    try:
+        out, _ = llm.generate_structured(
+            prompt=f"Open questions: {[{'id': q['id'], 'question': q['text']} for q in waiting]}\n\n"
+                   f"What the officer has said so far: {said}\n\n"
+                   f"What is already on file about the case: {_on_file(case)}",
+            schema=_Sweep, system="You stop an assistant from asking a police officer something already answered. "
+                                  "From what the officer has said (in any language), list the open questions that "
+                                  "are ALREADY answered - by the officer's words or by what is on file: a "
+                                  "question that asks what the case is, or which crime, is answered once the "
+                                  "officer has described it ('he killed his daughter' answers 'which crime?': "
+                                  "murder). A question the officer asked is not an answer. Only questions "
+                                  "clearly answered; none if unsure.",
+            cache_kind="gatekeeper_sweep", prompt_version="v2", max_tokens=500)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("Gatekeeper sweep failed: %s", exc)
+        return None
+    by_id = {q["id"]: q for q in waiting}
+    return [{"q": by_id[a.id], "turn": a.turn, "answer": a.answer.strip()} for a in out.answered
+            if a.id in by_id and a.answer.strip()]
+
+
+def _on_file(case: Any) -> dict[str, Any]:
+    from sherlocks.linkgraph.relevance import the_new_case
+
+    return {k: v for k, v in the_new_case(case).items() if k != "described_by_the_officer"}
+
+
+def source_open(case: Any, ref: str) -> bool:
+    """Is the entry a question came from (X#, K#, E#, W#, a pending report) still open?"""
+    if ref in case.contradictions:
+        return case.contradictions[ref]["status"] == "open"
+    if ref in case.leads:
+        return case.leads[ref]["status"] in ("spotted", "open", "pursuing")
+    if ref in case.entities:
+        return case.entities[ref]["state"] == "maybe" and not case.entities[ref].get("decided")
+    return True
 
 
 def known_answers(case: Any) -> list[dict[str, Any]]:

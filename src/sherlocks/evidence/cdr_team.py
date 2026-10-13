@@ -32,7 +32,7 @@ import itertools
 import logging
 import statistics
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -87,15 +87,18 @@ def patterns(events: list[dict[str, Any]], subject: str | None, incident: dict[s
             text = (f"Silent around the incident: no activity from {_fmt(a['when'])} to {_fmt(b['when'])} "
                     f"({hours:.0f} h)" if around else
                     f"Silence: no activity from {_fmt(a['when'])} to {_fmt(b['when'])} ({hours:.0f} h)") + "."
-            out.append(finding(text, [a["row"], b["row"]], rests_on=["incident:date"] if around else []))
+            out.append(finding(text, [a["row"], b["row"]], rests_on=["incident:date"] if around else [],
+                               kind="telecom_silence_incident" if around else "telecom_silence"))
     # IMEI changes: the handset behind the SIM switched.
     last_imei, last_row = None, None
     for e in timed:
         imei = e["imei"] if len(e["imei"]) >= 14 else None
         if imei and last_imei and imei != last_imei:
-            out.append(finding(f"IMEI changed on {_fmt(e['when'])}: {last_imei} -> {imei}.", [last_row, e["row"]]))
+            out.append(finding(f"IMEI changed on {_fmt(e['when'])}: {last_imei} -> {imei}.", [last_row, e["row"]],
+                               kind="telecom_imei_change"))
         if imei:
             last_imei, last_row = imei, e["row"]
+    out += spikes(timed, subject, incident)
     # Habits: when this number is active.
     if len(timed) >= 10:
         evening = sum(1 for e in timed if 18 <= e["when"].hour < 24)
@@ -104,6 +107,38 @@ def patterns(events: list[dict[str, Any]], subject: str | None, incident: dict[s
         out.append(finding(f"Habit: busiest hour {busiest:02d}:00; {evening} evening and {morning} morning "
                            f"record(s) of {len(timed)}.", [], tier="fact", kind="telecom_habit"))
     return out
+
+
+def spikes(timed: list[dict[str, Any]], subject: str | None, incident: dict[str, Any] | None, *,
+           days: int = 3, factor: float = 3.0, least: int = 6) -> list[dict[str, Any]]:
+    """Contact with one number jumping in the days before the incident: the daily rate in
+    the last ``days`` against the daily rate before them."""
+    day = str((incident or {}).get("date") or "")[:10]
+    try:
+        end = datetime.fromisoformat(day) + timedelta(days=1)
+    except ValueError:
+        return []
+    start = end - timedelta(days=days)
+    recent: dict[str, list[dict[str, Any]]] = {}
+    before: Counter[str] = Counter()
+    first = min((e["when"] for e in timed), default=None)
+    for e in timed:
+        other = (e.get("b") if e.get("a") == subject else e.get("a")) if subject else (e.get("b") or e.get("a"))
+        if not other or other == subject:
+            continue
+        if start <= e["when"] < end:
+            recent.setdefault(other, []).append(e)
+        elif e["when"] < start:
+            before[other] += 1
+    earlier_days = max(1.0, (start - first).total_seconds() / 86400) if first and first < start else 0.0
+    out = []
+    for other, rows in recent.items():
+        rate_before = before[other] / earlier_days if earlier_days >= days else None
+        if len(rows) >= least and rate_before is not None and len(rows) / days >= factor * max(rate_before, 1 / earlier_days):
+            out.append(finding(f"Contact with {other} rose to {len(rows)} record(s) in the {days} days up to the "
+                               f"incident, from about {rate_before:.1f} a day before.", [r["row"] for r in rows[:30]],
+                               rests_on=["incident:date"], kind="telecom_spike"))
+    return out[:5]
 
 
 # -- R4 Location analyst -------------------------------------------------------------------
@@ -125,6 +160,7 @@ def location(events: list[dict[str, Any]], incident: dict[str, Any] | None) -> l
             steps = " -> ".join(f"{place(e)} ({e['when'].strftime('%H:%M')})" for e in path[:8])
             out.append(finding(f"Incident day movement (towers, not exact places): {steps}.", [e["row"] for e in path[:8]],
                                rests_on=["incident:date"]))
+    out += travel(timed)
     night = Counter(place(e) for e in timed if e["when"].hour >= 22 or e["when"].hour < 6)
     work = Counter(place(e) for e in timed if 9 <= e["when"].hour < 18 and e["when"].weekday() < 6)
     if night and night.most_common(1)[0][1] >= 5:
@@ -139,6 +175,23 @@ def location(events: list[dict[str, Any]], incident: dict[str, Any] | None) -> l
             out.append(finding(f"Most daytime activity on the tower at {where} ({n} record(s)): likely work area.",
                                rows, tier="inference", kind="telecom_area"))
     return out
+
+
+def travel(timed: list[dict[str, Any]], *, speed_kmh: float = 150.0, least_km: float = 15.0) -> list[dict[str, Any]]:
+    """Two tower contacts too far apart for the time between them. ``least_km`` is well
+    over a tower's coverage (0.5-5 km), so neighbouring towers never count."""
+    from sherlocks.evidence.cdr import km
+
+    located = [e for e in timed if e.get("lat") is not None and e.get("lon") is not None]
+    out = []
+    for a, b in itertools.pairwise(located):
+        gap_h = (b["when"] - a["when"]).total_seconds() / 3600
+        dist = km(float(a["lat"]), float(a["lon"]), float(b["lat"]), float(b["lon"]))
+        if dist >= least_km and gap_h >= 0 and dist / max(gap_h, 1 / 60) > speed_kmh:
+            out.append(finding(f"Impossible travel: {a['addr'] or a['site']} at {_fmt(a['when'])}, then "
+                               f"{b['addr'] or b['site']} ({dist:.0f} km away) at {_fmt(b['when'])} - "
+                               f"{dist / max(gap_h, 1 / 60):.0f} km/h.", [a["row"], b["row"]], kind="telecom_impossible_travel"))
+    return out[:3]
 
 
 # -- R5 Cross-CDR linker -------------------------------------------------------------------

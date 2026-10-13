@@ -18,7 +18,6 @@ as facts and explains them.
 from __future__ import annotations
 
 import re
-from datetime import date
 from typing import Any
 
 # Crimes of one family count as "the same kind of crime".
@@ -42,6 +41,26 @@ def new_case(case: Any) -> dict[str, Any]:
     return {"known": bool(inc.get("offence") or inc.get("place") or inc.get("date")), "crimes": crimes,
             "place": place, "date": str(inc.get("date") or "")[:10], "fir": inc.get("fir"),
             "offence": inc.get("offence")}
+
+
+def the_new_case(case: Any) -> dict[str, Any]:
+    """The new case for the agents: only what the officer said about it - and plainly
+    whether they have described it at all."""
+    inc = case.incident or {}
+    told = {k: inc[k] for k in ("offence", "date", "date_as_recorded", "time", "place", "fir", "police_station",
+                                "vehicle_or_weapon")
+            if inc.get(k)}
+    basis = case.dialog.get("case_basis")
+    if basis == "fir_on_record" and inc.get("fir"):
+        which = (f"The officer said this case IS FIR {inc['fir']}, already on file: that FIR describes this case. "
+                 "Every other FIR is a past record.")
+    elif basis == "new_matter":
+        which = "The officer said this is a NEW matter: every FIR on file is a past record, another case."
+    else:
+        which = ("not said yet - the officer has not told us whether this is a new matter or one of the FIRs on file. "
+                 "Until then every FIR on file is treated as a past record.")
+    return {"described_by_the_officer": bool(told), **told, "which_case": which,
+            "target_status": inc.get("target_status") or "not said yet (a target of the search - not known to be arrested)"}
 
 
 def _family(keys: list[str]) -> set[int]:

@@ -85,6 +85,16 @@ _RULES: list[tuple[re.Pattern[str], str, str, bool]] = [
     (re.compile(r"^tenant \(tenancy record\)", re.IGNORECASE),
      "is tenant on a tenancy record found on the phone/CNIC of", "named", False),
     # The subject witnessed the named tenant's tenancy: the arrow runs subject -> tenant.
+    # The tenant register (TRUST): what part each person has in a tenancy.
+    (re.compile(r"^tenancy witness \(home the subject lives in\)", re.IGNORECASE),
+     "was witness to the tenancy of the home of", "named", False),
+    (re.compile(r"^tenancy witness \(property the subject owns\)", re.IGNORECASE),
+     "was witness to a tenancy in a property owned by", "named", False),
+    (re.compile(r"^tenant \(home the subject lives in\)", re.IGNORECASE), "is the tenant of the home of", "named", False),
+    (re.compile(r"^landlord \(home the subject lives in\)", re.IGNORECASE), "is landlord of the home of", "named", False),
+    (re.compile(r"^co-witness of a tenancy", re.IGNORECASE), "was a witness in the same tenancy as", "named", True),
+    (re.compile(r"^family of a tenant", re.IGNORECASE), "is family of a tenant linked to", "named", False),
+    (re.compile(r"^named on a tenancy record", re.IGNORECASE), "is named on a tenancy record of", "named", False),
     (re.compile(r"^tenancy witnessed by the subject", re.IGNORECASE), "was witness to the tenancy of", "owner", False),
     (re.compile(r"^tenancy witness", re.IGNORECASE), "was witness to the tenancy of", "named", False),
     (re.compile(r"^verification witness", re.IGNORECASE), "vouched as a PRVS witness for", "named", False),
@@ -202,6 +212,9 @@ _WEAK_VERBS = (
     ("same household", "may share a household with"),
     ("same workplace", "may work at the same place as"),
     ("family", "may be family of"),
+    ("witnesses in the same tenancy", "was a witness in the same tenancy as"),
+    ("co-witness", "was a witness in the same tenancy as"),
+    ("same locality", "lives in the same locality as"),
 )
 
 
@@ -209,7 +222,10 @@ def weak_relation(label: str, a: str, b: str, score: float | None = None) -> Rel
     """An inferred link: a lead, worded as the fact it rests on."""
     parts = [p.strip() for p in (label or "").split("+") if p.strip()]
     first = parts[0].lower().removeprefix("ai:").strip() if parts else ""
-    verb = next((v for key, v in _WEAK_VERBS if key in first), "has an inferred link to")
+    verb = next((v for key, v in _WEAK_VERBS if key in first), None)
     extra = [p for p in parts[1:]]
     note = "inferred" + (f" {score:.2f}" if score is not None else "") + (f" · also {', '.join(extra).lower()}" if extra else "")
+    if verb is None:
+        # No wording of its own: the reason the link rests on is said, never just "an inferred link".
+        verb, note = "is linked to", (f"{first}; " if first else "") + note
     return Relation(a, b, verb, True, note=note)

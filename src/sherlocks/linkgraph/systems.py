@@ -9,7 +9,7 @@ phone-resolving pass before it can be searched there.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 Category = Literal[
     "identity", "criminal", "property", "employment", "travel", "traffic", "police",
@@ -72,3 +72,86 @@ IDENTITY_SYSTEMS = ("simsdb", "subscriber")
 def system_label(key: str) -> str:
     info = SYSTEMS.get(key)
     return info.label if info else key.replace("_", " ").upper()
+
+
+# What each system's answer tells an investigator - what the record is, what it proves, and
+# how a link that comes from it should be read. Taken from the shape of each API's response
+# (``extractors.py`` reads them). Given to the agents with every record and link, so a
+# connection is explained by what the record actually is.
+MEANING: dict[str, str] = {
+    "nadra": "The citizen register. Gives the person's own identity: name, father's name, date of birth, address, photo. "
+             "The most reliable source for a name.",
+    "simsdb": "The SIM register by CNIC: every SIM registered on that CNIC. A number someone USES may be registered on "
+              "another person's CNIC ('registered owner of SIM') - common, and not suspicious by itself.",
+    "subscriber": "The telecom subscriber record (data to 2020): the name, CNIC and address a SIM was registered with, "
+                  "and its activation date. The registered owner is often not the person using the number, so its "
+                  "name is the least reliable name for a person. 'Registered owner of SIM' links the user of a number "
+                  "to whoever it is registered to.",
+    "caller_id": "Crowd-sourced name tags for a phone number. Unverified: an alias, never an identity.",
+    "psrms": "The FIR register. Each row is one FIR naming the person, with their ROLE in it: complainant, accused, "
+             "witness or victim. Links from it say who is what to whom in that FIR: co-accused, accused by the "
+             "complainant, complainant against the accused, witness, co-witness. Only 'accused' is a charge.",
+    "fir_roster": "The FIR's own file: sections, date and place of occurrence, the narrative, the people named "
+                  "(nominated accused, witnesses, investigating officer), case position, case diaries and result.",
+    "cro": "The Criminal Record Office: a CRO number and the FIRs in which the person was an accused. A past record - "
+           "background, not evidence about a new incident.",
+    "arms": "The arms / criminal profile register: the person's profile, crime category and the FIRs against them.",
+    "watchlist": "The suspect watchlist: the person is on a police watchlist.",
+    "cfms": "The foreigners register: the person is recorded as a foreign national.",
+    "prvs": "Tenant and rental verification (police verification of tenants). Gives the person's profile (email, passport, "
+            "address) and their verification cases - as APPLICANT (the tenant being verified) or as WITNESS (they vouched "
+            "for another tenant). 'Verification witness' means that person vouched for the applicant. Two witnesses of "
+            "one case are co-witnesses: they vouched for the same person, which does not mean they live together.",
+    "old_tenant": "The old tenancy register. Each row is one rental: the TENANT, the OWNER (landlord), the property "
+                  "address, and up to three WITNESSES who vouched for the tenant. 'Landlord' / 'Tenant' is a rental "
+                  "between the two; 'tenancy witnessed by' means the person signed as a witness for that tenant; two "
+                  "witnesses of the same tenancy are co-witnesses, not people at the same address.",
+    "trust": "The tenant register (TRUST), searched by a person's CNIC or mobile. It answers with every TENANCY the "
+             "person is on, by the part they have in it: as the TENANT (the property address, the landlord's name, "
+             "the lease dates, the police station that verified it, the TWO WITNESSES who signed the tenancy form, and "
+             "the family members living there); as a WITNESS of someone else's tenancy; as a FAMILY MEMBER living in "
+             "someone's rented home; or as the OWNER of a rented property. A 'tenancy witness' signed the tenancy "
+             "form to vouch for the tenant - an acquaintance, guarantor or neighbour; it does not mean they live "
+             "there or own anything. The register's 'relation' field next to a name is that person's FATHER'S NAME "
+             "(s/o), not how they are related. 'Family member' is declared on the form; 'co-tenant' means they rent "
+             "the same property.",
+    "hotel_eye": "Hotel guest registrations. Gives each STAY of the person: hotel, district, police station, room, "
+                 "check-in and check-out, purpose of visit - and the people who stayed with them. 'Shared hotel stay' "
+                 "(or room-mate) means both were registered on the same stay; 'used the same phone / CNIC at check-in' "
+                 "means another guest gave the same number or CNIC, not that they were together.",
+    "sbvs": "Servant and background verification: where the person works or serves (organisation, profession), verified "
+            "by the police.",
+    "evs": "Employee verification: the person's employer and designation.",
+    "hope": "The employee registry: the person's employer and designation.",
+    "hrmis": "The police officer directory: the person is a serving police officer - rank, belt number, posting, police "
+             "station. A police officer on a graph is usually the investigating officer of an FIR, not a suspect.",
+    "dls": "Driving licences: name, father's name, CNIC, address, licence numbers and the licence photo.",
+    "tracs": "Traffic challans: the vehicles the person was challaned on, and the owner named on each challan (who may be "
+             "someone else: the person was driving another's vehicle).",
+    "excise": "The vehicle register: vehicles registered in the person's name (make, model, number).",
+    "avlc": "Stolen and recovered vehicles: a vehicle case, with its complainant. 'Complainant (vehicle case)' is the "
+            "person who reported that vehicle.",
+    "pfc": "Police facilitation complaints the person filed.",
+    "igp_cms": "IGP complaints, both ways: complaints the person FILED (those complained against are linked) and "
+               "complaints filed AGAINST the person (the complainant is linked).",
+    "milap": "Lost persons and property: reports the person made, with the missing or found person named.",
+    "osint": "Open-source footprint from the web. Unverified.",
+    "identity": "Our own matching: the same phone number or CNIC appears in the records of both people.",
+}
+
+
+def meaning(key: str) -> str:
+    """What that system's record tells (empty for a system not described)."""
+    return MEANING.get(key, "")
+
+
+def meanings(keys: Any) -> dict[str, str]:
+    """``{label: what it tells}`` for the systems named - by key or by label."""
+    by_label = {info.label.lower(): k for k, info in SYSTEMS.items()}
+    out: dict[str, str] = {}
+    for raw in keys or []:
+        k = str(raw or "").strip().lower()
+        k = k if k in MEANING else by_label.get(k, k.replace(" ", "_"))
+        if k in MEANING:
+            out[system_label(k) if k in SYSTEMS else k.title()] = MEANING[k]
+    return out

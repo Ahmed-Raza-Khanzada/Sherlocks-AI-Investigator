@@ -43,21 +43,25 @@ def test_the_context_pack_has_both_parts_ids_and_whats_missing():
     assert pack["targets"]                                              # the case memory parts stay
 
 
+_READING = {"act": "question", "asks_something": True, "type": "connection", "people": ["Kamran Ahmed", "Sajid Mehmood"],
+            "depth": "detailed", "scope": "connection", "shape": "link"}
+_DRAFT = {"first_line": "Kamran and Sajid are co-accused in FIR 45/2023.", "answered": True,
+          "sections": [{"name": "Every connection", "body": "• Co-accused in FIR 45/2023 [PSRMS]"}]}
+
+
 def test_a_slow_draft_goes_out_as_a_follow_up():
     s = Settings()
     s.chat.draft_budget_s = 0.2
     case, graph = CaseFile(), _graph()
     saved = []
-    llm = _Llm({"_Statements": {"statements": []},
-                "_KnowledgeAnswer": {"answer": "Kamran and Sajid are co-accused in FIR 45/2023.",
-                                     "needs_deeper_investigation": False},
-                "_Reply": {"reply": "unused"}, "_Check": {"consistent": True, "issues": []}},
-               delays={"_KnowledgeAnswer": 0.8})
+    llm = _Llm({"_Reading": _READING, "_Draft": _DRAFT, "_Check": {"consistent": True, "issues": []}},
+               delays={"_Draft": 0.8})
     turn = list(run_turn(graph, "How are Kamran and Sajid connected?", llm=llm, case=case, settings=s,
                          on_late=lambda: saved.append(1)))
     final = turn[-1]
     assert "draft" in final["late"] and final["followup_pending"]
     assert final["answer"]                                             # the board's answer went out now
+    assert [e["type"] for e in turn].count("start") == 1 and [e["type"] for e in turn].count("final") == 1
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline and not case.followups:
         time.sleep(0.05)
@@ -68,9 +72,8 @@ def test_a_slow_draft_goes_out_as_a_follow_up():
 def test_sherlocks_view_is_given_labelled_and_kept():
     s = Settings()
     case, graph = CaseFile(), _graph()
-    llm = _Llm({"_Statements": {"statements": []},
-                "_KnowledgeAnswer": {"answer": "Kamran and Sajid are co-accused in FIR 45/2023.",
-                                     "needs_deeper_investigation": False},
+    llm = _Llm({"_Reading": {**_READING, "people": ["Kamran Ahmed"], "opinion": True, "wants_view": True, "shape": "yes_no"},
+                "_Draft": {**_DRAFT, "sections": [{"name": "The basis", "body": "• Co-accused in FIR 45/2023 [PSRMS]"}]},
                 "_View": {"view": "Lagta hai dono saath kaam karte hain.", "people": ["Kamran Ahmed"]},
                 "_Check": {"consistent": True, "issues": []}})
     final = list(run_turn(graph, "kya Kamran is mein shamil hai?", llm=llm, case=case, settings=s))[-1]
@@ -78,3 +81,14 @@ def test_sherlocks_view_is_given_labelled_and_kept():
     assert case.views and case.views[0]["turn"] == 1
     assert final["timing"]["total"] >= 0 and "brief" in final["timing"]
     assert 1 <= final["model_calls"] <= 4
+
+
+def test_sherlock_gives_no_view_on_a_plain_count_or_lookup():
+    case, graph = CaseFile(), _graph()
+    llm = _Llm({"_Reading": {**_READING, "people": ["Kamran Ahmed"], "type": "count_cases", "shape": "count", "scope": "person",
+                             "wants_view": False},
+                "_Draft": {"first_line": "0 FIRs name Kamran Ahmed.", "answered": True,
+                           "sections": [{"name": "The items", "status": "not on record"}]},
+                "_View": {"view": "must not be asked", "people": []}, "_Check": {"consistent": True, "issues": []}})
+    final = list(run_turn(graph, "Kamran kitni FIRs mein hai?", llm=llm, case=case))[-1]
+    assert "VIEW:" not in final["answer"] and not case.views

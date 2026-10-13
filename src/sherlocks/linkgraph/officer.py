@@ -99,6 +99,51 @@ _CHECKED = {
 }
 
 
+# What a toolbox lookup is called when the officer is told it was checked.
+_TOOL = {
+    "findings": ("linkage patterns", "rabton ke patterns", "روابط کے پیٹرن"),
+    "network": ("the network as a whole", "poora network", "پورا نیٹ ورک"),
+    "person": ("the records of", "records", "ریکارڈ"),
+    "neighbours": ("direct links of", "seedhay rabtay", "براہِ راست روابط"),
+    "paths": ("routes between", "darmiyan ke raaste", "درمیانی راستے"),
+    "compare": ("what they share", "mushtarik cheezein", "مشترک چیزیں"),
+    "hidden_associates": ("hidden associates", "chhupay saathi", "چھپے ساتھی"),
+    "criminal_proximity": ("nearness to known criminals", "mujrimon se qurbat", "مجرموں سے قربت"),
+    "leads": ("people not searched yet", "jin ki talash baqi hai", "جن کی تلاش باقی ہے"),
+    "timeline": ("the timeline", "timeline", "ٹائم لائن"),
+    "evidence": ("the case documents", "case ke documents", "کیس کی دستاویزات"),
+    "read_document": ("document", "document", "دستاویز"),
+    "search_evidence": ("a search of the documents", "documents mein talash", "دستاویزات میں تلاش"),
+    "fetch_fir": ("the FIR file", "FIR file", "ایف آئی آر فائل"),
+    "fetch_lab_reports": ("the lab reports", "lab reports", "لیب رپورٹس"),
+    "fetch_cro": ("the CRO dossier", "CRO dossier", "سی آر او ڈوزیئر"),
+    "lookup": ("the police system", "police system", "پولیس سسٹم"),
+    "api_router": ("the police systems", "police systems", "پولیس سسٹمز"),
+    "cdr_lookup": ("the CDR server", "CDR server", "سی ڈی آر سرور"),
+    "cdr_query": ("the CDR analysis", "CDR ka tajzia", "سی ڈی آر کا تجزیہ"),
+    "statements": ("the recorded statements", "record shuda bayanaat", "ریکارڈ شدہ بیانات"),
+    "presence": ("who was where at the time", "us waqt kaun kahan tha", "اس وقت کون کہاں تھا"),
+    "evidence_register": ("the evidence register", "saboot ka register", "ثبوت کا رجسٹر"),
+    "contradictions": ("the contradictions found", "paye gaye tazadaat", "پائے گئے تضادات"),
+    "case_leads": ("the leads being followed", "zer-e-ghaur suraagh", "زیرِ غور سراغ"),
+    "hypotheses": ("Sherlock's hypotheses", "Sherlock ke mafroozay", "شرلاک کے مفروضے"),
+    "dossier": ("the dossier of", "dossier", "ڈوزیئر"),
+    "board": ("the case board", "case board", "کیس بورڈ"),
+    "chat_memory": ("what you told me", "jo aap ne bataya", "جو آپ نے بتایا"),
+    "incident": ("the incident as recorded", "darj shuda waqia", "درج شدہ وقوعہ"),
+    "uploads": ("the uploaded files", "upload shuda files", "اپ لوڈ شدہ فائلیں"),
+}
+
+
+def checked_tool(tool: str, on: str, language: str) -> str:
+    """One lookup the Officer agent made, as the officer reads it: "linkage patterns
+    (recurring witness)" - never the tool's own syntax."""
+    i = {"en": 0, "roman": 1, "ur": 2}.get(language, 0)
+    name = (_TOOL.get(tool) or (tool.replace("_", " "),) * 3)[i]
+    about = ", ".join(part.replace("_", " ").strip(" .") for part in (on or "").split(" · ") if part.strip(" ."))
+    return f"{name} ({about})" if about else name
+
+
 def checked_item(kind: str, language: str, **fill: Any) -> str:
     """One place the Officer agent looked, in the officer's language."""
     i = {"en": 0, "roman": 1, "ur": 2}.get(language, 0)
@@ -118,5 +163,7 @@ def not_found(checked: list[str], subject: str | None, said: str = "") -> dict[s
 
 def say_not_found(facts: dict[str, Any], language: str) -> str:
     head, where, tail = NOT_FOUND.get(language, NOT_FOUND["en"])
-    first = facts.get("said") or head      # the search's own words, when it said what is missing
+    first = (facts.get("said") or head).strip()      # the search's own words, when it said what is missing
+    if first[-1:] not in ".!?۔؟":
+        first += "۔" if language == "ur" else "."
     return "\n".join([f"{first} {where.format(c=checked_line(facts.get('checked') or []) or '-')}", tail])

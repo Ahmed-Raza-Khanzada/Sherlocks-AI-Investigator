@@ -28,6 +28,7 @@ from sherlocks.agents.ollama import (
     OllamaError,
     StructuredOutputFailed,
     _extract_json,
+    close_truncated,
 )
 from sherlocks.settings import LlmSettings
 
@@ -37,6 +38,18 @@ T = TypeVar("T", bound=BaseModel)
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
+
+
+def _repaired[S: BaseModel](raw: str, schema: type[S]) -> S | None:
+    """A structured answer cut off mid-way, kept up to its last complete value - when that
+    still satisfies the schema."""
+    data = close_truncated(raw)
+    if data is None:
+        return None
+    try:
+        return schema.model_validate(data)
+    except ValidationError:
+        return None
 
 class LlmUnavailable(OllamaError):
     """The server could not be reached or refused the request."""
@@ -155,6 +168,13 @@ class OpenAICompatClient:
             try:
                 validated = schema.model_validate(_extract_json(raw))
             except (ValueError, ValidationError) as exc:
+                # Cut off at the token limit: what it did say is used, rather than asking again
+                # (a second long answer does not fit a chat reply's time).
+                saved = _repaired(raw, schema)
+                if saved is not None:
+                    logger.info("Structured answer was cut off at the token limit; used up to its last complete value")
+                    return saved, LlmResult(data=saved.model_dump(mode="json"), model=name, attempts=attempt,
+                                            duration_ms=int((time.monotonic() - started) * 1000))
                 errors.append(str(exc).replace("\n", " ")[:400])
                 logger.warning("Structured generation attempt %d/%d failed: %s", attempt, self.settings.max_attempts, errors[-1])
                 continue

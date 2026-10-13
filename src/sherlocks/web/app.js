@@ -831,6 +831,19 @@
       b.disabled = !ok;
       b.textContent = status === 'building' ? '✍ Writing report…' : '📑 Case report';
     }
+    // The court / case-file version: the same board version, without suspicions, the ranking of hypotheses and leads.
+    let fileBtn = $('reportFileBtn');
+    if (!fileBtn && $('reportBtn2')) {
+      fileBtn = document.createElement('button');
+      fileBtn.id = 'reportFileBtn';
+      fileBtn.className = 'ghost small';
+      fileBtn.type = 'button';
+      fileBtn.textContent = '📄 Court file version';
+      fileBtn.title = 'The report for court and the case file: no suspicions, hypothesis ranking or leads';
+      fileBtn.onclick = () => downloadReport(false, true);
+      $('reportBtn2').after(fileBtn);
+    }
+    if (fileBtn) fileBtn.disabled = !ok;
   }
 
   /* Follow-ups: what Sherlock sends after a reply went out - a slow lookup, his view, the
@@ -912,10 +925,25 @@
     const hyps = (c.hypotheses || []).filter((h) => !h.stale);
     const agenda = (c.agenda || []).map((x) => AGENDA_TEXT[x.task] || AGENDA_TEXT[x.task.split(':').slice(0, 2).join(':')] || x.task);
     const qs = (c.questions || []).filter((q) => q.status === 'open');
+    // The team's casework (read-only, labelled): contradictions between sources, the
+    // hypotheses ranked by the evidence against each, and the leads being followed.
+    const xs = (c.contradictions || []).filter((x) => x.status === 'open' && x.severity !== 'minor');
+    const crit = (c.critical_waiting || []).length;
+    const leads = (c.leads || []).filter((k) => !['confirmed', 'dead end'].includes(k.status));
+    const m = c.matrix || {};
+    const ranked = (m.ranking || []).slice(0, 5).map((id) => {
+      const h = (m.hypotheses || []).find((x) => x.id === id) || {};
+      const sc = (m.score || {})[id] || {};
+      return `<li><a href="#" class="cite srchyp" data-ref="${esc(id)}">${esc(id)}</a> ${esc(h.statement || '')} <span class="muted small">against ${sc.against || 0} · for ${sc.for || 0}</span></li>`;
+    });
+    const casework = `${xs.length ? `<div class="leadgroup">Contradictions between sources${crit ? ` <span class="critbadge" title="Critical findings Sherlock has not told you yet">${crit} new</span>` : ''}</div><ul class="hyplist">${xs.slice(0, 6).map((x) => `<li><span class="hstat ${x.severity === 'critical' ? 'bad' : 'open'}">${esc(x.severity)}</span>${citeHtml(x.text)} <a href="#" class="cite" data-ref="${esc(x.id)}">${esc(x.id)}</a></li>`).join('')}</ul>` : ''}
+      ${ranked.length ? `<div class="leadgroup">Hypotheses, by the evidence against each</div><ol class="hyplist mrank">${ranked.join('')}</ol>` : ''}
+      ${leads.length ? `<div class="leadgroup">Leads being followed (not evidence)</div><ul class="hyplist">${leads.slice(0, 5).map((k) => `<li><span class="hstat open">${esc(k.status)}</span>${esc(k.hint)}${k.next_step ? ` <span class="muted small">→ ${esc(k.next_step)}</span>` : ''} <a href="#" class="cite" data-ref="${esc(k.id)}">${esc(k.id)}</a></li>`).join('')}</ul>` : ''}`;
     box.innerHTML = `<div class="runhead"><b>🕵 Sherlock's work</b><button id="boardBtn2" class="ghost small" type="button">Open case board</button></div>
       ${agenda.length ? `<div class="shworking"><span class="shimmer">${esc(agenda[0])}…</span>${agenda.length > 1 ? `<span class="muted small"> +${agenda.length - 1} more</span>` : ''}</div>` : ''}
       ${a.answer ? `<p class="small">${citeHtml(a.answer)}</p>` : '<p class="muted small">Sherlock assesses the case as documents, records and your answers arrive.</p>'}
       ${hyps.length ? `<ul class="hyplist">${hyps.slice(0, 6).map((h) => `<li><span class="hstat ${STATUS_COLOR[h.status] || 'open'}">${esc(h.status)}</span>${citeHtml(h.statement)} <a href="#" class="cite srchyp" data-ref="${esc(h.id)}">${esc(h.id)}</a></li>`).join('')}</ul>` : ''}
+      ${casework}
       ${qs.length ? `<div class="leadgroup">Sherlock needs to know</div><ul class="asklist">${qs.slice(0, 5).map((q) => `<li class="askitem ${esc(q.priority || 'orange')}"><span class="askdot"></span>${esc(q.text)}</li>`).join('')}</ul>` : ''}
       ${a.at ? `<div class="muted small">Assessed ${esc(String(a.at).replace('T', ' ').slice(0, 16))}</div>` : ''}`;
     box.hidden = false;
@@ -1113,7 +1141,7 @@
     }
   }
 
-  async function downloadReport(rebuild = false) {
+  async function downloadReport(rebuild = false, file = false) {
     if (!reportAvailable()) return;
     const buttons = [$('reportBtn'), $('reportBtn2')];
     buttons.forEach((b) => { b.disabled = true; b.textContent = '✍ Preparing PDF…'; });
@@ -1124,7 +1152,7 @@
     try {
       const response = state.offline
         ? await fetch(`${API}/graph/report`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ graph: currentGraph(), explain: rebuild }) })
-        : await fetch(`${API}/graph/runs/${encodeURIComponent(state.runId)}/report.pdf${rebuild ? '?rebuild=true' : ''}`, { headers: authHeaders() });
+        : await fetch(`${API}/graph/runs/${encodeURIComponent(state.runId)}/report.pdf?version=${file ? 'file' : 'internal'}${rebuild ? '&rebuild=true' : ''}`, { headers: authHeaders() });
       if (!response.ok) {
         let detail = response.statusText;
         try { detail = (await response.json()).detail || detail; } catch (_) { /* not json */ }
@@ -1132,7 +1160,7 @@
       }
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
-      download(`Sherlocks_case_report_${(state.runId || 'graph').slice(0, 8)}.pdf`, url);
+      download(`Sherlocks_case_${file ? 'file_' : ''}report_${(state.runId || 'graph').slice(0, 8)}.pdf`, url);
       setTimeout(() => URL.revokeObjectURL(url), 60000);
       note.querySelector('.shans').innerHTML = '<div class="shreply"><p>Case report ready - downloaded.</p></div>';
     } catch (err) {
@@ -1153,7 +1181,7 @@
       .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
       .replace(/\[([^\]<>]{1,80})\]/g, (all, inner) => {
         const parts = inner.split(/,\s*/).map((part) => {
-          const id = part.match(/\b([DFLHQ]\d{1,4})\b/);
+          const id = part.match(/\b([DFLHQWXK]\d{1,4})\b/);
           if (id) return part.replace(id[1], `<a href="#" class="cite ${sourceKind(id[1])}" data-ref="${id[1]}">${id[1]}</a>`);
           if (/^[A-Za-z][\w .&#/-]{1,30}$/.test(part) && !/^\d+$/.test(part)) {
             return `<a href="#" class="cite srcapi" data-sys="${part}" title="Open the ${part} records">${part}</a>`;
@@ -1200,7 +1228,12 @@
       a.onclick = (e) => {
         e.preventDefault();
         if (a.dataset.sys) { openSystemSource(a.dataset.sys, box.textContent); return; }
-        if (a.dataset.ref?.[0] === 'H') { openBoard(a.dataset.ref); return; }
+        if (['H', 'X', 'K'].includes(a.dataset.ref?.[0])) { openBoard(a.dataset.ref); return; }
+        if (a.dataset.ref?.[0] === 'W') {            // a recorded statement: the record it was read from
+          const w = (state.caseIndex?.statements || []).find((x) => x.id === a.dataset.ref);
+          if (w) openDocument(w.doc, null);
+          return;
+        }
         const doc = docOfRef(a.dataset.ref);
         if (doc) openDocument(doc, a.dataset.ref[0] === 'D' ? null : a.dataset.ref);
       };
@@ -1233,8 +1266,9 @@
   }
 
   // A reply as readable text: "• " lines become a list, a line ending in ":" a lead-in.
-  /* The Presenter's layout: **bold** answer first, bullets, | table | rows, > quotes from
-     the records, and Sherlock's view (a "VIEW:" line) in its own labelled block. */
+  /* The Presenter's layout: **bold** answer first, "## " section headings of the answer
+     shape, bullets, | table | rows, > quotes from the records, Sherlock's view (a "VIEW:"
+     line) and one finding of his team (a "FINDING:" line), each in its own labelled block. */
   function replyHtml(text) {
     const out = [];
     let group = null;
@@ -1249,7 +1283,9 @@
       if (/^>\s?/.test(line)) { push('quote', line.replace(/^>\s?/, '')); continue; }
       group = null;
       if (!line) continue;
+      if (/^##\s+/.test(line)) { out.push({ kind: 'head', lines: [line.replace(/^##\s+/, '')] }); continue; }
       if (/^VIEW:\s*/.test(line)) { out.push({ kind: 'view', lines: [line.replace(/^VIEW:\s*/, '')] }); continue; }
+      if (/^FINDING:\s*/.test(line)) { out.push({ kind: 'finding', lines: [line.replace(/^FINDING:\s*/, '')] }); continue; }
       const ask = line.match(/^ASK:(red|orange|green):\s*(.*)$/);
       if (ask) { out.push({ kind: 'ask', level: ask[1], lines: [ask[2]] }); continue; }
       if (/^SOURCES:\s*/.test(line)) { out.push({ kind: 'sources', lines: [line.replace(/^SOURCES:\s*/, '')] }); continue; }
@@ -1258,7 +1294,9 @@
     return out.map((g) => {
       if (g.kind === 'list') return `<ul class="shbul">${g.lines.map((li) => `<li dir="${lineDir(li)}">${citeHtml(li)}</li>`).join('')}</ul>`;
       if (g.kind === 'quote') return `<blockquote class="shquote" dir="auto">${g.lines.map(citeHtml).join('<br>')}</blockquote>`;
+      if (g.kind === 'head') return `<h5 class="shhead" dir="${lineDir(g.lines[0])}">${citeHtml(g.lines[0])}</h5>`;
       if (g.kind === 'view') return `<p class="shview" dir="${lineDir(g.lines[0])}">${citeHtml(g.lines[0])}</p>`;
+      if (g.kind === 'finding') return `<p class="shfinding" dir="${lineDir(g.lines[0])}" title="A finding of the Sherlock team - not confirmed">${citeHtml(g.lines[0])}</p>`;
       if (g.kind === 'ask') {
         const what = { red: 'Needed to move the case', orange: 'Important', green: 'Helpful' }[g.level];
         return `<p class="shask ${g.level}" dir="${lineDir(g.lines[0])}" title="Sherlock's question - ${what}"><span class="askdot"></span>${citeHtml(g.lines[0])}</p>`;
@@ -2862,7 +2900,8 @@
     // A click inside the panel may re-render it (the clicked link is then gone from the page).
     if (panel && !panel.hidden && document.contains(e.target) && !e.target.closest('.connfilter')) panel.hidden = true;
   });
-  $('reportBtn').onclick = (e) => downloadReport(e.shiftKey);
+  $('reportBtn').onclick = (e) => downloadReport(e.shiftKey, e.altKey);
+  $('reportBtn').title += ' Alt-click: the court / case-file version (no suspicions, ranking or leads).';
   ensureBoardMarkup();
   $('boardBtn').onclick = () => openBoard();
   window.addEventListener('resize', () => { if ($('boardDlg')?.open) drawStrings($('boardBody')); });

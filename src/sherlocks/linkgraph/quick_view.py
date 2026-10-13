@@ -31,7 +31,8 @@ class _View(BaseModel):
 _SYSTEM = ("You are Sherlock, the lead detective. The officer asks for your judgment in the chat. Answer from your "
            "current assessment and the case board given - nothing else, no new facts, no tool calls. Say what you "
            "think and why, briefly, citing the ids your view rests on. If the board does not support a view, say what "
-           "is missing. Reply in {lang}. " + DATA_NOT_INSTRUCTIONS)
+           "is missing. Plain words an investigating officer uses - never network-analysis words (broker, "
+           "gatekeeper, cluster, hub, centrality). Reply in {lang}. " + DATA_NOT_INSTRUCTIONS)
 
 
 def ask(llm: Any, message: str, language: str, pack: dict[str, Any]) -> dict[str, Any] | None:
@@ -39,7 +40,8 @@ def ask(llm: Any, message: str, language: str, pack: dict[str, Any]) -> dict[str
 
     payload = {"question": message, "your_assessment": pack.get("sherlock_view"), "summary": pack.get("summary"),
                "facts": pack.get("matched_facts"), "officer_said": pack.get("statements"),
-               "conflicts": pack.get("conflicts"), "missing": pack.get("missing"), "focus": pack.get("focus")}
+               "conflicts": pack.get("conflicts"), "missing": pack.get("missing"), "focus": pack.get("focus"),
+               "write_your_view_in": LANG_NAME.get(language, "English")}
     try:
         out, _ = llm.generate_structured(prompt=json.dumps(payload, ensure_ascii=False, default=str), schema=_View,
                                          system=_SYSTEM.format(lang=LANG_NAME.get(language, "English")),

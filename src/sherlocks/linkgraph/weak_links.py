@@ -150,12 +150,29 @@ def _parts(address: str, cache: dict[str, dict], ai: AddressParser | None, want_
     return parts
 
 
+def locality(parts: dict) -> set[str]:
+    """The named place inside the city - the mohalla, colony, village, building, society.
+    City, district and province names are not a locality: thousands of people share them."""
+    return {t for t in (parts.get("area_tokens") or "").split() if t not in PK_CITIES}
+
+
+def anchored(parts: dict) -> bool:
+    """Does the address point at premises: a house / flat / plot, a street, a block, a sector?"""
+    return any(parts.get(k) for k in ("house", "street", "block", "sector"))
+
+
 def address_score(a: str, b: str, pa: dict, pb: dict) -> tuple[float, str]:
+    """How surely two addresses are the same place. Two addresses are the same only when
+    they share the premises (house, street, block) or at least the same named locality.
+    The same city, district or province alone is never the same address - it scores 0."""
     na, nb = normalize_address(a), normalize_address(b)
     if not na or not nb:
         return 0.0, ""
     if pa.get("city") and pb.get("city") and pa["city"] != pb["city"]:
         return 0.0, ""
+    la, lb = locality(pa), locality(pb)
+    if not (anchored(pa) and anchored(pb)) and not (la & lb):
+        return 0.0, ""          # nothing but a city / district in common (or nothing to compare)
 
     def differs(key: str) -> bool:
         return bool(pa.get(key) and pb.get(key) and pa[key] != pb[key])
@@ -163,8 +180,8 @@ def address_score(a: str, b: str, pa: dict, pb: dict) -> tuple[float, str]:
     # Block 7 and Block 13-D are different places however similar the rest reads.
     if differs("block") or differs("sector"):
         return 0.0, ""
-    area = fuzz.token_set_ratio(pa.get("area_tokens") or "", pb.get("area_tokens") or "") if (
-        pa.get("area_tokens") and pb.get("area_tokens")) else 0
+    # How alike the named localities are - city names left out, so "Karachi" never counts as an area.
+    area = fuzz.token_set_ratio(" ".join(sorted(la)), " ".join(sorted(lb))) if (la and lb) else 0
     same_house = bool(pa.get("house") and pa.get("house") == pb.get("house"))
     same_street = bool(pa.get("street") and pa.get("street") == pb.get("street"))
     same_block = bool(pa.get("block") and pa.get("block") == pb.get("block"))
@@ -172,7 +189,13 @@ def address_score(a: str, b: str, pa: dict, pb: dict) -> tuple[float, str]:
         return 0.85, "Same house, street/block and area"
     if not differs("house") and not differs("street"):
         if na == nb or fuzz.ratio(na, nb) >= 93:
-            return 0.8, "Same address text"
+            if same_house or same_street or same_block:
+                return 0.8, "Same address text"
+            if la & lb:
+                # The same mohalla / village / colony, with no house or street on record:
+                # the same locality - weaker than the same premises.
+                return 0.5, "Same locality (no house or street on record)"
+            return 0.0, ""
         small, big = sorted((set(na.split()), set(nb.split())), key=len)
         # Every token of the shorter one, numbers included, is in the longer: "Flat 5,
         # House 45, Block 13-D" inside "House 45, Block 13-D". Needs a number to anchor it.
@@ -254,11 +277,14 @@ def _family(x: dict, y: dict, address: float) -> list[Signal]:
 
 
 def _rule_signals(dx: dict, dy: dict, parts_cache: dict, ai: AddressParser | None,
-                  crowd: dict[str, Counter[str]] | None = None) -> tuple[list[Signal], bool]:
+                  crowd: dict[str, Counter[str]] | None = None, co_witness: bool = False) -> tuple[list[Signal], bool]:
+    """``co_witness``: the two witnessed the same tenancy / verification / case. Their link
+    is "co-witness" (the graph already has it); the address written on that form is not
+    read as "they live at the same address"."""
     crowd = crowd or {"org": Counter(), "ps": Counter()}
     signals: list[Signal] = []
     best_address, best_reason, used_ai = 0.0, "", False
-    for a, b in itertools.product(dx["addresses"][:6], dy["addresses"][:6]):
+    for a, b in itertools.product(dx["addresses"][:6], dy["addresses"][:6]) if not co_witness else ():
         pa, pb = _parts(a, parts_cache, ai, False), _parts(b, parts_cache, ai, False)
         score, reason = address_score(a, b, pa, pb)
         if score < 0.6 and ai and 55 <= fuzz.token_set_ratio(normalize_address(a), normalize_address(b)) < 93:
@@ -271,6 +297,8 @@ def _rule_signals(dx: dict, dy: dict, parts_cache: dict, ai: AddressParser | Non
     if best_address:
         if "Neighbour" in best_reason:
             label = "Neighbour"
+        elif "locality" in best_reason:
+            label = "Same locality"
         elif best_address >= 0.6:
             label = "Same address"
         else:
@@ -350,7 +378,9 @@ _PAIR_SYSTEM = (
     "child, surname plus address), the same workplace, or that A and B may be one person "
     "recorded twice. Use only the text given. Copy 1-3 short evidence fragments exactly as they "
     "appear. A common name, a shared city, or a shared large area on its own is NOT a "
-    "connection - answer none. Prefer none when unsure."
+    "connection - answer none. The same address means the same house, flat, plot or building, "
+    "the same street or block, or at least the same named mohalla, colony or village: the same "
+    "city, town, district or province is NEVER the same address or household. Prefer none when unsure."
 )
 _AI_LABELS = {
     "same_address": "AI: same address",
@@ -388,6 +418,15 @@ def _tokens(d: dict) -> set[str]:
         area = parse_address(address).get("area_tokens") or ""
         tokens.update(t for t in area.split() if t not in PK_CITIES)
     return tokens
+
+
+def _share_a_place(dx: dict, dy: dict) -> bool:
+    """Do two people have an address in common beyond the city - the same premises, or the
+    same named locality?"""
+    if _tokens(dx) & _tokens(dy):
+        return True
+    return any(address_score(a, b, parse_address(a), parse_address(b))[0] > 0
+               for a, b in itertools.product(dx["addresses"][:6], dy["addresses"][:6]))
 
 
 def _prior(dx: dict, dy: dict) -> float:
@@ -435,13 +474,15 @@ class LlmPairReviewer:
         try:
             judgement, _ = self.llm.generate_structured(
                 prompt=f"{text}\n\nReturn your judgement as JSON.", schema=_PairJudgement,
-                system=_PAIR_SYSTEM, cache_kind="pair_review", prompt_version="v1",
+                system=_PAIR_SYSTEM, cache_kind="pair_review", prompt_version="v2",
             )
         except Exception as exc:  # noqa: BLE001 - a failed review is a missing lead, not a failed run
             logger.info("AI pair review failed: %s", exc)
             return None
         if judgement.relation == "none" or judgement.confidence < 0.3:
             return None
+        if judgement.relation in ("same_address", "same_household") and not _share_a_place(dx, dy):
+            return None  # only a city or district in common: not the same address, whatever the model says
         haystack = _flat(text)
         evidence = [e.strip() for e in judgement.evidence if len(_flat(e)) >= 3 and _flat(e) in haystack]
         if not evidence:
@@ -477,12 +518,13 @@ def compute_weak_links(
         crowd["ps"].update({name_key(p) for p in n.data.get("police_stations") or [] if name_key(p)})
     found: dict[tuple[str, str], tuple[list[Signal], set[str]]] = {}
     candidates: list[tuple[float, tuple[str, str]]] = []
+    together = builder.co_witness_pairs()        # co-witnesses of one tenancy / case: never "same address"
 
     for x, y in itertools.combinations(people, 2):
         dx, dy = x.data, y.data
         if dx.get("cnic") and dx.get("cnic") == dy.get("cnic"):
             continue
-        signals, used_ai = _rule_signals(dx, dy, parts_cache, ai, crowd)
+        signals, used_ai = _rule_signals(dx, dy, parts_cache, ai, crowd, co_witness=frozenset((x.id, y.id)) in together)
         found[(x.id, y.id)] = (signals, {"ai"} if used_ai else set())
         if reviewer is not None and _combine(signals) < AI_PAIR_CAP and not builder.connected_directly(x.id, y.id):
             prior = _prior(dx, dy)
@@ -499,6 +541,8 @@ def compute_weak_links(
         keys = [key for _, key in candidates]
         results = reviewer.review([(builder.nodes[a].data, builder.nodes[b].data) for a, b in keys])
         for key, result in zip(keys, results, strict=False):
+            if result and frozenset(key) in together and result[1] in (_AI_LABELS["same_address"], _AI_LABELS["same_household"]):
+                continue                             # co-witnesses: not "the same address"
             if result:
                 found[key][0].append(result)
                 found[key][1].add("ai")

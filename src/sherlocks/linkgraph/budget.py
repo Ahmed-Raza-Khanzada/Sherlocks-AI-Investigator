@@ -29,15 +29,31 @@ _LATE = object()
 class CountingLlm:
     """The model client, counting its calls (a turn should make at most two on most turns)."""
 
-    def __init__(self, llm: Any) -> None:
+    def __init__(self, llm: Any, on_call: Callable[..., None] | None = None) -> None:
         self._llm = llm
         self.calls = 0
         self._lock = threading.Lock()
+        self.on_call = on_call          # the turn's trace: (kwargs, result, error, ms) after every call
 
     def generate_structured(self, *args: Any, **kwargs: Any) -> Any:
         with self._lock:
             self.calls += 1
-        return self._llm.generate_structured(*args, **kwargs)
+        started = time.monotonic()
+        try:
+            out = self._llm.generate_structured(*args, **kwargs)
+        except BaseException as exc:
+            self._report(kwargs, None, exc, started)
+            raise
+        self._report(kwargs, out, None, started)
+        return out
+
+    def _report(self, kwargs: dict[str, Any], out: Any, exc: BaseException | None, started: float) -> None:
+        if self.on_call is None:
+            return
+        try:
+            self.on_call(kwargs, out, exc, int((time.monotonic() - started) * 1000))
+        except Exception:  # a trace never breaks a model call
+            logger.debug("Trace of a model call failed", exc_info=True)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._llm, name)

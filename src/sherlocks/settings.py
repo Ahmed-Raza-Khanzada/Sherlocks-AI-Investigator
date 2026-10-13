@@ -244,7 +244,7 @@ class ChatSettings(BaseModel):
     what finishes late is sent as a follow-up message - partial beats late."""
 
     reply_budget_s: float = 40.0      # the whole reply, never longer
-    draft_budget_s: float = 10.0      # O1 understanding + drafting (one model call)
+    draft_budget_s: float = 30.0      # O1 understanding + drafting (one model call)
     tools_budget_s: float = 10.0      # toolbox / live calls, together, in parallel
     view_budget_s: float = 10.0       # Sherlock's quick view (one model call, no tools)
     investigate_budget_s: float = 25.0  # the investigator's tool loop in a reply

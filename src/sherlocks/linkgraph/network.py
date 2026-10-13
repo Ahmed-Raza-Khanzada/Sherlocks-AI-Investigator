@@ -102,8 +102,18 @@ class PersonNetwork:
                     self._add(owner, dst, Link("strong", e.get("label") or "", e.get("system"), e["id"], src,
                                                (e.get("relation") or {}).get("sentence")))
             else:
+                sentence = (e.get("relation") or {}).get("sentence")
+                if e["kind"] == "weak" and e.get("label") and src in self.people and dst in self.people:
+                    from sherlocks.linkgraph.relations import weak_relation
+
+                    try:
+                        score = float(e["score"]) if e.get("score") is not None else None
+                    except (TypeError, ValueError):
+                        score = None
+                    sentence = weak_relation(e["label"], src, dst, score).sentence(
+                        {src: self.people[src]["label"], dst: self.people[dst]["label"]})
                 self._add(src, dst, Link(e["kind"], e.get("label") or "", e.get("system"), e["id"], None,
-                                         (e.get("relation") or {}).get("sentence"), e.get("score")))
+                                         sentence, e.get("score")))
         self.hub_records = []
         for rid, pids in members.items():
             pids = list(dict.fromkeys(pids))
@@ -154,21 +164,50 @@ class PersonNetwork:
             d = n["data"]
             if digits and (digits == (d.get("cnic") or "") or any(digits[-10:] == p[-10:] for p in d.get("phones") or [])):
                 return pid
-        names = {pid: name_key(n["label"]) for pid, n in self.people.items()}
-        hit = process.extractOne(name_key(ref), names, scorer=fuzz.WRatio, score_cutoff=80)
-        if hit:
-            return hit[2]
-        # One distinctive word of a name ("kamran" -> Kamran Ahmed), held by one person.
         from sherlocks.linkgraph.rarity import COMMON_NAME_TOKENS
 
-        words = [w for w in name_key(ref).split() if len(w) >= 3 and w not in COMMON_NAME_TOKENS]
-        if words:
-            holders = [pid for pid, key in names.items() if all(w in key.split() for w in words)]
+        # Every name the records give a person - the one shown and the others ("also recorded
+        # as"): a target shown as محمد حسنین is also MUHAMMAD HASNAIN AZAM in another system.
+        known = {pid: list(dict.fromkeys(k for k in (name_key(x) for x in self.all_names(pid)) if k))
+                 for pid in self.people}
+        asked = name_key(ref)
+
+        def one(holders: list[str]) -> str | None:
+            """The one person meant: the only holder - or, among several, the only target."""
             if len(holders) == 1:
                 return holders[0]
-        # The same name in the other script ("afzal" for افضل): one person must match.
-        by_sound = [pid for pid, n in self.people.items() if sounds_like(ref, n["label"])]
-        return by_sound[0] if len(by_sound) == 1 else None
+            targets = [p for p in holders if self.data(p).get("seed")]
+            return targets[0] if len(targets) == 1 else None
+
+        # 1. The name exactly as some record has it.
+        hit = one([pid for pid, keys in known.items() if asked in keys])
+        if hit:
+            return hit
+        # 2. A distinctive word of a name ("hasnain" -> Muhammad Hasnain Azam): every word asked
+        #    is a whole word of one of the person's names.
+        words = [w for w in asked.split() if len(w) >= 3 and w not in COMMON_NAME_TOKENS] or asked.split()
+        if words:
+            hit = one([pid for pid, keys in known.items() if any(all(w in key.split() for w in words) for key in keys)])
+            if hit:
+                return hit
+        # 3. The same name in the other script ("afzal" for افضل). Among several who sound
+        #    alike, the one whose written name is closest ("hasan" is Hassan, not Hasnain).
+        alike = [pid for pid in self.people if any(sounds_like(ref, x) for x in self.all_names(pid))]
+        if len(alike) == 1:
+            return alike[0]
+        if alike:
+            return max(alike, key=lambda p: max(fuzz.ratio(asked, k) for k in known[p]))
+        # 4. Only then a look-alike spelling ("Kamraan" for Kamran) - never before a real match:
+        #    "hasnain" is not "Hassan" when someone on the graph is called Hasnain.
+        shown = {pid: keys[0] for pid, keys in known.items() if keys}
+        close = process.extractOne(asked, shown, scorer=fuzz.WRatio, score_cutoff=80)
+        return close[2] if close else None
+
+    def all_names(self, pid: str) -> list[str]:
+        """Every name on record for a person: the one shown, other spellings, aliases."""
+        d = self.data(pid)
+        aliases = (d.get("extra") or {}).get("aliases") or []
+        return [str(x) for x in (self.name(pid), *(d.get("names") or []), *aliases) if x]
 
     def criminal(self, pid: str) -> bool:
         return bool(criminal_flags(self.data(pid)))

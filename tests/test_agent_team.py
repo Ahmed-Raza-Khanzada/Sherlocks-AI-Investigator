@@ -86,8 +86,9 @@ def test_an_uploaded_cdr_is_read_linked_and_questioned(demo_run):
     edges = handle.builder.snapshot()["edges"]
     assert any(e["label"].startswith("In phone contact") and e["system"] == "cdr" for e in edges)
     assert mgr.upload_file(handle.id, doc["id"])[1] == "kamran cdr.xlsx"
-    # The Questioner wants the incident first.
-    assert [q["key"] for q in case.open_questions()][:1] == ["incident:place"]
+    # The target is already named in FIRs: the Questioner first wants to know which case this is,
+    # then the incident.
+    assert [q["key"] for q in case.open_questions()][:2] == ["case:which", "incident:place"]
 
     # The officer pins it: the CDR is re-read against the point, the question closes.
     mgr.set_incident(handle.id, {"lat": 24.9, "lon": 67.09, "place": "Rashid Minhas Road", "date": "2023-03-01", "time": "23:00"})
@@ -95,11 +96,11 @@ def test_an_uploaded_cdr_is_read_linked_and_questioned(demo_run):
     assert not any(q["key"] == "incident:place" and q["status"] == "open" for q in case.questions)
     assert any(f["by"] == "officer" and "Rashid Minhas Road" in f["statement"] for f in case.facts.values())
 
-    # Main suspect: answered with a person.
-    q = next((q for q in case.open_questions() if q["key"] == "roles:main"), None)
-    assert q is not None
-    mgr.answer_question(handle.id, q["id"], "Kamran Ahmed", q["options"][0]["id"])
-    assert list(case.roles.values()) == ["main suspect"]
+    # One target is the person under investigation: nobody is asked who the main suspect is.
+    from sherlocks.evidence.questioner import gaps
+
+    assert not any(q["key"] == "roles:main" for q in case.questions)
+    assert not any(g["key"] == "roles:main" for g in gaps(case, handle.graph()))
 
 
 def test_refused_upload_over_http(demo_run):
@@ -176,25 +177,44 @@ def test_a_chat_turn_runs_through_the_team():
 
     seen = {}
 
-    def reply(prompt):
-        seen["memory"] = __import__("json").loads(prompt)["case_memory"]
-        return {"reply": "Kamran and Sajid are co-accused [F9]."}
+    def draft(prompt):
+        data = __import__("json").loads(prompt)
+        if data.get("fix_these_problems"):               # sent back by the Answer checker, with the reasons
+            seen["problems"] = data["fix_these_problems"]
+            return {"first_line": "Kamran and Sajid are co-accused in FIR 45/2023 [PSRMS].", "answered": True,
+                    "sections": [{"name": "Every connection", "body": "• Co-accused in FIR 45/2023 [PSRMS]"}]}
+        seen["given"] = data["given"]
+        return {"first_line": "Kamran and Sajid are brothers and co-accused [F9].", "answered": True,
+                "sections": [{"name": "Every connection", "body": "• Co-accused in FIR 45/2023 [F9]", "status": "not on record"}]}
 
-    llm = _Llm({"_Statements": {"statements": []}, "_Step": {"thought": "done", "action": "final", "args": {}},
-                "_Final": {"answer": "Kamran and Sajid are co-accused [PSRMS].", "confident": True, "hypotheses": [],
-                           "next_steps": []},
-                "_Reply": reply, "_Check": {"consistent": True, "issues": []},
-                "_Revision": {"answer": "Kamran and Sajid are co-accused in FIR 45/2023 [PSRMS]."}})
+    def check(prompt):
+        data = __import__("json").loads(prompt)
+        seen["checker_given"] = data
+        if "brothers" in data["draft_answer"]:
+            return {"consistent": False, "issues": ["The draft says they are brothers; no record given says so."]}
+        return {"consistent": True, "issues": []}
+
+    llm = _Llm({"_Reading": {"act": "question", "asks_something": True, "type": "connection", "shape": "link",
+                             "people": ["Kamran Ahmed", "Sajid Mehmood"], "depth": "detailed", "scope": "connection"},
+                "_Draft": draft, "_Check": check})
     turn2 = list(run_turn(graph, "How are Kamran and Sajid connected?", llm=llm, case=case))
     final = turn2[-1]
     assert {"Question reader", "Officer agent", "Facts agent", "Validator"} <= {e["agent"] for e in turn2 if e["type"] == "agent"}
-    # The model's draft cited a fact that does not exist and left out the count: the
-    # Validator replaced it with the Facts agent's exact answer.
-    assert final["checks"]["revised"] and "directly linked" in final["answer"]
+    # The Officer agent's draft said something no record says: the Answer checker sent it back
+    # to him once, with the reason, and his second draft - same shape, same records - went out.
+    assert final["checks"]["revised"] and "brothers" not in final["answer"] and "FIR 45/2023" in final["answer"]
+    assert "brothers" in seen["problems"][0] and "## Every connection" in final["answer"]
+    assert "F9" not in final["answer"]                                 # an id that is not on the board never reaches the officer
     assert final["query"]["type"] == "connection" and final["facts"]["count"] == 1
-    # The Conversation agent spoke from the whole case: targets, connections, the officer's words.
-    memory = seen["memory"]
-    assert memory["targets"][0]["role_stated_by_officer"] == "main suspect"
-    assert any("co-accused" in c.lower() for c in memory["targets"][0]["connections"])
-    assert "main suspect hai" in memory["officer_statements"]
+    # The checker judged the draft against the records it was written from and the officer's own
+    # words - never against Sherlock's earlier replies.
+    assert "earlier_conversation" not in seen["checker_given"] and "co-accused" in seen["checker_given"]["records_given"].lower()
+    assert seen["checker_given"]["officer_said_earlier"] == ["Kamran main suspect hai. Waqia 01-03-2023 ko hua."]
+    # The Officer agent drafted from the whole case: the roles, the dossiers, the officer's words.
+    given = seen["given"]
+    assert given["case"]["roles"] == {"Kamran Ahmed": "main suspect"}
+    assert given["dossiers"][0]["role"] == "main suspect" and given["computed"]["count"] == 1
+    assert "main suspect hai" in str(given["context"]["statements"])
+    assert "chat_so_far_not_evidence" in given                        # the chat is context, never a source of facts
+    assert {"paths", "compare"} <= set(given["sources"])              # a link question: the routes and what they share
     assert len(case.conversation) == 2

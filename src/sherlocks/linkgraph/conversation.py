@@ -205,6 +205,13 @@ QUESTIONS.update({
         "en": "What happened in this case - which crime (robbery, murder, kidnapping, fraud...)?",
         "roman": "Is case mein hua kya tha - konsa jurm (dakaiti, qatl, aghwa, fraud...)?",
         "ur": "اس کیس میں ہوا کیا تھا - کون سا جرم (ڈکیتی، قتل، اغوا، فراڈ...)؟"},
+    "case:which": {
+        "en": "He is already named in an FIR on record. Is the case you are working on that FIR (which one - and has he "
+              "been arrested in it), or is it a new matter and those are his earlier cases?",
+        "roman": "Is shakhs ka naam pehle se FIR mein hai. Aap jis case par kaam kar rahe hain kya woh wohi FIR hai (kaun si - "
+                 "aur kya woh us mein giraftar ho chuka hai), ya yeh naya mamla hai aur woh us ke purane case hain?",
+        "ur": "اس شخص کا نام پہلے سے ایف آئی آر میں ہے۔ آپ جس کیس پر کام کر رہے ہیں کیا وہ وہی ایف آئی آر ہے (کون سی - اور کیا وہ "
+              "اس میں گرفتار ہو چکا ہے)، یا یہ نیا معاملہ ہے اور وہ اس کے پرانے کیس ہیں؟"},
     "incident:fir": {
         "en": "Is there an FIR for this incident? Tell me its number, year and police station and I will read its file.",
         "roman": "Is waqiye ka FIR hai? Number, saal aur thana bata dein, main us ki file parh leta hoon.",
@@ -398,6 +405,18 @@ STATUS = {
 
 # The same, for each of the investigator's tools; {x} is what it is run on (a name, a document).
 TOOL_STATUS = {
+    "statements": {"en": "Reading the recorded statements", "roman": "Record shuda bayanaat parh raha hoon",
+                   "ur": "ریکارڈ شدہ بیانات پڑھ رہا ہوں"},
+    "presence": {"en": "Checking who was where at the time", "roman": "Dekh raha hoon us waqt kaun kahan tha",
+                 "ur": "دیکھ رہا ہوں اس وقت کون کہاں تھا"},
+    "evidence_register": {"en": "Going through the evidence register", "roman": "Saboot ka register dekh raha hoon",
+                          "ur": "ثبوت کا رجسٹر دیکھ رہا ہوں"},
+    "contradictions": {"en": "Checking where the sources disagree", "roman": "Dekh raha hoon zarai kahan mukhtalif hain",
+                       "ur": "دیکھ رہا ہوں ذرائع کہاں مختلف ہیں"},
+    "case_leads": {"en": "Looking at the leads being followed", "roman": "Zer-e-ghaur suraagh dekh raha hoon",
+                   "ur": "زیرِ غور سراغ دیکھ رہا ہوں"},
+    "hypotheses": {"en": "Looking at Sherlock's hypotheses", "roman": "Sherlock ke mafroozay dekh raha hoon",
+                   "ur": "شرلاک کے مفروضے دیکھ رہا ہوں"},
     "findings": {"en": "Looking for linkage patterns", "roman": "Rabtay ke patterns dekh raha hoon",
                  "ur": "روابط کے پیٹرن دیکھ رہا ہوں"},
     "person": {"en": "Reading the profile of {x}", "roman": "{x} ka profile parh raha hoon",

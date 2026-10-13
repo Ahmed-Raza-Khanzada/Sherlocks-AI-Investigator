@@ -37,6 +37,12 @@ th, td { text-align: left; padding: 9px 10px; border-top: 1px solid var(--line);
 th { font: 600 11px/1.2 var(--mono); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 td:first-child { font-weight: 600; white-space: nowrap; }
 td.now { color: var(--muted); }
+table.wrapcells td:first-child { white-space: normal; min-width: 9em; }
+.longans { display: flex; flex-direction: column; gap: 6px; max-width: 780px; }
+.longans h4 { margin: 6px 0 0; font: 600 11px/1.2 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.longans ul { margin: 0; padding-inline-start: 18px; display: flex; flex-direction: column; gap: 3px; font-size: 13.5px; }
+.longans blockquote { margin: 0; padding: 6px 10px; border-inline-start: 3px solid var(--gold); background: var(--surface); font-size: 13px; color: var(--muted); }
+.longans .q { margin-top: 4px; }
 td.better { background: color-mix(in srgb, var(--teal) 8%, transparent); }
 .rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
 .rules div { border-top: 3px solid var(--red); padding-top: 8px; font-size: 14px; }
@@ -121,14 +127,36 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
 
 <div class="wrap">
   <header>
-    <div class="eyebrow">Plan · v4 · built 7 October 2026</div>
+    <div class="eyebrow">Plan · v5 · built on LangGraph · 12 October 2026</div>
     <h1>Sherlock agent plan</h1>
-    <p class="lede">Two teams share one case board. The <b>Officer team</b> talks to the user and makes sure every question gets a correct answer. The <b>Sherlock team</b> works quietly to solve the case. The <b>Question desk</b> sits between them, so a question is never asked twice and every answer the user gives reaches Sherlock.</p>
+    <p class="lede">Two teams share one case board. The <b>Officer team</b> talks to the user and makes sure every question gets a correct answer. The <b>Sherlock team</b> works quietly to solve the case. The <b>Question desk</b> sits between them, so a question is never asked twice and every answer the user gives reaches Sherlock. In v5 the Sherlock team gets specialists for claims, contradictions, statements and leads, a Skeptic that tries to break the leading hypothesis, and an <b>Insight desk</b> that brings what they find to the officer.</p>
   </header>
+
+  <section class="panel" id="v5">
+    <h2>What changed in v5</h2>
+    <p class="sub">From the review of v4. The Officer side was already strong; v5 gives the Sherlock side the same rigor. <b>Built and tested</b>, as three LangGraph graphs (build order steps 16–28). See <a href="#built">Built</a>, <a href="#langgraph">How it is built</a> and what is <a href="#notyet">not built yet</a>.</p>
+    <div class="rules">
+      <div><b>Report for the investigator</b>Its own Report team (P1–P6). A structured executive summary of facts, contradictions, leads, gaps and next steps, then the report in parts: overview, evidence, statements, analysis, timeline, action. <a href="#report">Section</a></div>
+      <div><b>Fact collector</b>S10 files every fact from FIR, MLO, postmortem, DNA, chemical, forensic, recovery memos and site plan into one evidence register, organized by record, person, topic and time, with chain of custody and pending reports. <a href="#register">Section</a></div>
+      <div><b>Claims from every source</b>S5 turns documents, recorded statements, CDR facts and the officer's words into comparable claims: who said what, about whom, when, where. <a href="#solve">Section</a></div>
+      <div><b>Contradiction finder</b>S6 compares claims in code (alibi against presence, impossible travel, weapon against injury, order of events) and uses the model only on flagged pairs. Each finding is an X# with severity. <a href="#solve">Section</a></div>
+      <div><b>Recorded statements and S7</b>Complainant, witness and accused statements (161, 164, interrogation) become their own type W#, with each person's versions compared over time and against the evidence. <a href="#solve">Section</a></div>
+      <div><b>Presence matrix</b>Who was where in the incident window, from CDR, hotels, statements and vehicles. A new toolbox tool. <a href="#solve">Section</a></div>
+      <div><b>Lead spotter</b>S8 turns hints (call spikes, IMEI changes, silences, repeated vehicles) into tracked leads K#: open, pursuing, confirmed or dead end. <a href="#solve">Section</a></div>
+      <div><b>Hypothesis matrix and Skeptic</b>S1 ranks hypotheses by the evidence against them. S9 tries to break the leader every run and keeps an alternative open. <a href="#solve">Section</a></div>
+      <div><b>Insight desk</b>Findings reach the officer: one per reply, after the answer, labelled, never repeated. <a href="#insights">Section</a></div>
+      <div><b>Entity resolver</b>A5 decides who is who from identifiers first. A name-only "maybe" never merges people or creates a contradiction. <a href="#entities">Section</a></div>
+      <div><b>Golden cases</b>Test cases with planted contradictions and a known answer, to measure whether Sherlock gets better or worse. <a href="#golden">Section</a></div>
+      <div><b>Detailed answers</b>Each kind of question (FIR, person, incident, statement, link, phone, count, yes or no, what next) has a fixed list of sections. Full by default; every section filled or marked "not on record". <a href="#shapes">Section</a></div>
+      <div><b>Statement recorder fields</b>O3 records who told us, the original speaker, about whom, what, when it happened, how the officer knows and how sure, then reads it back. <a href="#recorder">Section</a></div>
+      <div><b>Questioner sources</b>S4 asks from contradictions, leads, statement changes, gaps and identity checks, ranked by impact, and each answer updates the entry it came from. <a href="#questioner">Section</a></div>
+      <div><b>Three fixes</b>Sherlock's quick view only for questions about a person, why, or what next. The deep investigation always runs in the background. The file report leaves out suspicions. <a href="#latency">Section</a></div>
+    </div>
+  </section>
 
   <section class="panel" id="built">
     <h2>Built</h2>
-    <p class="sub">Every step of the build order is implemented and tested (439 tests). Where each part lives:</p>
+    <p class="sub">Every step of the build order is implemented and tested (491 tests). Where each part lives:</p>
     <div class="tablewrap">
       <table>
         <thead><tr><th>Part of the plan</th><th>Code</th><th>Tests</th></tr></thead>
@@ -150,10 +178,82 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
           <tr><td>Case report from the board</td><td><code>evidence/case_report.py</code>, <code>report_pdf.py</code></td><td><code>test_report.py</code>, <code>test_evidence.py</code></td></tr>
           <tr><td>Live status line</td><td><code>conversation.STATUS</code>, <code>web/app.js</code></td><td>-</td></tr>
           <tr><td>Chat test set</td><td><code>linkgraph/eval_chats.py</code>, <code>scripts/eval_chats.py</code></td><td><code>test_eval_chats.py</code></td></tr>
+          <tr><td>The teams as LangGraph graphs <span class="pill new">v5</span></td><td><code>team/officer_graph.py</code>, <code>team/sherlock_graph.py</code>, <code>team/report_graph.py</code>, <code>team/runtime.py</code></td><td><code>test_officer_graph.py</code>, <code>test_sherlock_v5.py</code></td></tr>
+          <tr><td>Officer agent: fills the answer shape, names the lookups he needs <span class="pill new">v5</span></td><td><code>team/officer_agent.py</code>, <code>team/shapes.py</code></td><td><code>test_officer_graph.py</code></td></tr>
+          <tr><td>Statement recorder fields, corrections and answers read by the model <span class="pill new">v5</span></td><td><code>team/recorder.py</code></td><td><code>test_officer_graph.py</code></td></tr>
+          <tr><td>Entity resolver A5 <span class="pill new">v5</span></td><td><code>team/entities.py</code></td><td><code>test_sherlock_v5.py</code></td></tr>
+          <tr><td>Fact collector S10: record cards, register, custody, pending reports <span class="pill new">v5</span></td><td><code>team/register.py</code></td><td><code>test_sherlock_v5.py</code></td></tr>
+          <tr><td>Recorded statements W#, Claim extractor S5 <span class="pill new">v5</span></td><td><code>team/statements.py</code>, <code>team/claims.py</code></td><td><code>test_sherlock_v5.py</code></td></tr>
+          <tr><td>Presence matrix, Contradiction finder S6 <span class="pill new">v5</span></td><td><code>team/presence.py</code>, <code>team/contradictions.py</code></td><td><code>test_sherlock_v5.py</code></td></tr>
+          <tr><td>Statement analyst S7, Lead spotter S8 <span class="pill new">v5</span></td><td><code>team/statement_analyst.py</code>, <code>team/leads.py</code>, <code>cdr_team.spikes</code></td><td><code>test_sherlock_v5.py</code></td></tr>
+          <tr><td>Hypothesis matrix, Skeptic S9 <span class="pill new">v5</span></td><td><code>team/matrix.py</code></td><td><code>test_sherlock_v5.py</code></td></tr>
+          <tr><td>Questioner sources, Insight desk Q3 <span class="pill new">v5</span></td><td><code>team/questions.py</code>, <code>team/insight_desk.py</code>, <code>question_desk.sweep</code></td><td><code>test_sherlock_v5.py</code>, <code>test_officer_graph.py</code></td></tr>
+          <tr><td>Report team P1–P6: parts A–F, annex, the summary written last, internal and file versions <span class="pill new">v5</span></td><td><code>team/report_graph.py</code>, <code>case_report.py</code>, <code>report_pdf.py</code></td><td><code>test_sherlock_v5.py</code></td></tr>
+          <tr><td>Golden cases: the harness and one made-up case <span class="pill new">v5</span></td><td><code>team/golden.py</code>, <code>scripts/golden_cases.py</code>, <code>tests/fixtures/golden/</code></td><td><code>test_sherlock_v5.py</code></td></tr>
         </tbody>
       </table>
     </div>
-    <p class="sub">How it all works now: <code>docs/SHERLOCK_AGENTS.md</code>. Still open: the decisions at the end of this page, and a run against the live systems.</p>
+    <p class="sub">How it all works now: <code>docs/SHERLOCK_AGENTS.md</code>. Still open: the decisions at the end of this page, a run against the live systems, and the list under <a href="#notyet">Not built yet</a>.</p>
+  </section>
+
+  <section class="panel" id="langgraph">
+    <h2>How it is built: three LangGraph graphs</h2>
+    <p class="sub">Each team is one compiled LangGraph graph. The nodes are the agents. The edges are fixed in code or follow the model's own reading of the message, never words matched in it. The case board stays the only memory; a graph's state only carries the turn, the run or the report to its nodes.</p>
+    <div class="cols">
+      <div>
+        <h3 style="margin-bottom:8px">Officer graph: one chat turn</h3>
+        <ol class="steps">
+          <li><b>read</b> O0 reads the message with the model: act, people, answer shape, depth, language. No model, or no answer from it: the turn goes to <b>rules</b>, the one node where the keyword rules live.</li>
+          <li><b>record</b> O3, when the officer tells us something: the model fills the recorder's fields, marks corrections and says which open question was answered.</li>
+          <li><b>brief</b> A4 dossiers, O4 context pack, the Facts agent's exact counts, and every source the answer shape needs. Sherlock's quick view starts alongside when the reading says his judgment helps.</li>
+          <li><b>draft</b> O1 fills the shape's sections with source ids. If something is missing he names the <b>lookups</b> he needs: any toolbox tool, with its arguments.</li>
+          <li><b>lookup</b> The graph runs them in parallel. The live ones are the API agent. Then O1 drafts once more. Two drafts at most.</li>
+          <li><b>desk</b> Nothing found: said plainly, with every place checked. Then one extra item: a critical finding from the Insight desk, else the Gatekeeper's question.</li>
+          <li><b>check</b> O2, then <b>present</b> O5.</li>
+        </ol>
+      </div>
+      <div>
+        <h3 style="margin-bottom:8px">Sherlock graph: one background run</h3>
+        <ol class="steps">
+          <li><b>ingest</b> A2 reads each record for its typed card and its recorded statements W#.</li>
+          <li><b>entities</b> A5, then <b>register</b> S10, then <b>claims</b> S5, then the <b>presence</b> matrix.</li>
+          <li><b>contradictions</b> S6, <b>statements</b> S7 and <b>leads</b> S8 work the same claims side by side.</li>
+          <li><b>summary</b> S2, then <b>assess</b>: S1's hypotheses and the hypothesis matrix.</li>
+          <li><b>skeptic</b> S9 challenges the leader; S1 answers each challenge once.</li>
+          <li><b>questions</b> S4, through the Gatekeeper, then <b>insights</b> Q3.</li>
+        </ol>
+        <h3 style="margin:12px 0 8px">Report graph: one report</h3>
+        <ol class="steps">
+          <li><b>freeze</b> P1 fixes one board version.</li>
+          <li><b>evidence</b> P2, <b>statements</b> P3 and <b>analysis</b> P4 write their parts side by side.</li>
+          <li><b>editor</b> P1 writes part F and the annex and links the ids.</li>
+          <li><b>summary</b> P5, last. <b>check</b> P6 sends a failed summary back once.</li>
+          <li><b>build</b> P1 keeps the report with its board version. It runs after every Sherlock run.</li>
+        </ol>
+      </div>
+    </div>
+    <div class="rules">
+      <div><b>The model understands, code compares</b>Any agent that has to understand a message, a record or a statement asks the model with a typed schema. Code stores, compares structured values (times inside a tolerance, identifiers, counts) and guards.</div>
+      <div><b>Any question, not a list of types</b>O1 is not limited to known kinds of question. He writes from what he is given and says which tools would bring what is missing.</div>
+      <div><b>Quotes or nothing</b>A card field, a recorded statement or a claim whose quote is not in its source is dropped in code.</div>
+      <div><b>Nothing is guessed without the model</b>When the model is off, the team's specialists wait for the next run. The chat answers from the rules, and the report is built from templates and says so.</div>
+      <div><b>Stays on the police network</b>LangGraph's optional cloud tracing is switched off in code. The model is still the local one.</div>
+    </div>
+  </section>
+
+  <section class="panel" id="notyet">
+    <h2>Not built yet</h2>
+    <p class="sub">What v5 describes and the code does not do yet, so nobody assumes it.</p>
+    <div class="rules">
+      <div><b>A run on the real model and live systems</b>The 491 tests use scripted models and fake backends. Prompts, timings and the bars are not measured on Qwen 27B yet.</div>
+      <div><b>Golden cases with investigators</b>The harness, the scoring and one made-up case exist. The ten real or realistic cases, and the starting scores, are still to do.</div>
+      <div><b>Checks left to the model</b>Weapon against injury, order of events and counts between statements are judged by the model on the pairs code flags, not by a code table. Times, impossible travel and identifiers are code.</div>
+      <div><b>Question ranking</b>Questions are ranked by the severity of what they come from, not by a computed effect on the hypothesis matrix.</div>
+      <div><b>Background model</b>S1, S6 and S9 use the same model as the chat. A larger model or several samples is still a decision.</div>
+      <div><b>Sections streamed one by one</b>The shaped answer arrives whole, with the status line running until then.</div>
+      <div><b>Report parts joined by the model</b>P2 to P4 write tables and lists from the board. Only P5's summary uses the model.</div>
+      <div><b>Cards while the graph builds</b>A2's typed cards and W# are read in the Sherlock team's run, not during ingest.</div>
+    </div>
   </section>
 
   <section class="panel">
@@ -189,10 +289,11 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
     <h2>The teams</h2>
     <div class="teams">
       <div class="teamcard" style="--c:var(--navy)"><b class="t">Officer team</b><span class="job">Answers what the user asked, correctly.</span><span>Officer agent, Case briefer, Answer checker, Presenter (the voice the user reads), Statement recorder. Knows the whole chat and the case summary, uses any tool in the toolbox, and can ask Sherlock what he thinks.</span></div>
-      <div class="teamcard" style="--c:var(--violet)"><b class="t">Sherlock team</b><span class="job">Solves the case in the background.</span><span>Sherlock (lead), Summarizer, Questioner, Report writer. Uses the same toolbox.</span></div>
-      <div class="teamcard" style="--c:var(--red)"><b class="t">Question desk</b><span class="job">No repeated questions; answers go back to Sherlock.</span><span>Gatekeeper and Question ledger. The Gatekeeper knows the whole conversation. Every question from Sherlock's Questioner passes through it.</span></div>
-      <div class="teamcard" style="--c:var(--blue)"><b class="t">Shared toolbox</b><span class="job">Finds information. Never guesses.</span><span>Board reader, Dossier, Chat memory, Report reader, CDR query, API router.</span></div>
-      <div class="teamcard" style="--c:var(--teal)"><b class="t">Ingest team</b><span class="job">Fills the case board while the graph builds.</span><span>Graph analyst, Document reader, Dossier agent.</span></div>
+      <div class="teamcard" style="--c:var(--violet)"><b class="t">Sherlock team</b><span class="job">Solves the case in the background.</span><span>Sherlock (lead), Fact collector, Claim extractor, Contradiction finder, Statement analyst, Lead spotter, Skeptic, Summarizer, Questioner. Uses the same toolbox.</span></div>
+      <div class="teamcard" style="--c:var(--red)"><b class="t">Question and Insight desk</b><span class="job">No repeated questions or findings; answers go back to Sherlock.</span><span>Gatekeeper, Insight desk and ledger. Every question from the Questioner passes the Gatekeeper; every finding Sherlock wants the officer to hear passes the Insight desk.</span></div>
+      <div class="teamcard" style="--c:var(--muted)"><b class="t">Report team</b><span class="job">Writes the case report from the board. Never judges.</span><span>Report editor, Evidence writer, Statements and timeline writer, Analysis writer, Summary writer, Report checker. Builds the report after every Sherlock run.</span></div>
+      <div class="teamcard" style="--c:var(--blue)"><b class="t">Shared toolbox</b><span class="job">Finds information. Never guesses.</span><span>Board reader, Dossier, Chat memory, Report reader, CDR query, API router, Statements, Presence matrix.</span></div>
+      <div class="teamcard" style="--c:var(--teal)"><b class="t">Ingest team</b><span class="job">Fills the case board while the graph builds.</span><span>Graph analyst, Document reader, Dossier agent, Entity resolver.</span></div>
       <div class="teamcard" style="--c:var(--orange)"><b class="t">CDR team</b><span class="job">Turns every CDR, tower dump or CDR report into facts.</span><span>Intake, Enricher, Pattern analyst, Location analyst, Cross-CDR linker, Fact writer. Starts as soon as a CDR is provided.</span></div>
     </div>
   </section>
@@ -202,15 +303,16 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
     <div class="legend">
       <span style="--c:var(--navy)">Officer team</span>
       <span style="--c:var(--violet)">Sherlock team</span>
-      <span style="--c:var(--red)">Question desk and checks</span>
+      <span style="--c:var(--red)">Question and Insight desk, checks</span>
       <span style="--c:var(--blue)">Shared toolbox</span>
       <span style="--c:var(--gold)">Case board</span>
       <span style="--c:var(--teal)">Ingest team</span>
       <span style="--c:var(--orange)">CDR team</span>
+      <span style="--c:var(--muted)">Report team</span>
     </div>
     <div class="diagram">
-      <svg viewBox="0 0 1200 920" role="img" aria-labelledby="tm-t">
-        <title id="tm-t">The user talks to the Officer team. Both teams use the shared toolbox. Sherlock's questions pass the Question desk before the Officer agent asks them. Answers are written to the case board, which wakes Sherlock.</title>
+      <svg viewBox="0 0 1200 936" role="img" aria-labelledby="tm-t">
+        <title id="tm-t">The user talks to the Officer team. Both teams use the shared toolbox. The Sherlock team turns the board into claims, contradictions, statement checks and leads, and Sherlock weighs them in a hypothesis matrix that the Skeptic challenges. His questions pass the Gatekeeper and his findings pass the Insight desk before the Officer agent passes them on. Answers are written to the case board, which wakes Sherlock.</title>
         <defs>
           <marker id="t-navy" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--navy)"/></marker>
           <marker id="t-violet" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--violet)"/></marker>
@@ -242,7 +344,7 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
           <text class="bs" x="56" y="425">bullets, tables, evidence quotes</text></g>
         <g class="box" style="--c:var(--navy)"><rect x="40" y="470" width="340" height="64" rx="10"/>
           <text class="bt" x="56" y="494"><tspan class="id">O3 </tspan>Statement recorder</text>
-          <text class="bs" x="56" y="516">user's answers and info, in their words</text></g>
+          <text class="bs" x="56" y="516">who said what, when, how known</text></g>
         <path class="ar" d="M210 340V362" style="stroke:var(--navy)" marker-end="url(#t-navy)"/>
         <path class="ar" d="M210 76V138" style="stroke:var(--navy)" marker-end="url(#t-navy)"/>
         <text class="al" x="202" y="95" text-anchor="end">question / answer / info</text>
@@ -256,92 +358,123 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
         <text class="al" x="218" y="620">writes, quoted</text>
 
         <path class="ar dash" d="M360 138V88H1100V138" style="stroke:var(--violet)" marker-start="url(#t-violet)" marker-end="url(#t-violet)"/>
-        <text class="al" x="730" y="82" text-anchor="middle">not in the facts? "Sherlock, what do you think?"</text>
-        <!-- Shared toolbox -->
-        <rect class="lane" x="430" y="100" width="340" height="300" rx="14"/>
-        <text class="lanelbl" x="446" y="124" style="fill:var(--blue)">SHARED TOOLBOX</text>
-        <g class="box" style="--c:var(--navy)"><rect x="445" y="136" width="310" height="52" rx="9"/>
-          <text class="bt" x="461" y="158"><tspan class="id">O4 </tspan>Case briefer</text>
-          <text class="bs" x="461" y="177">board → context pack for O1, every turn</text></g>
-        <g class="box" style="--c:var(--blue)"><rect x="445" y="200" width="150" height="50" rx="9"/>
-          <text class="bt" x="457" y="221">Board reader</text><text class="bs" x="457" y="239">facts, tiers, sources</text></g>
-        <g class="box" style="--c:var(--blue)"><rect x="605" y="200" width="150" height="50" rx="9"/>
-          <text class="bt" x="617" y="221">Dossier</text><text class="bs" x="617" y="239">all on one person</text></g>
-        <g class="box" style="--c:var(--blue)"><rect x="445" y="260" width="150" height="50" rx="9"/>
-          <text class="bt" x="457" y="281">Chat memory</text><text class="bs" x="457" y="299">what the user said</text></g>
-        <g class="box" style="--c:var(--blue)"><rect x="605" y="260" width="150" height="50" rx="9"/>
-          <text class="bt" x="617" y="281">Report reader</text><text class="bs" x="617" y="299">FIR · MLO · DNA page</text></g>
-        <g class="box" style="--c:var(--blue)"><rect x="445" y="320" width="150" height="50" rx="9"/>
-          <text class="bt" x="457" y="341">CDR query</text><text class="bs" x="457" y="359">CDR team's facts</text></g>
-        <g class="box" style="--c:var(--blue)"><rect x="605" y="320" width="150" height="50" rx="9"/>
-          <text class="bt" x="617" y="341">API router</text><text class="bs" x="617" y="359">catalog + budget</text></g>
-        <text class="al" x="600" y="388" text-anchor="middle">board first · API only by catalog · "nothing found" counts</text>
-        <path class="ar" d="M380 160H428" style="stroke:var(--blue)" marker-start="url(#t-blue)" marker-end="url(#t-blue)"/>
-        <path class="ar" d="M818 212H772" style="stroke:var(--blue)" marker-start="url(#t-blue)" marker-end="url(#t-blue)"/>
+        <text class="al" x="730" y="82" text-anchor="middle">person, why or what next? "Sherlock, what do you think?"</text>
 
-        <!-- Question desk -->
-        <rect class="lane" x="430" y="430" width="340" height="200" rx="14"/>
-        <text class="lanelbl" x="446" y="454" style="fill:var(--red)">QUESTION DESK · NO REPEATS</text>
-        <g class="box" style="--c:var(--red)"><rect x="450" y="468" width="300" height="70" rx="10"/>
-          <text class="bt" x="466" y="490"><tspan class="id">Q1 </tspan>Gatekeeper</text>
-          <text class="bs" x="466" y="510">knows the whole chat · drops repeats</text>
-          <text class="bs" x="466" y="528">approved → Officer agent asks it</text></g>
-        <g class="box" style="--c:var(--red)"><rect x="450" y="556" width="300" height="60" rx="10"/>
-          <text class="bt" x="466" y="580"><tspan class="id">Q2 </tspan>Question ledger</text>
-          <text class="bs" x="466" y="600">topic · times asked · status · answer</text></g>
-        <path class="ar" d="M600 538V554" style="stroke:var(--red)" marker-start="url(#t-red)" marker-end="url(#t-red)"/>
-        <path class="ar" d="M450 500H418V180H382" style="stroke:var(--red)" marker-end="url(#t-red)"/>
-        <path class="ar" d="M380 520H404V586H448" style="stroke:var(--navy)" marker-end="url(#t-navy)"/>
-        <path class="ar" d="M600 616V688" style="stroke:var(--red)" marker-end="url(#t-red)"/>
+        <!-- Shared toolbox -->
+        <rect class="lane" x="430" y="100" width="340" height="310" rx="14"/>
+        <text class="lanelbl" x="446" y="124" style="fill:var(--blue)">SHARED TOOLBOX</text>
+        <g class="box" style="--c:var(--navy)"><rect x="445" y="136" width="310" height="50" rx="9"/>
+          <text class="bt" x="461" y="157"><tspan class="id">O4 </tspan>Case briefer</text>
+          <text class="bs" x="461" y="176">board → context pack for O1, every turn</text></g>
+        <g class="box" style="--c:var(--blue)"><rect x="445" y="196" width="150" height="44" rx="9"/>
+          <text class="bt" x="457" y="215">Board reader</text><text class="bs" x="457" y="232">facts, tiers, sources</text></g>
+        <g class="box" style="--c:var(--blue)"><rect x="605" y="196" width="150" height="44" rx="9"/>
+          <text class="bt" x="617" y="215">Dossier</text><text class="bs" x="617" y="232">all on one person</text></g>
+        <g class="box" style="--c:var(--blue)"><rect x="445" y="246" width="150" height="44" rx="9"/>
+          <text class="bt" x="457" y="265">Chat memory</text><text class="bs" x="457" y="282">what the user said</text></g>
+        <g class="box" style="--c:var(--blue)"><rect x="605" y="246" width="150" height="44" rx="9"/>
+          <text class="bt" x="617" y="265">Report reader</text><text class="bs" x="617" y="282">FIR · MLO · DNA page</text></g>
+        <g class="box" style="--c:var(--blue)"><rect x="445" y="296" width="150" height="44" rx="9"/>
+          <text class="bt" x="457" y="315">CDR query</text><text class="bs" x="457" y="332">CDR team's facts</text></g>
+        <g class="box" style="--c:var(--blue)"><rect x="605" y="296" width="150" height="44" rx="9"/>
+          <text class="bt" x="617" y="315">API router</text><text class="bs" x="617" y="332">catalog + budget</text></g>
+        <g class="box" style="--c:var(--blue)"><rect x="445" y="346" width="150" height="44" rx="9"/>
+          <text class="bt" x="457" y="365">Statements</text><text class="bs" x="457" y="382">who said what, when</text></g>
+        <g class="box" style="--c:var(--blue)"><rect x="605" y="346" width="150" height="44" rx="9"/>
+          <text class="bt" x="617" y="365">Presence matrix</text><text class="bs" x="617" y="382">who was where, when</text></g>
+        <text class="al" x="600" y="404" text-anchor="middle">board first · API only by catalog · "nothing found" counts</text>
+        <path class="ar" d="M380 160H428" style="stroke:var(--blue)" marker-start="url(#t-blue)" marker-end="url(#t-blue)"/>
+        <path class="ar" d="M818 175H772" style="stroke:var(--blue)" marker-start="url(#t-blue)" marker-end="url(#t-blue)"/>
+
+        <!-- Question and Insight desk -->
+        <rect class="lane" x="430" y="424" width="340" height="206" rx="14"/>
+        <text class="lanelbl" x="446" y="446" style="fill:var(--red)">QUESTION &amp; INSIGHT DESK · NO REPEATS</text>
+        <g class="box" style="--c:var(--red)"><rect x="450" y="458" width="300" height="48" rx="10"/>
+          <text class="bt" x="466" y="477"><tspan class="id">Q3 </tspan>Insight desk</text>
+          <text class="bs" x="466" y="497">one finding per reply · told once → O1</text></g>
+        <g class="box" style="--c:var(--red)"><rect x="450" y="514" width="300" height="48" rx="10"/>
+          <text class="bt" x="466" y="533"><tspan class="id">Q1 </tspan>Gatekeeper</text>
+          <text class="bs" x="466" y="553">drops repeats · approved → O1 asks it</text></g>
+        <g class="box" style="--c:var(--red)"><rect x="450" y="572" width="300" height="48" rx="10"/>
+          <text class="bt" x="466" y="591"><tspan class="id">Q2 </tspan>Ledger</text>
+          <text class="bs" x="466" y="611">questions asked · findings told · answers</text></g>
+        <path class="ar" d="M450 482H418V180H382" style="stroke:var(--red)" marker-end="url(#t-red)"/>
+        <path class="ar" d="M450 538H418" style="stroke:var(--red)"/>
+        <path class="ar" d="M380 520H404V596H448" style="stroke:var(--navy)" marker-end="url(#t-navy)"/>
+        <path class="ar" d="M600 620V688" style="stroke:var(--red)" marker-end="url(#t-red)"/>
         <text class="al" x="608" y="660">Q# answered</text>
 
         <!-- Sherlock team -->
         <rect class="lane" x="800" y="100" width="380" height="530" rx="14"/>
         <text class="lanelbl" x="816" y="124" style="fill:var(--violet)">SHERLOCK TEAM · SOLVES THE CASE</text>
-        <g class="box" style="--c:var(--violet)"><rect x="820" y="140" width="340" height="80" rx="10"/>
-          <text class="bt" x="836" y="164"><tspan class="id">S1 </tspan>Sherlock · lead detective</text>
-          <text class="bs" x="836" y="186">hypotheses · concerns · contradictions</text>
-          <text class="bs" x="836" y="204">labelled speculation · next steps</text></g>
-        <g class="box" style="--c:var(--violet)"><rect x="820" y="250" width="160" height="60" rx="10"/>
-          <text class="bt" x="836" y="274"><tspan class="id">S2 </tspan>Summarizer</text>
-          <text class="bs" x="836" y="294">case so far, timeline</text></g>
-        <g class="box" style="--c:var(--violet)"><rect x="1000" y="250" width="160" height="60" rx="10"/>
-          <text class="bt" x="1016" y="274"><tspan class="id">S3 </tspan>Report writer</text>
-          <text class="bs" x="1016" y="294">case report PDF</text></g>
-        <g class="box" style="--c:var(--violet)"><rect x="820" y="350" width="340" height="64" rx="10"/>
-          <text class="bt" x="836" y="374"><tspan class="id">S4 </tspan>Questioner</text>
-          <text class="bs" x="836" y="396">what to ask the user next, ranked</text></g>
-        <path class="ar" d="M990 220V348" style="stroke:var(--violet)" marker-end="url(#t-violet)"/>
-        <path class="ar" d="M820 390H790V500H752" style="stroke:var(--violet)" marker-end="url(#t-violet)"/>
-        <text class="al" transform="translate(784 450) rotate(-90)" text-anchor="middle">proposed</text>
-        <text class="al" x="795" y="204" text-anchor="middle">asks</text>
+        <g class="box" style="--c:var(--violet)"><rect x="820" y="140" width="340" height="70" rx="10"/>
+          <text class="bt" x="836" y="162"><tspan class="id">S1 </tspan>Sherlock · lead detective</text>
+          <text class="bs" x="836" y="182">hypothesis matrix H# · weighs X#, K#, W#</text>
+          <text class="bs" x="836" y="200">labelled speculation · next steps</text></g>
+        <g class="box" style="--c:var(--violet)"><rect x="820" y="226" width="165" height="50" rx="10"/>
+          <text class="bt" x="832" y="247"><tspan class="id">S5 </tspan>Claim extractor</text>
+          <text class="bs" x="832" y="265">who said what, when</text></g>
+        <g class="box" style="--c:var(--violet)"><rect x="995" y="226" width="165" height="50" rx="10"/>
+          <text class="bt" x="1007" y="247"><tspan class="id">S6 </tspan>Contradictions</text>
+          <text class="bs" x="1007" y="265">X# · rules, then model</text></g>
+        <g class="box" style="--c:var(--violet)"><rect x="820" y="286" width="165" height="50" rx="10"/>
+          <text class="bt" x="832" y="307"><tspan class="id">S7 </tspan>Statements</text>
+          <text class="bs" x="832" y="325">each person's versions</text></g>
+        <g class="box" style="--c:var(--violet)"><rect x="995" y="286" width="165" height="50" rx="10"/>
+          <text class="bt" x="1007" y="307"><tspan class="id">S8 </tspan>Lead spotter</text>
+          <text class="bs" x="1007" y="325">hints → leads K#</text></g>
+        <g class="box" style="--c:var(--violet)"><rect x="820" y="346" width="165" height="50" rx="10"/>
+          <text class="bt" x="832" y="367"><tspan class="id">S9 </tspan>Skeptic</text>
+          <text class="bs" x="832" y="385">tries to break the lead</text></g>
+        <g class="box" style="--c:var(--violet)"><rect x="995" y="346" width="165" height="50" rx="10"/>
+          <text class="bt" x="1007" y="367"><tspan class="id">S2 </tspan>Summarizer</text>
+          <text class="bs" x="1007" y="385">case so far, timeline</text></g>
+        <g class="box" style="--c:var(--violet)"><rect x="820" y="406" width="165" height="50" rx="10"/>
+          <text class="bt" x="832" y="427"><tspan class="id">S4 </tspan>Questioner</text>
+          <text class="bs" x="832" y="445">from X#, K#, W#, gaps</text></g>
+        <g class="box" style="--c:var(--muted)"><rect x="995" y="406" width="165" height="50" rx="10"/>
+          <text class="bt" x="1007" y="427"><tspan class="id">P1–P6 </tspan>Report team</text>
+          <text class="bs" x="1007" y="445">own team · case report</text></g>
+        <g class="box" style="--c:var(--violet)"><rect x="820" y="516" width="340" height="50" rx="10"/>
+          <text class="bt" x="832" y="537"><tspan class="id">S10 </tspan>Fact collector</text>
+          <text class="bs" x="832" y="555">evidence register: MLO · DNA · forensic · FIR</text></g>
+        <text class="al" x="990" y="590" text-anchor="middle">S10 → S5–S8 → S1 · S9 challenges every run</text>
+        <text class="al" x="990" y="608" text-anchor="middle">questions → Gatekeeper · findings → Insight desk</text>
+        <path class="ar" d="M820 196H790V482H752" style="stroke:var(--violet)" marker-end="url(#t-violet)"/>
+        <text class="al" transform="translate(784 340) rotate(-90)" text-anchor="middle">findings</text>
+        <path class="ar" d="M820 431H806V538H752" style="stroke:var(--violet)" marker-end="url(#t-violet)"/>
+        <text class="al" transform="translate(798 512) rotate(-90)" text-anchor="middle">questions</text>
         <text class="al" x="404" y="152" text-anchor="middle">brief</text>
         <path class="ar" d="M900 630V688" style="stroke:var(--violet)" marker-end="url(#t-violet)"/>
-        <text class="al" x="892" y="660" text-anchor="end">assessment, gaps</text>
+        <text class="al" x="892" y="660" text-anchor="end">assessment, X#, K#, gaps</text>
         <path class="ar dash" d="M1170 688V180H1162" style="stroke:var(--gold)" marker-end="url(#t-gold)"/>
         <text class="al" x="1160" y="660" text-anchor="end">new info wakes Sherlock</text>
 
         <!-- Case board -->
-        <rect class="boardr" x="20" y="690" width="1160" height="96" rx="14"/>
+        <rect class="boardr" x="20" y="690" width="1160" height="116" rx="14"/>
         <text x="40" y="718"><tspan class="boardt">CASE BOARD</tspan><tspan class="al" dx="12">shared memory · every entry has a source and a tier</tspan></text>
-        <text class="boardrow" x="40" y="746">Facts F# <tspan class="tier">[fact | inference | speculation]</tspan>  ·  Documents D#  ·  Dossiers  ·  Incident  ·  Roles  ·  Timeline</text>
-        <text class="boardrow" x="40" y="770">User statements  ·  Answered questions Q#  ·  Summary  ·  Hypotheses  ·  Ranked gaps  ·  Conversation</text>
+        <text class="boardrow" x="40" y="744">Facts F# <tspan class="tier">[fact | inference | speculation]</tspan>  ·  Documents D#  ·  Evidence register  ·  Dossiers  ·  Incident  ·  Roles  ·  Timeline</text>
+        <text class="boardrow" x="40" y="766">User statements  ·  Recorded statements W#  ·  Claims  ·  Contradictions X#  ·  Leads K#  ·  Answered questions Q#</text>
+        <text class="boardrow" x="40" y="788">Summary  ·  Hypothesis matrix H#  ·  Skeptic's challenges  ·  Ranked gaps  ·  Findings told  ·  Conversation</text>
 
         <!-- Ingest -->
-        <rect class="lane" x="20" y="806" width="1160" height="100" rx="14"/>
-        <text class="lanelbl" x="36" y="828" style="fill:var(--teal)">INGEST TEAM</text>
-        <g class="box" style="--c:var(--teal)"><rect x="40" y="840" width="260" height="50" rx="9"/>
-          <text class="bt" x="56" y="870"><tspan class="id">A1 </tspan>Graph analyst</text></g>
-        <g class="box" style="--c:var(--teal)"><rect x="330" y="840" width="260" height="50" rx="9"/>
-          <text class="bt" x="346" y="870"><tspan class="id">A2 </tspan>Document reader</text></g>
-        <g class="box" style="--c:var(--orange)"><rect x="620" y="840" width="260" height="50" rx="9"/>
-          <text class="bt" x="636" y="870"><tspan class="id">CDR </tspan>CDR team (see below)</text></g>
-        <g class="box" style="--c:var(--teal)"><rect x="910" y="840" width="250" height="50" rx="9"/>
-          <text class="bt" x="926" y="870"><tspan class="id">A4 </tspan>Dossier agent</text></g>
-        <path class="ar" d="M260 840V788" style="stroke:var(--teal)" marker-end="url(#t-teal)"/>
-        <path class="ar" d="M550 840V788" style="stroke:var(--teal)" marker-end="url(#t-teal)"/>
-        <path class="ar" d="M840 840V788" style="stroke:var(--orange)" marker-end="url(#t-orange)"/>
-        <path class="ar" d="M1120 840V788" style="stroke:var(--teal)" marker-start="url(#t-teal)" marker-end="url(#t-teal)"/>
+        <rect class="lane" x="20" y="822" width="1160" height="100" rx="14"/>
+        <text class="lanelbl" x="36" y="844" style="fill:var(--teal)">INGEST TEAM</text>
+        <g class="box" style="--c:var(--teal)"><rect x="40" y="856" width="212" height="50" rx="9"/>
+          <text class="bt" x="56" y="886"><tspan class="id">A1 </tspan>Graph analyst</text></g>
+        <g class="box" style="--c:var(--teal)"><rect x="266" y="856" width="212" height="50" rx="9"/>
+          <text class="bt" x="282" y="886"><tspan class="id">A2 </tspan>Document reader</text></g>
+        <g class="box" style="--c:var(--orange)"><rect x="492" y="856" width="212" height="50" rx="9"/>
+          <text class="bt" x="508" y="886"><tspan class="id">CDR </tspan>CDR team (below)</text></g>
+        <g class="box" style="--c:var(--teal)"><rect x="718" y="856" width="212" height="50" rx="9"/>
+          <text class="bt" x="734" y="886"><tspan class="id">A4 </tspan>Dossier agent</text></g>
+        <g class="box" style="--c:var(--teal)"><rect x="944" y="856" width="216" height="50" rx="9"/>
+          <text class="bt" x="960" y="886"><tspan class="id">A5 </tspan>Entity resolver</text></g>
+        <path class="ar" d="M146 856V808" style="stroke:var(--teal)" marker-end="url(#t-teal)"/>
+        <path class="ar" d="M372 856V808" style="stroke:var(--teal)" marker-end="url(#t-teal)"/>
+        <path class="ar" d="M598 856V808" style="stroke:var(--orange)" marker-end="url(#t-orange)"/>
+        <path class="ar" d="M824 856V808" style="stroke:var(--teal)" marker-start="url(#t-teal)" marker-end="url(#t-teal)"/>
+        <path class="ar" d="M1052 856V808" style="stroke:var(--teal)" marker-start="url(#t-teal)" marker-end="url(#t-teal)"/>
       </svg>
     </div>
   </section>
@@ -352,28 +485,341 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
       <div>
         <h3 style="margin-bottom:8px">A · The user asks a question</h3>
         <ol class="steps">
-          <li><b>O0 Question reader</b> reads the message in one model call: is it a question, what is wanted, how much detail, which role, which people, and whether it is about a person, the case or a link. The model's reading decides. Keyword rules only run when the model is off or fails. A message that asks anything is a question, even if it names someone Sherlock asked about.</li>
+          <li><b>O0 Question reader</b> reads the message in one model call: is it a question, what is wanted, which answer shape (FIR, person, incident, statement, link, phone, count, yes or no, what next) and how deep, full by default, which role, which people, and whether it is about a person, the case or a link. The model's reading decides. Keyword rules only run when the model is off or fails. A message that asks anything is a question, even if it names someone Sherlock asked about.</li>
           <li><b>A4 Dossier agent</b> goes first when the question is about a person: that person's card, with role, FIRs, links, documents, the user's own words and Sherlock's hypotheses.</li>
-          <li><b>Case board and graph</b> next: the Facts agent's computed answer, every fact and document on the board, the connections. <b>O4 Case briefer</b> packs it with the chat, the summary and Sherlock's latest view.</li>
+          <li><b>Case board and graph</b> next: the Facts agent's computed answer, every fact and document on the board, the connections. <b>O4 Case briefer</b> packs it with the chat, the summary and Sherlock's latest view, and fetches every source the answer shape needs: for an FIR, the FIR card, its statements, evidence and status. <a href="#shapes">Answer shapes</a></li>
           <li><b>API agent</b> when neither has the answer, or O1's draft says it needs more: the police systems and FIR files are called at run time through the guard. What comes back goes on the board and O1 drafts again from it.</li>
-          <li><b>Sherlock</b> gives his view on every question, in one model call alongside the rest. It is shown apart from the facts, labelled as his view.</li>
+          <li><b>Sherlock</b> gives his view when the question is about a person, why something happened, or what to do next. Counts, lists and lookups go without it. One model call alongside the rest, shown apart from the facts and labelled as his view. <span class="pill new">v5</span></li>
           <li><b>O2</b> checks the draft. If it fails, it goes back to O1 once with the reasons. <b>O5 Presenter</b> then lays it out in the user's language, with the evidence and its sources.</li>
           <li><b>Nothing found anywhere?</b> The user is told so plainly, "I did not find an answer", with every place that was checked, and asked where it may be recorded. Never a guess. A lookup that returns "no record" is listed as checked, not given as the answer.</li>
-          <li>Then <b>O1</b> takes the top approved question from the <b>Gatekeeper</b>, if one is waiting, and asks it after the answer, in its colour.</li>
+          <li>Then <b>O1</b> adds one extra item after the answer, if one is waiting: a finding from the <b>Insight desk</b> or the top approved question from the <b>Gatekeeper</b>. Critical findings go first. <span class="pill new">v5</span></li>
         </ol>
       </div>
       <div>
         <h3 style="margin-bottom:8px">B · The user answers or gives information</h3>
         <ol class="steps">
           <li><b>O1</b> sees an answer or new information, not a question.</li>
-          <li><b>O3</b> records it on the case board in the user's own words, with the turn it came from.</li>
+          <li><b>O3</b> records it on the case board in the user's own words and as fields: who told us, the original speaker, about whom, what, when it happened, where, how the officer knows and how sure. <a href="#recorder">Details</a></li>
           <li>If it answers a question the user was asked, the <b>Question ledger</b> marks that question answered and stores the answer.</li>
-          <li>The board change wakes the <b>Sherlock team</b>. Sherlock re-assesses with the new information.</li>
+          <li>The board change wakes the <b>Sherlock team</b>. S5 turns it into claims, S6–S8 check them, and Sherlock re-assesses with the new information.</li>
           <li>The Questioner proposes the next questions. The Gatekeeper filters them before the user ever sees one.</li>
-          <li><b>O1</b> thanks the user briefly and says what it recorded, so the user knows it was understood.</li>
+          <li><b>O1</b> thanks the user briefly and reads back what it recorded, with the date and names resolved, so the user can correct it at once.</li>
           <li>If the user changes something they said earlier, it is a <b>correction</b>, not new information: see <a href="#corrections">Corrections</a>.</li>
         </ol>
       </div>
+    </div>
+  </section>
+
+  <section class="panel" id="register">
+    <h2>S10 Fact collector: the evidence register <span class="pill new">v5</span></h2>
+    <p class="sub">A2 reads each record on its own, so facts sit scattered across documents. S10 collects every fact from every record (FIR, MLO, postmortem, DNA, chemical, forensic, recovery memos, site plan, statements, CDR) into one organized register. Sherlock, the Officer agent and the report all read the case from it, so nothing in a record is missed or read twice.</p>
+
+    <div class="cols">
+      <div>
+        <h3 style="margin-bottom:8px">One card per kind of record</h3>
+        <p class="sub" style="margin-bottom:10px">A2 fills a typed card for each record, like the FIR card. Every field keeps its page and quote. A field the record doesn't contain says "not in report".</p>
+        <div class="tablewrap">
+          <table class="wrapcells" style="min-width:0">
+            <thead><tr><th>Record</th><th>Fields read</th></tr></thead>
+            <tbody>
+              <tr><td>FIR</td><td>See the <a href="#shapes">FIR card</a></td></tr>
+              <tr><td>MLO (injured)</td><td>Date and time examined, time since injury, police request. Each injury: number, place on the body, size, kind (firearm entry or exit, incised, lacerated, blunt), weapon opinion, grievous or simple and its PPC 337 category. Doctor, X-ray or further opinion advised</td></tr>
+              <tr><td>Postmortem</td><td>Date and time, time between injury and death, time since death, cause of death, each injury as in the MLO, weapon opinion, samples taken</td></tr>
+              <tr><td>DNA</td><td>Each sample (what, from whom or where, recovery memo), reference samples, lab and report number, result per comparison: matched, excluded or inconclusive</td></tr>
+              <tr><td>Chemical, toxicology</td><td>Sample, what was tested for, result, lab and report number</td></tr>
+              <tr><td>Forensic</td><td>Firearm and ballistics (weapon against empties), fingerprints, other tests; each with exhibit numbers and result</td></tr>
+              <tr><td>Recovery memo</td><td>What was recovered, from whom, where, when, recovered by, witnesses, sealed or not</td></tr>
+              <tr><td>Site plan</td><td>Points marked, positions of victim, accused and witnesses, distances, light source</td></tr>
+              <tr><td>CRO and past record</td><td>Earlier FIRs and convictions, marked <i>background, not evidence</i> for this incident</td></tr>
+              <tr><td>Police system records</td><td>NADRA, SIMs, Excise, DLS, Hotel Eye, tenant registration, PSRMS and other systems: each result with its call id and date checked; "checked, nothing found" kept</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <h3 style="margin-bottom:8px">Organized four ways</h3>
+        <ul class="plain" style="margin-bottom:12px">
+          <li><b>By record</b>: every report with its fields, in order received</li>
+          <li><b>By person</b>: everything every record says about Kamran, in one place</li>
+          <li><b>By topic</b>: injury, weapon, time, place, recovery, identity, samples, address, stays</li>
+          <li><b>By time</b>: one timeline from all records</li>
+        </ul>
+        <h3 style="margin-bottom:8px">Linked across records, in code</h3>
+        <ul class="plain" style="margin-bottom:12px">
+          <li>Recovered weapon → forensic report → empties from the scene</li>
+          <li>DNA sample → whose reference it was compared with → result</li>
+          <li>Injury kind (MLO, postmortem) → weapon named in the FIR and statements, for S6</li>
+          <li>Time since injury or death → incident time, for S6</li>
+        </ul>
+        <h3 style="margin-bottom:8px">Chain of custody and pending reports</h3>
+        <ul class="plain">
+          <li>For each sample or exhibit: collected, sealed, sent to the lab, received, result, each with date and by whom. Long gaps are flagged as facts, for example "sent 19 days after collection".</li>
+          <li>Reports requested but not received (DNA awaited, chemical awaited) are listed as pending. They become gaps for S4 ("Kya DNA report aa gayi?") and "not on record" in answers.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="rules">
+      <div><b>Collects, doesn't judge</b>S10 only files and links facts. Deciding what they mean is S6's and S1's job. It is all code; the model is used only by A2 to read the record.</div>
+      <div><b>Same fact, both sources</b>When two records say the same thing, it is one entry with both sources. When they differ, both stay and S6 gets the pair.</div>
+      <div><b>Background is labelled</b>Past FIRs and CRO entries are filed under background, so they can't be read as evidence for this incident.</div>
+      <div><b>Feeds everyone</b>S5 makes claims from it; the Evidence section of every answer shape and of the report reads from it; the Evidence register tool lets O1 ask it directly.</div>
+    </div>
+
+    <h3>Example: the register by topic</h3>
+    <p class="sub">Illustrative. Names, numbers and references are made up.</p>
+    <div class="tablewrap">
+      <table class="wrapcells">
+        <thead><tr><th>Topic</th><th>Record</th><th>Fact</th><th>Source</th></tr></thead>
+        <tbody>
+          <tr><td>Injury</td><td>MLO</td><td>Incised wound 4 × 1 cm, right thigh; sharp-edged weapon; simple</td><td>D10 p.1</td></tr>
+          <tr><td>Weapon</td><td>FIR</td><td>Kamran fired with a pistol</td><td>D7 p.2</td></tr>
+          <tr><td>Weapon</td><td>Recovery memo</td><td>30-bore pistol recovered from Kamran's house, 9 March, two witnesses</td><td>D12</td></tr>
+          <tr><td>Weapon</td><td>Forensic</td><td>Recovered pistol matches 2 empties collected at the scene</td><td>D14</td></tr>
+          <tr><td>Sample</td><td>DNA</td><td>Blood on the shop shutter matches Naveed (the injured)</td><td>D15</td></tr>
+          <tr><td>Custody</td><td>Empties</td><td>Collected 2 March; sent to the lab 21 March, 19 days later</td><td>D13, D14</td></tr>
+          <tr><td>Pending</td><td>Chemical</td><td>Blood-stained cloth: requested 3 March, report not received</td><td>not on record</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="sub">Read together, the weapon rows show shots were fired from the recovered pistol, while the MLO finds a cut, not a gunshot wound. S10 only files these side by side; S6 raises X1 from them, and the 19-day gap becomes a lead.</p>
+  </section>
+
+  <section class="panel" id="solve">
+    <h2>How the Sherlock team solves the case <span class="pill new">v5</span></h2>
+    <p class="sub">In v4, S1 did everything in one model call over a summary: hypotheses, contradictions and hints. With a 27B model, that is where findings get missed. v5 splits the work the way the CDR team already works: code finds the candidates, the model judges only what code can't, and every finding cites the entries it rests on.</p>
+    <div class="diagram">
+      <svg viewBox="0 0 1200 316" role="img" aria-labelledby="sv-t">
+        <title id="sv-t">Board entries become claims. Claims feed the contradiction finder, the statement analyst, the presence matrix and the lead spotter. Sherlock weighs their output in a hypothesis matrix. The Skeptic challenges it. Gaps go to the Questioner; findings that survive go to the Insight desk.</title>
+        <defs>
+          <marker id="s-violet" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--violet)"/></marker>
+          <marker id="s-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--red)"/></marker>
+          <marker id="s-gold" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--gold)"/></marker>
+        </defs>
+        <rect class="boardr" x="20" y="88" width="190" height="156" rx="12"/>
+        <text class="boardt" x="36" y="116">CASE BOARD</text>
+        <text class="boardrow" x="36" y="144">S10 evidence register</text>
+        <text class="boardrow" x="36" y="164">W# recorded statements</text>
+        <text class="boardrow" x="36" y="184">F# CDR, graph facts</text>
+        <text class="boardrow" x="36" y="204">officer's words</text>
+        <text class="boardrow" x="36" y="224">API results</text>
+        <path class="ar" d="M210 167H248" style="stroke:var(--gold)" marker-end="url(#s-gold)"/>
+
+        <g class="box" style="--c:var(--violet)"><rect x="250" y="130" width="180" height="74" rx="10"/>
+          <text class="bt" x="264" y="156"><tspan class="id">S5 </tspan>Claim extractor</text>
+          <text class="bs" x="264" y="176">→ comparable claims</text>
+          <text class="bs" x="264" y="194">who, what, when, where</text></g>
+
+        <path class="ar" d="M430 167H455" style="stroke:var(--violet)"/>
+        <path class="ar" d="M455 50V266" style="stroke:var(--violet)"/>
+        <path class="ar" d="M455 50H478" style="stroke:var(--violet)" marker-end="url(#s-violet)"/>
+        <path class="ar" d="M455 122H478" style="stroke:var(--violet)" marker-end="url(#s-violet)"/>
+        <path class="ar" d="M455 194H478" style="stroke:var(--violet)" marker-end="url(#s-violet)"/>
+        <path class="ar" d="M455 266H478" style="stroke:var(--violet)" marker-end="url(#s-violet)"/>
+
+        <g class="box" style="--c:var(--violet)"><rect x="480" y="20" width="240" height="60" rx="10"/>
+          <text class="bt" x="494" y="44"><tspan class="id">S6 </tspan>Contradiction finder</text>
+          <text class="bs" x="494" y="64">X# · rules first, model on pairs</text></g>
+        <g class="box" style="--c:var(--violet)"><rect x="480" y="92" width="240" height="60" rx="10"/>
+          <text class="bt" x="494" y="116"><tspan class="id">S7 </tspan>Statement analyst</text>
+          <text class="bs" x="494" y="136">W# · versions against evidence</text></g>
+        <g class="box" style="--c:var(--blue)"><rect x="480" y="164" width="240" height="60" rx="10"/>
+          <text class="bt" x="494" y="188">Presence matrix <tspan class="id">tool</tspan></text>
+          <text class="bs" x="494" y="208">person × incident window</text></g>
+        <g class="box" style="--c:var(--violet)"><rect x="480" y="236" width="240" height="60" rx="10"/>
+          <text class="bt" x="494" y="260"><tspan class="id">S8 </tspan>Lead spotter</text>
+          <text class="bs" x="494" y="280">anomalies → leads K#</text></g>
+
+        <path class="ar" d="M720 50H745" style="stroke:var(--violet)"/>
+        <path class="ar" d="M720 122H745" style="stroke:var(--violet)"/>
+        <path class="ar" d="M720 194H745" style="stroke:var(--violet)"/>
+        <path class="ar" d="M720 266H745" style="stroke:var(--violet)"/>
+        <path class="ar" d="M745 50V266" style="stroke:var(--violet)"/>
+        <path class="ar" d="M745 168H758" style="stroke:var(--violet)" marker-end="url(#s-violet)"/>
+
+        <g class="box" style="--c:var(--violet)"><rect x="760" y="118" width="200" height="100" rx="10"/>
+          <text class="bt" x="774" y="144"><tspan class="id">S1 </tspan>Sherlock</text>
+          <text class="bs" x="774" y="166">hypothesis matrix H#</text>
+          <text class="bs" x="774" y="184">evidence × hypothesis</text>
+          <text class="bs" x="774" y="202">ranking is computed</text></g>
+
+        <path class="ar" d="M960 150H1028" style="stroke:var(--violet)" marker-end="url(#s-violet)"/>
+        <text class="al" x="995" y="142" text-anchor="middle">draft</text>
+        <path class="ar dash" d="M1030 186H962" style="stroke:var(--violet)" marker-end="url(#s-violet)"/>
+        <text class="al" x="995" y="206" text-anchor="middle">challenges</text>
+
+        <g class="box" style="--c:var(--violet)"><rect x="1030" y="118" width="150" height="100" rx="10"/>
+          <text class="bt" x="1044" y="144"><tspan class="id">S9 </tspan>Skeptic</text>
+          <text class="bs" x="1044" y="166">tries to break</text>
+          <text class="bs" x="1044" y="184">the leading H#</text>
+          <text class="bs" x="1044" y="202">keeps an alternative</text></g>
+
+        <path class="ar" d="M860 218V248" style="stroke:var(--violet)" marker-end="url(#s-violet)"/>
+        <text class="al" x="868" y="238">gaps</text>
+        <path class="ar" d="M1105 218V248" style="stroke:var(--red)" marker-end="url(#s-red)"/>
+        <text class="al" x="1113" y="238">survived</text>
+
+        <g class="box" style="--c:var(--violet)"><rect x="760" y="250" width="200" height="56" rx="10"/>
+          <text class="bt" x="774" y="274"><tspan class="id">S4 </tspan>Questioner</text>
+          <text class="bs" x="774" y="294">→ Q1 Gatekeeper</text></g>
+        <g class="box" style="--c:var(--red)"><rect x="990" y="250" width="190" height="56" rx="10"/>
+          <text class="bt" x="1004" y="274"><tspan class="id">Q3 </tspan>Insight desk</text>
+          <text class="bs" x="1004" y="294">→ officer, one per reply</text></g>
+      </svg>
+    </div>
+
+    <div class="cols">
+      <div>
+        <h3 style="margin-bottom:8px">S5 Claim extractor: everything becomes a claim</h3>
+        <p class="sub" style="margin-bottom:10px">A contradiction can only be found between two claims that say the same kind of thing about the same person and time. S5 turns every document, recorded statement, CDR fact and officer statement into small claims. Each claim keeps the exact quote it came from.</p>
+        <div class="tablewrap">
+          <table style="min-width:0">
+            <thead><tr><th>Field</th><th>Example</th></tr></thead>
+            <tbody>
+              <tr><td>Said by</td><td>Imran (accused), statement W3, page 2</td></tr>
+              <tr><td>About</td><td>Imran (entity id from A5)</td></tr>
+              <tr><td>What</td><td>presence: at home</td></tr>
+              <tr><td>When</td><td>01-03-2023, 19:00–23:30</td></tr>
+              <tr><td>Where</td><td>home, Gulshan Block 4</td></tr>
+              <tr><td>Quote</td><td>"main saari raat ghar par tha"</td></tr>
+              <tr><td>Source, trust</td><td>W3 p.2 · trust 4</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <ul class="plain" style="margin-top:10px">
+          <li>The model reads free text; code checks every claim. The quote must exist in the source (<code>quote_in</code>), and dates and places are normalised in code.</li>
+          <li>Topics come from a fixed list: presence, time, weapon, injury, vehicle, phone, money, relation, role, identity. A claim outside the list is stored but never compared.</li>
+          <li>A document or statement is one batch, so its claims count as one event.</li>
+        </ul>
+      </div>
+      <div>
+        <h3 style="margin-bottom:8px">S6 Contradiction finder</h3>
+        <p class="sub" style="margin-bottom:10px">Code compares claims with the same person and topic and flags the pairs that disagree. The model looks only at the pairs code marks as "maybe". It never reads the whole board.</p>
+        <div class="tablewrap">
+          <table class="wrapcells" style="min-width:0">
+            <thead><tr><th>Check</th><th>Example</th><th>How</th></tr></thead>
+            <tbody>
+              <tr><td>Same topic, other value</td><td>FIR: incident 1 March [D7]; officer: 2 March (turn 6)</td><td>code</td></tr>
+              <tr><td>Alibi against presence</td><td>"At home all night" [W3]; phone 1.2 km from the pin, 21:40–22:15 [D9 rows 311–318]</td><td>code, via presence matrix</td></tr>
+              <tr><td>Impossible travel</td><td>Tower 4471 at 21:40, tower 1190 (38 km away) at 21:55</td><td>code: distance ÷ time</td></tr>
+              <tr><td>Weapon against injury</td><td>FIR: pistol fire [D7]; MLO: incised wound, no firearm injury [D10 p.1]</td><td>code table, model for free text</td></tr>
+              <tr><td>Statement against statement</td><td>Witness W4: "two men"; FIR names three accused</td><td>code (counts), S7 (versions)</td></tr>
+              <tr><td>Order of events</td><td>Arrest recorded before the FIR time</td><td>code</td></tr>
+              <tr><td>One person, two identities</td><td>Two father's names for Kamran across documents</td><td>code → A5 entity check</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="rules">
+      <div><b>Each contradiction is an X# entry</b>Both sides quoted with their sources and trust rank, a severity, a status (open, explained, resolved) and what would settle it: "Get CDR of 0321-xxxx45 for 1 March" or "Ask the MLO doctor about the wound".</div>
+      <div><b>Severity decides who hears it</b>Critical: goes to the heart of a hypothesis (presence, weapon, identity). Major: timeline or role. Minor: spelling, rounding. Only critical and major go to the Insight desk.</div>
+      <div><b>Not every difference counts</b>Tolerances are code: times within 30 minutes, "raat 10 baje ke qareeb", tower coverage radius, known spelling variants. A difference inside the tolerance is not a contradiction.</div>
+      <div><b>Only the same person</b>S6 compares claims only about people A5 marks as the same person. A "maybe" match never produces a contradiction.</div>
+    </div>
+
+    <div class="cols">
+      <div>
+        <h3 style="margin-bottom:8px">S7 Statement analyst</h3>
+        <ol class="steps">
+          <li><b>Recorded statements are their own type, W#.</b> Complainant (FIR), 161 statements, 164 statements before a magistrate, supplementary statements and interrogation notes, each with speaker, role, date, who recorded it and page.</li>
+          <li><b>Versions in order.</b> For each person, every account in date order, with what changed: names added or dropped, a time moved, a detail that disappears.</li>
+          <li><b>Each claim against the evidence.</b> CDR, MLO, presence matrix, hotel and vehicle records.</li>
+          <li><b>Relations shown.</b> If the witness is related to the complainant or the accused (from the graph), that is noted next to the statement.</li>
+          <li><b>Output in plain words.</b> "Imran's account: 3 versions. v2 adds Sajid. v3 moves the time from 22:00 to 20:30 and conflicts with D9 rows 311–318." Written as inference.</li>
+        </ol>
+        <p class="sub" style="margin-top:8px">S7 says a statement <b>changed</b>, never that someone <b>lied</b>. A change can have an innocent cause, so it becomes a question for the officer.</p>
+      </div>
+      <div>
+        <h3 style="margin-bottom:8px">Presence matrix <span class="pill">toolbox</span></h3>
+        <p class="sub" style="margin-bottom:10px">For each person, everything that says where they were in the incident window. It generalises the hotel-against-FIR-date check. Illustrative names and references.</p>
+        <div class="tablewrap">
+          <table style="min-width:0">
+            <thead><tr><th>Person</th><th>1 March, 21:30–22:30</th><th>Reading</th></tr></thead>
+            <tbody>
+              <tr><td>Kamran</td><td>Phone on tower 4471, 1.2 km from the pin, 21:40–22:15 [D9]</td><td>phone near the scene (inference)</td></tr>
+              <tr><td>Imran</td><td>Says at home [W3]; phone silent 21:10–23:50 [D9]</td><td>unconfirmed; silence is a lead</td></tr>
+              <tr><td>Sajid</td><td>Hotel Eye check-in, Murree, 28 Feb – 3 Mar [call 8812]</td><td>away, by record</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <ul class="plain" style="margin-top:10px">
+          <li>A phone is not a person, and a hotel record is not a person either. Each cell says which kind of evidence it is.</li>
+          <li>Built in code from CDR facts, Hotel Eye, statements and vehicle records. Re-built when the pin, the time or an owner changes.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="cols">
+      <div>
+        <h3 style="margin-bottom:8px">S8 Lead spotter: hints become leads</h3>
+        <div class="states" style="margin-bottom:10px"><span>spotted</span><i>→</i><span>open</span><i>→</i><span>pursuing</span><i>→</i><span class="ok">confirmed</span><i>or</i><span class="no">dead end</span></div>
+        <div class="tablewrap">
+          <table class="wrapcells" style="min-width:0">
+            <thead><tr><th>Hint</th><th>Why it matters</th><th>Next step</th></tr></thead>
+            <tbody>
+              <tr><td>Calls to an unknown number jump from 2 a day to 19 in the 3 days before</td><td>Possible planning contact</td><td>SIMs owner lookup; ask the officer</td></tr>
+              <tr><td>IMEI changes 2 days after the incident [D9 row 402]</td><td>Handset may have been got rid of</td><td>IMEI lookup; ask about recovery</td></tr>
+              <tr><td>Phone silent through the window, active every evening before</td><td>Possible deliberate switch-off</td><td>Compare with co-accused CDRs (R5)</td></tr>
+              <tr><td>Same vehicle number in two FIRs</td><td>Link between cases</td><td>Excise owner, FIR Roster</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <ul class="plain" style="margin-top:10px">
+          <li>A lead is not evidence. Each K# names the hypothesis it could support or weaken, and its next step.</li>
+          <li>Anomalies are found in code (rates, gaps, changes, repeats). The model only writes the one-line description.</li>
+          <li>Dead ends stay on the board with the reason, so nobody chases them twice.</li>
+        </ul>
+      </div>
+      <div>
+        <h3 style="margin-bottom:8px">S1 Sherlock: the hypothesis matrix</h3>
+        <p class="sub" style="margin-bottom:10px">Every hypothesis against every piece of evidence. Ranked by how much evidence argues <b>against</b> each one, not by how much seems to fit (Analysis of Competing Hypotheses). Illustrative.</p>
+        <div class="tablewrap">
+          <table class="wrapcells" style="min-width:0">
+            <thead><tr><th>Evidence</th><th>H1 Kamran attacked</th><th>H2 Imran attacked</th><th>H3 Outside robbers</th></tr></thead>
+            <tbody>
+              <tr><td>F12 Kamran's phone near the scene</td><td>+</td><td>0</td><td>−</td></tr>
+              <tr><td>D7 FIR names Kamran</td><td>+</td><td>−</td><td>−</td></tr>
+              <tr><td>X3 Imran's alibi against his phone silence</td><td>0</td><td>+</td><td>0</td></tr>
+              <tr><td>F20 Purse and phone missing</td><td>0</td><td>0</td><td>+</td></tr>
+              <tr><td>F25 Kamran's IMEI change on 3 March</td><td>+</td><td>0</td><td>0</td></tr>
+              <tr><td>Against</td><td>0</td><td>1</td><td>2</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <ul class="plain" style="margin-top:10px">
+          <li>S1 sets each cell with a one-line reason and the evidence id. The counts and the ranking are code.</li>
+          <li>Strong marks (++ or −−) only from trust 1–2 sources. Leads K# never go in the matrix; only evidence does.</li>
+          <li>A hypothesis resting on one piece of evidence stays "open", whatever its rank.</li>
+        </ul>
+      </div>
+    </div>
+
+    <h3>S9 Skeptic: runs after every S1 run</h3>
+    <div class="rules">
+      <div><b>Break the leader</b>Looks for evidence against the top hypothesis that S1 marked neutral or missed, and asks what else explains each key fact.</div>
+      <div><b>Keep an alternative</b>At least one other hypothesis stays open until evidence rules it out, including an innocent explanation.</div>
+      <div><b>Past FIRs are not evidence</b>Earlier FIRs can raise a question. They never count for or against a hypothesis about this incident. Cells built only on them are flagged.</div>
+      <div><b>One source, one chain</b>Flags any conclusion that rests on a single source, or on an inference built on another inference.</div>
+      <div><b>No protected traits</b>Sect, caste, ethnicity, religion and family name never count as evidence.</div>
+      <div><b>Challenges, not verdicts</b>S1 must answer each challenge in the same run (accept it, or rebut it with an id): S1 → S9 → S1, once, never a loop. Unanswered challenges appear in the report.</div>
+    </div>
+
+    <h3>How Sherlock thinks in the background</h3>
+    <div class="rules">
+      <div><b>No 40-second cap</b>Background work isn't waited on, so S1, S6 and S9 can use a larger model, or several samples of the same model, keeping only what most samples agree on. Qwen 27B stays for the chat. <a href="#decisions">Decision</a></div>
+      <div><b>One problem at a time</b>Sherlock works per person, per hypothesis or per contradiction, with only the entries that matter for it. The context stays small and the answer stays focused.</div>
+      <div><b>Repeatable</b>Temperature 0 for judgments. Each run stores its prompt version, model and board version, so it can be run again for audit.</div>
+    </div>
+
+    <h3>Example: a contradiction reaches the officer</h3>
+    <p class="sub">Illustrative. Names, numbers and references are made up to show the flow.</p>
+    <div class="chat">
+      <div class="bubble officer"><span class="who">User</span>Imran ka bayan kya hai?</div>
+      <div class="bubble sher"><span class="who">Officer agent</span>Imran ne 161 ke bayan mein kaha ke woh <b>saari raat ghar par tha</b> [W3, safha 2].<span class="spec" style="display:block;margin-top:8px">Sherlock ki nayi baat (tasdeeq nahi): Imran ka phone 21:10 se 23:50 tak band tha [D9], jab ke pichle hafte har shaam chalta tha. Ye tazaad hai, saboot nahi.</span><span class="q">Kya Imran ke ghar walon ka bayan liya gaya hai?</span></div>
+      <div class="bubble desk"><span class="who">Insight desk</span>X3, major, about the person asked. Not told before. Passed, and logged in the ledger as told in turn 9.</div>
+      <div class="bubble team"><span class="who">Sherlock team</span>S6 found X3 from W3 and D9. S9 asked whether the phone was off for another reason; S1 kept X3 as a contradiction and added K4 "family's statement".</div>
     </div>
   </section>
 
@@ -520,8 +966,10 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
               <tr><td>Case summary</td><td>S2 Summarizer on the board: targets, incident, timeline, key findings</td></tr>
               <tr><td>Sherlock's view</td><td>S1's latest assessment: hypotheses, concerns, next steps, with its time</td></tr>
               <tr><td>Who we are discussing</td><td>Focus person and their dossier</td></tr>
+              <tr><td>Answer shape <span class="pill new">v5</span></td><td>Every source the shape needs: for an FIR, the FIR card, related statements, evidence, status, contradictions and leads</td></tr>
               <tr><td>What the user told us</td><td>Statements and answered questions from the ledger</td></tr>
               <tr><td>What's new</td><td>Board entries since the last reply</td></tr>
+              <tr><td>Open findings <span class="pill new">v5</span></td><td>Contradictions X#, leads K# and Skeptic challenges about the person or topic asked, so O1 never answers as if they weren't there</td></tr>
             </tbody>
           </table>
         </div>
@@ -529,10 +977,10 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
       <div>
         <h3 style="margin-bottom:8px">Asking Sherlock</h3>
         <ol class="steps">
-          <li><b>When.</b> On every question when the model is on. Without the model, his assessment comes from the board: which earlier FIRs bear on the new case, and his hypotheses about the people asked.</li>
+          <li><b>When.</b> For questions about a person, why something happened, or what to do next. Not for counts, lists or lookups, which the facts answer alone. Without the model, his assessment comes from the board: his hypotheses and open contradictions about the people asked. <span class="pill new">v5</span></li>
           <li><b>Quick, not full.</b> One model call, no tool rounds, with a 10-second budget. Sherlock answers only from his stored assessment and the context pack. He does not start a full background run while the user waits. Over budget: the reply says "Sherlock is looking into it" and his view comes later as a follow-up.</li>
           <li><b>Labelled.</b> The reply keeps facts and opinion apart: "Records mein ye nahi hai. Sherlock ka andaza: …". The Answer checker enforces this.</li>
-          <li><b>Remembered.</b> The question and Sherlock's view go on the board. If the question needs real work, Sherlock picks it up in the next background run and the user is told when he has more.</li>
+          <li><b>Remembered.</b> The question and Sherlock's view go on the board. If the question needs real work, Sherlock picks it up in the next background run, and what he finds comes back through the Insight desk.</li>
         </ol>
       </div>
     </div>
@@ -548,16 +996,16 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
           <tr><td>O4 Case briefer</td><td>no (old chat summary is updated in the background, never while the user waits)</td><td>300 ms</td><td>Use the last pack and add what's new</td></tr>
           <tr><td>O1 understand + draft</td><td>yes, one call; a second one after live lookups bring something new</td><td>10 s</td><td>Answer from the board and a template, with "partial answer"</td></tr>
           <tr><td>Toolbox calls</td><td>no</td><td>10 s in total, run in parallel</td><td>Answer without them; the slow call finishes in the background and its result is sent as a follow-up</td></tr>
-          <tr><td>Sherlock quick view</td><td>yes, one call, on every question</td><td>10 s, runs alongside the toolbox calls</td><td>"Sherlock is looking into it", sent later as a follow-up</td></tr>
+          <tr><td>Sherlock quick view <span class="pill new">v5</span></td><td class="better">yes, one call, only for questions about a person, why, or what next</td><td>10 s, runs alongside the toolbox calls</td><td>"Sherlock is looking into it", sent later as a follow-up</td></tr>
           <tr><td>O2 Answer checker</td><td>code first; model only when the draft has a claim that no query computed</td><td>200 ms code, 6 s model</td><td>Remove the unchecked claim and say it was not verified</td></tr>
-          <tr><td>Deep investigation</td><td>yes, a tool loop, only when the draft and the live lookups are not enough</td><td>25 s</td><td>Send what is checked; his conclusion follows as a follow-up</td></tr>
+          <tr><td>Deep investigation <span class="pill new">v5</span></td><td>yes, a tool loop, only when the draft and the live lookups are not enough</td><td class="better">never inside the reply; starts in the background</td><td class="better">The reply says "Sherlock is looking into it"; his conclusion comes through the Insight desk</td></tr>
           <tr><td>O1 revise (once)</td><td>yes</td><td>6 s</td><td>Send the checked parts only</td></tr>
           <tr><td>O5 Presenter</td><td>templates in all three languages by default; model only for free-form answers. Streamed</td><td>2 s</td><td>Use the template version</td></tr>
         </tbody>
       </table>
     </div>
     <div class="rules">
-      <div><b>Few model calls in a row</b>The Question reader reads, O1 drafts, Sherlock gives his view alongside, then O5 uses templates. The O2 model check, the revise and the deep investigation only run when needed. Every turn records how many model calls it made.</div>
+      <div><b>Few model calls in a row</b>The Question reader reads, O1 drafts, Sherlock gives his view alongside when the question needs it, then O5 uses templates. The O2 model check and the revise only run when needed. The deep investigation never runs inside a reply: after O1 and the tools, too little of the 40 s is left for it to finish. Every turn records how many model calls it made.</div>
       <div><b>In parallel, not one after another</b>Toolbox calls and Sherlock's quick view run at the same time. O1 doesn't wait for anything it doesn't need.</div>
       <div><b>Partial beats late</b>When a budget runs out, the user gets the checked part now and the rest as a follow-up message in the same thread. The status line shows which step is running the whole time.</div>
       <div><b>Measured</b>Every turn logs each step's time. The test set fails a change if the typical reply time gets slower than the current agent's.</div>
@@ -604,6 +1052,7 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
       <div><b>Sourced</b>Every claim cites a real F#, D# or call id. A claim with no source is removed.</div>
       <div><b>Consistent</b>Nothing contradicts what the user stated earlier or what the records say. A conflict is shown as a conflict, not hidden, and the order of trust (<a href="#trust">below</a>) decides which source the answer leads with.</div>
       <div><b>Honest about gaps</b>If the tools found nothing, the reply says so and names what was checked. No guessing.</div>
+      <div><b>Complete</b> <span class="pill new">v5</span>Every section of the answer shape is filled with sources or marked "not on record" or "not checked yet". A section can't be dropped. <a href="#shapes">Answer shapes</a></div>
       <div><b>Labelled</b>Speculation from Sherlock is marked as a suspicion. A question from the Questioner comes after the answer, never instead of it.</div>
     </div>
     <p class="sub">On failure: back to the Officer agent once, with the reasons. If the reason is missing data, the Officer agent may ask the toolbox one more time. If it still fails, the reply goes out with a visible warning on the part in doubt.</p>
@@ -619,8 +1068,9 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
           <tr><td>1</td><td>Official system record</td><td>NADRA, SIMs, Excise, PSRMS record, CDR rows</td></tr>
           <tr><td>2</td><td>Official document</td><td>FIR text, MLO, DNA or Chemical report, CRO dossier, CDR server report</td></tr>
           <tr><td>3</td><td>The officer's statement</td><td>What the user told us in chat. A later statement replaces an earlier one (<a href="#corrections">Corrections</a>)</td></tr>
-          <tr><td>4</td><td>Derived by us</td><td>CDR and graph inferences, Sherlock's assessment</td></tr>
-          <tr><td>5</td><td>Unverified</td><td>OSINT, Caller ID, web search</td></tr>
+          <tr><td>4 <span class="pill new">v5</span></td><td>Recorded statement W#</td><td>Complainant, witness or accused: 161, 164, supplementary statements, interrogation notes. Trusted as a record of what the person said, not as proof that it is true</td></tr>
+          <tr><td>5</td><td>Derived by us</td><td>CDR and graph inferences, Sherlock's assessment</td></tr>
+          <tr><td>6</td><td>Unverified</td><td>OSINT, Caller ID, web search</td></tr>
         </tbody>
       </table>
     </div>
@@ -628,6 +1078,7 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
       <div><b>Shown, not settled</b>"FIR mein waqia 1 March likha hai [D7]; aap ne 2 March bataya (turn 6)." The officer decides. Sherlock records the conflict on the board as something to look into.</div>
       <div><b>Topic exceptions</b>For the incident's time and place, and for people's roles, the officer's statement leads over the FIR. Investigators often know more than the FIR shows. The FIR is still shown next to it.</div>
       <div><b>Newer of the same rank</b>Between two sources of the same rank, the newer one leads. Between two documents, the one with an exact page reference leads.</div>
+      <div><b>A statement proves it was said</b>A 161 statement is a reliable record that the witness said it. Whether it is true is what S6 and S7 test against the other sources. <span class="pill new">v5</span></div>
       <div><b>Never upgrades the tier</b>A trusted source doesn't turn an inference into a fact. "Likely home area" stays an inference even when it comes from CDR rows.</div>
     </div>
   </section>
@@ -637,7 +1088,7 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
     <p class="sub">The Officer agent works out <i>what</i> to say. The Answer checker makes sure it is right. The Presenter decides <i>how</i> the user reads it: in their own language, laid out so the answer is clear at a glance.</p>
     <div class="rules">
       <div><b>Same language as the user</b>Urdu script gets Urdu, written right to left. Roman Urdu gets Roman Urdu. English gets English. It follows the user's latest message, so switching language mid-chat works.</div>
-      <div><b>Answer first</b>The first line answers the question in bold: a number, a name, yes or no. Detail follows only as much as the question needs.</div>
+      <div><b>Answer first, then the full shape</b>The first line answers the question in bold: a number, a name, yes or no. The sections of the answer shape follow under short headings, unless the officer asked for short. <span class="pill new">v5</span></div>
       <div><b>Layout fits the content</b>Three or more items become bullets. FIRs, calls or people compared side by side become a small table. A short answer stays a sentence.</div>
       <div><b>Evidence shown, not just cited</b>Key points carry a short quote from the record with its source, e.g. FIR file page 2 or CDR rows 311–318. Quotes stay in the record's language, with a translation when the user's language differs.</div>
       <div><b>Fact and opinion apart</b>Sherlock's view sits in its own labelled block ("Sherlock ka andaza"). Missing information is said plainly. The next question comes last, on its own line.</div>
@@ -666,6 +1117,134 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
     </div>
   </section>
 
+  <section class="panel" id="shapes">
+    <h2>Detailed answers: one shape for each kind of question <span class="pill new">v5</span></h2>
+    <p class="sub">Testing showed the Officer agent answers too briefly. An investigating officer who asks about an FIR wants who, when, where, what happened, why, and every statement about it, not two lines. Three things kept answers short: the Question reader set a low detail level, the Presenter rule said "detail only as much as the question needs", and O1 wrote freely, so it left out whatever it didn't think of. v5 fixes all three with <b>answer shapes</b>: for each kind of question, a fixed list of sections the answer must cover.</p>
+    <div class="rules">
+      <div><b>Full by default</b>For an investigating officer, the full answer is the default. Short only when asked: "sirf number", "short mein", "haan ya na". Even a count lists the items behind it.</div>
+      <div><b>Every section filled or marked</b>Each section is filled from the board with its sources, or says "not on record" or "not checked yet". A section is never skipped silently.</div>
+      <div><b>Answer first, then the detail</b>The bold first line still answers the exact question. The sections follow under short headings, in a fixed order the officer learns to scan.</div>
+      <div><b>Why is someone's claim</b>A motive comes from the FIR or a statement, so it is shown with who said it, never as a fact.</div>
+      <div><b>Mostly code, so it stays fast</b>Sections are filled by board queries (FIR card fields, statements, contradictions, status). The model writes only the "what happened" summary and joins the parts. Sections stream as they are ready, inside the 40 s budget.</div>
+      <div><b>Officer controls depth</b>"Aur detail" opens a section in full (every statement, every CDR row). "Short" gives the first line and the key points only.</div>
+    </div>
+
+    <div class="tablewrap">
+      <table class="wrapcells">
+        <thead><tr><th>Kind of question</th><th>Example</th><th>Sections, in order</th></tr></thead>
+        <tbody>
+          <tr><td>FIR</td><td>"FIR 488/25 ke baare mein batao"</td><td>Header (number, police station, sections, offence, registered at) · What happened (summary + key quote) · When (incident time, registration time, delay) · Where (place, distance from the police station) · Who (complainant and relation, each accused with role, injured or deceased, witnesses named) · Why (motive as stated, and by whom) · Weapon and property · Statements (161, accused, officer, with versions) · Evidence (from the S10 register: MLO, recoveries, forensic, DNA, chemical, CDR, pending reports) · Status (arrests, bail, challan, court) · Contradictions and leads · Sherlock's view · Not on record</td></tr>
+          <tr><td>Person</td><td>"Kamran kaun hai?"</td><td>Identity (father, CNIC, address, phones, vehicles) · Role in this case · All FIRs with role and status · Links to other people · Where he was in the incident window · Statements by him and about him · Hotel stays · Contradictions and leads · Sherlock's view · Not on record</td></tr>
+          <tr><td>Incident</td><td>"Waqia kaise hua?"</td><td>Timeline step by step · Place · People present and their roles · How it happened, by each account · Evidence · Where the accounts disagree</td></tr>
+          <tr><td>Statement</td><td>"Bilal ka bayan kya hai?"</td><td>Each version (date, recorded by, page) · Key points · What changed between versions · Where it disagrees with the evidence · Relation to the parties</td></tr>
+          <tr><td>Link</td><td>"Kamran aur Sajid ka kya taluq hai?"</td><td>Every connection with its source (calls, co-accused FIRs, family, address, vehicle) · First and last contact · How strong · What is still unknown</td></tr>
+          <tr><td>Phone or CDR</td><td>"0300-xxxx21 ka kya pata chala?"</td><td>Owner · Period covered · Top contacts · Near the scene · Silences · IMEI changes · Links to other CDRs</td></tr>
+          <tr><td>Count or list</td><td>"Kamran kitni FIRs mein hai?"</td><td>The number · Each item with its key fields (for FIRs: number, police station, role, offence, status)</td></tr>
+          <tr><td>Yes or no</td><td>"Kya woh waqia ke waqt hotel mein tha?"</td><td>Yes, no or unknown · The basis · Everything checked</td></tr>
+          <tr><td>What next</td><td>"Ab kya karein?"</td><td>Ranked steps, each with why it matters and which hypothesis it moves</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="cols">
+      <div>
+        <h3 style="margin-bottom:8px">The FIR card: what A2 reads from every FIR</h3>
+        <p class="sub" style="margin-bottom:10px">An FIR answer can only be as full as what was read from the FIR. A2 Document reader now fills a card for each FIR, every field with its page and quote. The model reads; code checks each quote against the page (<code>quote_in</code>). A field the FIR doesn't contain says "not in FIR".</p>
+        <div class="tablewrap">
+          <table class="wrapcells" style="min-width:0">
+            <thead><tr><th>Group</th><th>Fields</th></tr></thead>
+            <tbody>
+              <tr><td>Registration</td><td>FIR number, police station, district, date and time registered, sections (PPC and others), offence, IO</td></tr>
+              <tr><td>Occurrence</td><td>Incident date and time, place, distance and direction from the police station, reason given for any delay</td></tr>
+              <tr><td>People</td><td>Complainant (name, father, CNIC, address, relation to victim); each accused (name, father, role in the occurrence, weapon); injured or deceased; witnesses named</td></tr>
+              <tr><td>Account</td><td>The narrative in order, motive as stated, property taken, vehicles</td></tr>
+              <tr><td>Later records</td><td>Arrests, bail, recoveries, challan, court dates, from PSRMS or the officer</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <h3 style="margin-bottom:8px">How each step changes</h3>
+        <ol class="steps">
+          <li><b>O0</b> picks the kind of question and the depth: full unless the officer asks for short.</li>
+          <li><b>O4</b> fetches every source the shape needs, not only the top facts.</li>
+          <li><b>O1</b> fills the shape section by section as structured content with ids, writing only the summary in its own words.</li>
+          <li><b>O2</b> adds a completeness check: every section filled or marked; none dropped.</li>
+          <li><b>O5</b> lays it out with headings, tables for people and FIRs, quotes, and streams each section.</li>
+          <li><b>Tests.</b> The chat test set gets detail checks: an FIR question must return every FIR section.</li>
+        </ol>
+      </div>
+    </div>
+
+    <h3>Example: "FIR 488/25 ke baare mein batao"</h3>
+    <p class="sub">Illustrative. Names, numbers and references are made up. Shown in English; Roman Urdu and Urdu follow the same sections.</p>
+    <div class="bubble sher longans"><span class="who">Officer agent</span>
+      <p><b>FIR 488/25, PS Gulberg: attempted murder (s. 324 PPC), registered 2 March 2023 at 03:15.</b></p>
+      <h4>What happened</h4>
+      <p>The complainant, Asif, says his brother Naveed was shot outside their shop while closing it on the night of 1 March, and was injured in the leg. [D7 p.1–2]</p>
+      <blockquote>"ملزم نے پستول سے فائر کیا"<br>"The accused fired with a pistol." FIR 488/25, page 2</blockquote>
+      <h4>When</h4>
+      <ul><li>Incident: about 22:00 on 1 March [D7]</li><li>Registered: 03:15 on 2 March, 5 h 15 min later. The FIR gives treatment at the hospital as the reason [D7 p.2]</li></ul>
+      <h4>Where</h4>
+      <p>Outside Asif General Store, Main Boulevard, Gulberg; 2.4 km from PS Gulberg [D7, map pin]</p>
+      <h4>Who</h4>
+      <ul><li>Complainant: Asif s/o Rafiq, brother of the injured [D7]</li><li>Accused: Kamran s/o Aslam, fired with a pistol [D7]</li><li>Accused: Imran s/o Rashid, present, raised a lalkara [D7]</li><li>Injured: Naveed s/o Rafiq [D7, MLO D10]</li><li>Witnesses named: Sajid, Bilal [D7 p.2]</li></ul>
+      <h4>Why</h4>
+      <p>Dispute over shop rent, according to the complainant [D7 p.1]. Not confirmed by any other source.</p>
+      <h4>Weapon and property</h4>
+      <p>Pistol, as stated in the FIR. Nothing taken.</p>
+      <h4>Statements</h4>
+      <ul><li>Asif, 161, 3 March: matches the FIR [W1]</li><li>Bilal, 161, 4 March: says two men; does not name Imran [W4]</li><li>Imran, accused, 6 March: at home all night [W3]</li></ul>
+      <h4>Evidence</h4>
+      <ul><li>MLO: incised wound, right thigh; no firearm injury noted [D10 p.1]</li><li>Kamran's phone on a tower 1.2 km from the spot, 21:40–22:15 [D9 rows 311–318]</li></ul>
+      <h4>Status</h4>
+      <p>Kamran arrested 8 March, on judicial remand. Imran not arrested. Challan not submitted. [PSRMS, call 7731]</p>
+      <h4>Contradictions and leads</h4>
+      <ul><li>X1 critical: FIR says pistol fire; MLO finds no firearm injury</li><li>X2 major: FIR names three accused; Bilal says two men</li><li>X3 major: Imran says home all night; his phone was off 21:10–23:50</li><li>X4 major: Sajid is a named witness, but Hotel Eye shows him in Murree, 28 Feb – 3 Mar</li></ul>
+      <p class="spec">Sherlock's view (not confirmed): the weapon and the witness list both need checking before the FIR account can be relied on.</p>
+      <h4>Not on record</h4>
+      <p>Pistol recovery, site plan, Sajid's statement.</p>
+      <span class="q">Kya Sajid ka 161 ka bayan liya gaya hai?</span>
+    </div>
+  </section>
+
+  <section class="panel" id="recorder">
+    <h2>What the Statement recorder writes <span class="pill new">v5</span></h2>
+    <p class="sub">O3 used to keep the officer's words and the turn. That says what was typed, but not who the real source is, when the event happened or how sure the officer is. In v5 every statement is also broken into fields, so S5 and S6 can check it like any document.</p>
+    <div class="cols">
+      <div>
+        <ol class="steps">
+          <li><b>Who is the real source.</b> "Muddai ne bataya ke…" records two people: the officer who told us and the complainant who said it. A relayed statement gets the original speaker's trust, not the officer's rank 3.</li>
+          <li><b>How the officer knows.</b> Saw it, read it in a record, heard it from a witness, got it from an informant, or thinks so. This sets fact, inference or speculation.</li>
+          <li><b>How sure.</b> "Shayad", "lagta hai", "qareeb", "taqreeban" lower the certainty. "Raat 10 baje ke qareeb" becomes 22:00 with ±30 min, which S6 uses as its tolerance.</li>
+          <li><b>When the event happened.</b> "Kal raat" or "parson" becomes a date from the message time. The original words stay next to it.</li>
+          <li><b>About whom.</b> Names go through A5, so "Kamran" links to the right person and a name-only match is not merged.</li>
+          <li><b>One fact per entry.</b> "Haan, 10 baje, aur Imran bhi wahan tha" becomes two entries.</li>
+          <li><b>Read back.</b> O1 confirms in one line what was recorded, so the officer can catch a wrong date or name at once.</li>
+        </ol>
+      </div>
+      <div>
+        <p class="sub" style="margin-bottom:10px"><b>Officer, turn 7:</b> "Muddai ne bataya ke kal raat 10 baje ke qareeb Kamran ne pistol se fire kiya."</p>
+        <div class="tablewrap">
+          <table class="wrapcells" style="min-width:0">
+            <thead><tr><th>Field</th><th>Recorded</th></tr></thead>
+            <tbody>
+              <tr><td>Told by</td><td>Officer, turn 7, 12-10-2026 19:30</td></tr>
+              <tr><td>Original speaker</td><td>Complainant (relayed, not a recorded statement)</td></tr>
+              <tr><td>About</td><td>Kamran (A5: same as in D7)</td></tr>
+              <tr><td>What</td><td>fired with a pistol</td></tr>
+              <tr><td>When it happened</td><td>11-10-2026, about 22:00 (±30 min), from "kal raat 10 baje ke qareeb"</td></tr>
+              <tr><td>How known</td><td>heard from the complainant</td></tr>
+              <tr><td>Trust</td><td>complainant level, not officer level</td></tr>
+              <tr><td>Quote</td><td>the full sentence, word for word</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="sub" style="margin-top:10px">Read back: "Note kar liya: muddai ke mutabiq Kamran ne 11 Oct raat taqreeban 10 baje fire kiya."</p>
+      </div>
+    </div>
+  </section>
+
   <section class="panel">
     <h2>The Question desk</h2>
     <p class="sub">Sherlock's Questioner proposes questions. The Gatekeeper decides which ones the user will see. The Question ledger remembers every question by its topic, so the same question in other words is still caught.</p>
@@ -685,6 +1264,87 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
       <div><b>Tells Sherlock why</b>A rejected question goes back to the Questioner with the reason and the answer already on file, so Sherlock uses it.</div>
     </div>
     <p class="sub">Builds on <code>questioner.py</code>, which already has topic keys, the ask count and the "closed when known" rule. The Gatekeeper moves those rules out of the Questioner into their own step, so every question passes the same check.</p>
+  </section>
+
+  <section class="panel" id="questioner">
+    <h2>Where Sherlock's questions come from <span class="pill new">v5</span></h2>
+    <p class="sub">S4 Questioner draws on five sources, each giving a different kind of question. Every question carries the id it came from, so the officer's answer goes straight back to that entry.</p>
+    <div class="tablewrap">
+      <table class="wrapcells">
+        <thead><tr><th>Source</th><th>Example question</th><th>The answer updates</th></tr></thead>
+        <tbody>
+          <tr><td>Contradiction X#</td><td>"FIR mein 1 March hai, aap ne 2 March bataya. Sahi kaunsa hai?"</td><td>X# marked explained or resolved</td></tr>
+          <tr><td>Lead K#</td><td>"0345-xxxx12 kis ka number hai? Kamran ne waqia se pehle is ko 19 dafa call kiya."</td><td>K# confirmed or dead end</td></tr>
+          <tr><td>Statement change W#</td><td>"Imran ne doosre bayan mein waqt 22:00 se 20:30 kyun kiya?"</td><td>S7 notes the reason; X# if it conflicts</td></tr>
+          <tr><td>Missing fact (gap)</td><td>"Kya Kamran ka CDR mil sakta hai?"</td><td>The gap closes, or becomes an open task</td></tr>
+          <tr><td>Identity (A5)</td><td>"Kya FIR 391/26 wala Imran s/o Rashid yehi Imran hai?"</td><td>A5 merges the two people or keeps them apart</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="rules">
+      <div><b>Ranked by impact</b>A question ranks by how much its answer would move the hypothesis matrix. One that can rule a hypothesis in or out comes first. Critical contradictions rank above minor gaps, and questions the officer can answer from memory rank above ones that need new paperwork.</div>
+      <div><b>Carries its reason</b>Each question stores its source id (X3, K4, H2). The answer is written back to that entry, and the matrix cell is updated.</div>
+      <div><b>Neutral wording</b>Questions ask for facts and never assume guilt. "Imran ka phone us raat band kyun tha?" is fine. "Imran ne phone kyun chhupaya?" is not.</div>
+      <div><b>Question or task</b>Getting a CDR or asking the MLO doctor can't be answered from memory. It is asked once ("Kya aap ye mangwa sakte hain?") and then tracked as an open task, not asked again.</div>
+      <div><b>Gatekeeper unchanged</b>Every question still passes Q1, so none of this brings back repeated questions.</div>
+    </div>
+  </section>
+
+  <section class="panel" id="insights">
+    <h2>The Insight desk <span class="pill new">v5</span></h2>
+    <p class="sub">In v4, Sherlock's findings reached the officer only when the officer asked, or in the report. The team could find the key contradiction and nobody would hear about it. The Insight desk does for findings what the Gatekeeper does for questions: it decides what the officer is told, and makes sure nothing is told twice.</p>
+    <div class="cols">
+      <div>
+        <h3 style="margin-bottom:8px">What can be passed on</h3>
+        <ul class="plain">
+          <li>A critical or major contradiction X#</li>
+          <li>A lead K# that changes a hypothesis, or one confirmed or ruled out</li>
+          <li>A hypothesis that changes status: supported, weakened, ruled out</li>
+          <li>A Skeptic challenge that S1 accepted against the leading hypothesis</li>
+          <li>A late result from a lookup or a background investigation the officer was waiting for</li>
+        </ul>
+      </div>
+      <div>
+        <h3 style="margin-bottom:8px">How it decides</h3>
+        <ol class="steps">
+          <li><b>Rank.</b> Critical first, then findings about the person or topic the officer is asking about, then newest.</li>
+          <li><b>Told once.</b> The ledger keeps every finding told, keyed by its id. The same finding in other words is not told again. A finding that changes (X3 resolved) can be told once more.</li>
+          <li><b>One extra item per reply.</b> A reply carries at most one finding or one question. A critical finding goes first; the question waits a turn.</li>
+          <li><b>Checked.</b> O2 checks the finding like any answer: ids exist, tiers labelled, speculation marked.</li>
+        </ol>
+      </div>
+    </div>
+    <div class="rules">
+      <div><b>After the answer</b>A finding never replaces the answer to what was asked. It comes after it, in its own labelled block: "Sherlock ki nayi baat (tasdeeq nahi)".</div>
+      <div><b>Critical can't wait</b>If a critical finding arrives while the officer is away, the case board panel shows it with a badge, and it leads the next reply.</div>
+      <div><b>The officer can pause it</b>"Sherlock ki baatein baad mein" holds findings until the officer asks. The report holds all of them either way.</div>
+    </div>
+  </section>
+
+  <section class="panel" id="entities">
+    <h2>Who is who: A5 Entity resolver <span class="pill new">v5</span></h2>
+    <p class="sub">Kamran, Kamraan and کامران. Muhammad, Mohammad, Mohd and M. Two different Imrans in two FIRs. A wrong merge creates false contradictions and false links; a missed merge hides real ones. Contradictions and the hypothesis matrix depend on getting this right, so A5 runs before them.</p>
+    <div class="cols">
+      <div>
+        <ol class="steps">
+          <li><b>Identifiers first.</b> CNIC, then phone number, then name with father's name and address. A name alone never merges two people.</li>
+          <li><b>Spelling in code.</b> A transliteration table covers Urdu script, Roman spellings and common short forms (Muhammad, Mohd, M.; Sheikh, Shaikh).</li>
+          <li><b>Three states.</b> <i>Same</i> (identifier matches), <i>maybe</i> (name only), <i>different</i> (identifiers disagree). A "maybe" is never merged and can't create a contradiction or a link.</li>
+          <li><b>Ask when it matters.</b> A "maybe" that would change a hypothesis goes to the Question desk: "Kya FIR 391/26 wala Imran s/o Rashid yehi Imran hai?"</li>
+          <li><b>Undo is a correction.</b> A wrong match is fixed like any correction ("Who a person is"): the link is removed and everything built on it is redone.</li>
+        </ol>
+      </div>
+      <div class="tablewrap">
+        <table class="wrapcells" style="min-width:0">
+          <thead><tr><th>Record A</th><th>Record B</th><th>Result</th></tr></thead>
+          <tbody>
+            <tr><td>Kamran s/o Aslam, CNIC 35202-…-1 [D7]</td><td>کامران ولد اسلم, CNIC 35202-…-1 [W2]</td><td><span class="pill new">same</span> CNIC</td></tr>
+            <tr><td>Imran s/o Rashid [D8]</td><td>Imran, phone 0321-xxxx45 [D9]</td><td><span class="pill ext">maybe</span> name only; ask</td></tr>
+            <tr><td>M. Sajid, Gulberg, CNIC …-3 [D11]</td><td>Sajid Ali, Model Town, CNIC …-7 [F30]</td><td><span class="pill">different</span> CNIC differs</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
   </section>
 
   <section class="panel" id="corrections">
@@ -752,6 +1412,9 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
           <tr><td>Report reader</td><td>"what does the MLO say about injuries?"</td><td>quoted lines with document and page</td><td><code>read_document</code>, <code>search_evidence</code></td></tr>
           <tr><td>CDR query</td><td>"Kamran's number near the scene on 01-03?"</td><td>the CDR team's facts: calls, towers, distances, IMEIs, with row references</td><td>CDR team output, <code>cdr_lookup</code></td></tr>
           <tr><td>API router</td><td>"vehicles owned by Kamran"</td><td>data, or "checked, nothing found", with a call id</td><td><code>researcher.py</code>, <code>systems.py</code></td></tr>
+          <tr><td>Evidence register <span class="pill new">v5</span></td><td>"what do the MLO and forensic reports say about the weapon?"</td><td>facts by record, person, topic or time from every report, with links, custody and pending reports</td><td>S10</td></tr>
+          <tr><td>Statements <span class="pill new">v5</span></td><td>"what has Imran said about that night?"</td><td>every recorded statement and claim by or about the person, in order, with versions and quotes</td><td>W# entries, S5 claims, S7</td></tr>
+          <tr><td>Presence matrix <span class="pill new">v5</span></td><td>"where was everyone at 22:00 on 1 March?"</td><td>one row per person: CDR, hotel, statements, vehicles, each with its kind of evidence</td><td>CDR query, <code>case_queries.hotels</code>, S5 claims</td></tr>
         </tbody>
       </table>
     </div>
@@ -787,55 +1450,166 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
   </section>
 
   <section class="panel" id="report">
-    <h2>The case report: Sherlock's full assessment</h2>
-    <p class="sub">The PDF the officer downloads is Sherlock's work on the case, in full. Today <code>case_report.assemble</code> makes one model call over the graph and case file when the run ends, and keeps that PDF until <code>rebuild=true</code>. Nothing from the chat, the CDR team, Sherlock's hypotheses or the officer's corrections reaches it. In the new plan, <b>S3 Report writer</b> writes no new judgments. It lays out what the Sherlock team already concluded on the board, so the report and the chat always agree.</p>
+    <h2>The case report: structured knowledge for the investigator <span class="pill new">v5</span></h2>
+    <p class="sub">The PDF the officer downloads holds everything the teams know about the case, organized so an investigator can read it top down: first a structured summary in plain language, then the evidence, the statements, the analysis, one timeline and the actions to take. Its own <b>Report team</b> writes it and makes no new judgments. It lays out what is on the board, so the report and the chat always agree. Today <code>case_report.assemble</code> makes one model call over the graph and case file and nothing from the chat, the CDR team or Sherlock reaches it; v5 replaces that.</p>
+
+    <h3>The executive summary</h3>
+    <p class="sub">One to two pages of plain-language paragraphs in a fixed order, covering facts, contradictions, leads, what is missing and what to do. Every sentence cites its ids, so a reader can jump to the detail. It is written last by P5 Summary writer, from the finished parts, and checked by P6 Report checker.</p>
     <div class="cols">
       <div>
-        <h3 style="margin-bottom:8px">On download</h3>
         <ol class="steps">
-          <li><b>Up to date?</b> The report is tied to a board version. If Sherlock's assessment already covers the current board, the PDF is built straight away (code only, about 2 s).</li>
-          <li><b>If not, bring it up to date.</b> If entries arrived after his last run, S2 → S1 → S4 run first. The officer sees "Sherlock is finishing his assessment…" with progress. Budget 90 s.</li>
-          <li><b>Over budget.</b> The report is built from the last assessment. The cover says "Assessment as of 14:02 (board v41). 6 newer entries are not yet assessed" and lists them in an appendix. The report never pretends to be newer than it is.</li>
-          <li><b>S3 builds it.</b> Report sections are filled from board entries; the model is only used to join them into readable paragraphs. Each paragraph keeps its ids.</li>
-          <li><b>Checked like a chat answer.</b> The O2 Answer checker runs on the report: every id exists, every number matches, speculation is labelled, no <span class="pill ext">stale</span> entry is used.</li>
-          <li><b>Kept per version.</b> The PDF is cached by board version, not once per run. A newer board means a new report, so <code>rebuild=true</code> is no longer needed.</li>
+          <li><b>The case in brief.</b> FIR, offence, date, place, complainant, accused and their roles, in three or four sentences.</li>
+          <li><b>What the evidence establishes.</b> The key facts from records, reports and police systems (trust 1–2): FIRs, MLO, forensic, DNA, recoveries, Hotel Eye, tenant records, CDR.</li>
+          <li><b>What is disputed.</b> Every critical and major contradiction, both sides in one line each.</li>
+          <li><b>Leads being pursued.</b> The open and confirmed leads, each with its status and next step.</li>
+          <li><b>Where the case stands.</b> Internal version: each hypothesis with its status and Sherlock's labelled view. File version: the lines of inquiry, without ranking or views on persons.</li>
+          <li><b>What is not clear yet.</b> Each open point with the question that would clear it, plus pending reports and records not yet checked.</li>
+          <li><b>Next steps.</b> The top five actions, each with what it would settle.</li>
         </ol>
       </div>
+      <div class="bubble sher longans"><span class="who">Executive summary · internal · illustrative</span>
+        <h4>The case in brief</h4>
+        <p>FIR 488/25, PS Gulberg, attempted murder (s. 324 PPC). On 1 March 2023 at about 22:00, Naveed was injured outside his shop on Main Boulevard. His brother Asif names Kamran (fired a pistol) and Imran (lalkara). [D7]</p>
+        <h4>What the evidence establishes</h4>
+        <p>Naveed had an incised wound to the right thigh [D10]. A 30-bore pistol recovered from Kamran's house matches two empties from the scene [D12, D14]. The blood on the shutter is Naveed's [D15]. Kamran's phone was on a tower 1.2 km away, 21:40–22:15 [D9].</p>
+        <h4>What is disputed</h4>
+        <ul><li>X1 critical: FIR says pistol fire; MLO finds a cut, not a firearm wound</li><li>X3 major: Imran says home all night; his phone was off 21:10–23:50</li><li>X4 major: named witness Sajid was in Murree, per Hotel Eye</li></ul>
+        <h4>Leads</h4>
+        <ul><li>K2 pursuing: Kamran called an unknown number 19 times in 3 days before</li><li>K5 open: empties reached the lab 19 days after collection</li></ul>
+        <h4>Where the case stands</h4>
+        <p>H1 (Kamran attacked) leads but is weakened by X1. <span class="spec">Sherlock's view (not confirmed): the weapon question must be settled before the FIR account is relied on.</span></p>
+        <h4>Not clear yet</h4>
+        <ul><li>Kamran's address that night: FIR says Gulberg, tenant record says Model Town since 20 Feb. Ask: "Waqia ke waqt Kamran kahan rehta tha?"</li><li>Pending: chemical report on the cloth; Sajid's statement; site plan</li></ul>
+        <h4>Next steps</h4>
+        <ul><li>Further MLO opinion on the wound (settles X1)</li><li>Record Sajid's statement (X4)</li><li>Owner of 0345-xxxx12 (K2)</li></ul>
+      </div>
+    </div>
+
+    <h3>Full contents of the report</h3>
+    <p class="sub">Every part is filled from the board, so the report holds everything the teams have found. A section with nothing on record still appears and says so.</p>
+    <div class="tablewrap">
+      <table class="wrapcells">
+        <thead><tr><th>Part</th><th>Sections</th><th>Written by, from</th><th>File version</th></tr></thead>
+        <tbody>
+          <tr><td>A · Case overview</td><td>Cover (FIR, board version, time, model, officer; <i>current</i> or <i>as of …</i>) · Executive summary · The incident as recorded, with the officer's corrections · People on the case: one table with role, identity, phones, vehicles, addresses, FIRs and links</td><td>P2, P5 · S2, A4, O3</td><td>yes</td></tr>
+          <tr><td>B1 · FIRs</td><td>This FIR's card in full (registration, occurrence, people and roles, account, delay, status) · Every other FIR of the people on the case: number, police station, offence, role, status, and how it relates to this case</td><td>P2 · A2 FIR cards, PSRMS</td><td>yes</td></tr>
+          <tr><td>B2 · Medical</td><td>MLO and postmortem: each injury, its kind, weapon opinion, time since injury or death, grievous or simple</td><td>P2 · S10</td><td>yes</td></tr>
+          <tr><td>B3 · Forensic and lab</td><td>DNA, chemical, ballistics, fingerprints, each with exhibits and result · Chain of custody · Pending reports</td><td>P2 · S10</td><td>yes</td></tr>
+          <tr><td>B4 · Recoveries and site plan</td><td>Each recovery memo (what, from whom, where, when, witnesses) · Positions and distances from the site plan</td><td>P2 · S10</td><td>yes</td></tr>
+          <tr><td>B5 · Police system records</td><td>For each person, every system checked: NADRA (identity, family), SIMs (numbers), Excise and DLS (vehicles, licence), Hotel Eye (stays, checked against the incident and each FIR date), tenant registration (addresses, landlords, dates), PSRMS and CRO (record), others. Each with its call id and date checked; "checked, nothing found" listed too</td><td>P2 · API router results, S10</td><td>yes</td></tr>
+          <tr><td>B6 · Phones and presence</td><td>CDR analysis per CDR (owner, contacts, towers near the scene, silences, IMEI changes, cross-CDR links) · Presence in the incident window for every person</td><td>P2 · CDR team, presence matrix</td><td>yes</td></tr>
+          <tr><td>B7 · Evidence by topic</td><td>The register by topic (injury, weapon, samples, recovery, identity, place, time, address, stays), so all records on one question sit together</td><td>P2 · S10</td><td>yes</td></tr>
+          <tr><td>C · Statements</td><td>Each person's statements in date order, what changed between versions, where they disagree with the evidence · The officer's statements · Every question asked, with its answer or "don't know"</td><td>P3 · S7, O3, ledger</td><td>yes</td></tr>
+          <tr><td>D · Analysis</td><td>Analysis by person (role, presence, records, statements, contradictions and leads about them) · Contradictions register (X#: both sides, severity, status, what settles it) · Leads register (K#: status, next step, hypothesis, dead ends) · Hypothesis matrix · Skeptic's challenges and answers · Suspicions, clearly marked · How the assessment changed</td><td>P4 · S6, S8, S1, S9</td><td>contradictions as source conflicts; the rest internal only</td></tr>
+          <tr><td>E · Timeline</td><td>One master timeline of events from every source: FIR, medical, lab dates, Hotel Eye stays, tenant dates, CDR, statements, recoveries, arrests. Each event with its source; conflicting times side by side</td><td>P3 · S2, S10</td><td>yes</td></tr>
+          <tr><td>F · Open points and next steps</td><td>Open points: what is not clear, why it matters, the question that would clear it, and who can answer · Next steps ranked · Open tasks (CDRs, lab reports, statements to record) · Checked, nothing found</td><td>P1 · S4, S1, X#, K#</td><td>yes, as tasks</td></tr>
+          <tr><td>Annex</td><td>Every id cited (G, D, F, W, X, K, H, Q, CDR rows, call ids) with what it is · Index by person · API calls made for this case</td><td>P1 · board, audit log</td><td>yes</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="cols">
       <div>
-        <h3 style="margin-bottom:8px">What the report contains</h3>
+        <h3 style="margin-bottom:8px">Example: B5 police system records for Kamran</h3>
         <div class="tablewrap">
-          <table style="min-width:0">
-            <thead><tr><th>Section</th><th>From</th></tr></thead>
+          <table class="wrapcells" style="min-width:0">
+            <thead><tr><th>System</th><th>Found</th><th>Source</th></tr></thead>
             <tbody>
-              <tr><td>Cover</td><td>Subject, FIR, board version, time of the assessment, model, officer. Status: <i>current</i> or <i>as of …</i></td></tr>
-              <tr><td>Executive summary</td><td>S2 summary + S1's main conclusion. Facts only; suspicions go in their own section</td></tr>
-              <tr><td>The incident</td><td>As the officer gave it, plus corrections with turn numbers (exists, extended)</td></tr>
-              <tr><td>Targets and people</td><td>A4 dossiers: identity, role, FIRs, links, statements (exists, extended)</td></tr>
-              <tr><td><b>Sherlock's assessment</b> <span class="pill new">new</span></td><td>Each hypothesis H# with status (open, supported, weakened, ruled out), evidence for and against, and confidence. Then a view on each person: role and involvement, with the basis for it</td></tr>
-              <tr><td><b>Contradictions and conflicts</b> <span class="pill new">new</span></td><td>Sources that disagree, which one leads under the order of trust, and what would settle it</td></tr>
-              <tr><td><b>Suspicions (not evidence)</b> <span class="pill new">new</span></td><td>Sherlock's labelled speculation, in a clearly marked section so it can't be read as fact</td></tr>
-              <tr><td><b>How the assessment changed</b> <span class="pill new">new</span></td><td>Each change to a hypothesis or role: before → after, and the entry that changed it (a CDR, a correction, a document)</td></tr>
-              <tr><td><b>CDR analysis</b> <span class="pill new">new</span></td><td>Per CDR: owner, period, top contacts, towers near the incident, silences, IMEI changes, cross-CDR links, differences from the server report. Row references throughout</td></tr>
-              <tr><td>Linkages, network, findings</td><td>Graph evidence G# (exists)</td></tr>
-              <tr><td>Timeline</td><td>One timeline from documents, CDR, the officer's statements and the graph (exists, extended)</td></tr>
-              <tr><td><b>Officer's statements and Q&amp;A</b> <span class="pill new">new</span></td><td>What the officer told us, every question with its answer or "don't know", and questions still open</td></tr>
-              <tr><td><b>Asked of Sherlock in chat</b> <span class="pill new">new</span></td><td>Quick views he gave in chat, and whether his full assessment later confirmed, changed or replaced them</td></tr>
-              <tr><td>Evidence</td><td>Documents and quoted facts (exists)</td></tr>
-              <tr><td><b>Checked, nothing found</b> <span class="pill new">new</span></td><td>Systems searched with no result, missing lab reports, pages that couldn't be read. Shows the work done</td></tr>
-              <tr><td>Next steps</td><td>S4 ranked gaps + S1 recommendations: what to get, from whom, and why it matters to which hypothesis</td></tr>
-              <tr><td>References and audit</td><td>Every id cited (G, D, F, L, H, Q, CDR rows, call ids), plus a summary of the API calls made for this case</td></tr>
+              <tr><td>NADRA</td><td>Kamran s/o Aslam, CNIC 35202-…-1, address Gulberg</td><td>call 9101</td></tr>
+              <tr><td>SIMs</td><td>Two numbers: 0300-xxxx21 (active), 0321-xxxx88</td><td>call 9102</td></tr>
+              <tr><td>Excise</td><td>Honda CD-70, LEA-1234</td><td>call 9103</td></tr>
+              <tr><td>Hotel Eye</td><td>No stays 25 Feb – 5 Mar 2023. One stay in Faisalabad, 10–12 Jan 2023; no FIR date falls in it</td><td>call 9104</td></tr>
+              <tr><td>Tenant</td><td>Tenant at House 12, Model Town, from 20 Feb 2023</td><td>call 9120</td></tr>
+              <tr><td>PSRMS</td><td>5 FIRs, listed in B1</td><td>call 9105</td></tr>
+              <tr><td>CRO</td><td>One conviction, 2019. <i>Background, not evidence</i></td><td>call 9106</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <h3 style="margin-bottom:8px">Example: F open points</h3>
+        <div class="tablewrap">
+          <table class="wrapcells" style="min-width:0">
+            <thead><tr><th>Not clear</th><th>Question that would clear it</th><th>Who</th></tr></thead>
+            <tbody>
+              <tr><td>Pistol in the FIR, cut in the MLO (X1)</td><td>"Kya MLO doctor se zakham ki dobara raye li ja sakti hai?"</td><td>MLO doctor, through the officer</td></tr>
+              <tr><td>Was witness Sajid there? (X4)</td><td>"Kya Sajid waqia ke din Lahore mein tha?"</td><td>Officer, Sajid</td></tr>
+              <tr><td>Kamran's address that night: FIR says Gulberg, tenant record says Model Town since 20 Feb</td><td>"Waqia ke waqt Kamran kahan rehta tha?"</td><td>Officer, landlord</td></tr>
+              <tr><td>Who is 0345-xxxx12? SIMs: no record (K2)</td><td>"Kya aap ye number pehchante hain?"</td><td>Officer</td></tr>
+              <tr><td>Why Imran's phone was off (X3)</td><td>"Kya Imran ke ghar walon ka bayan liya gaya hai?"</td><td>Officer</td></tr>
             </tbody>
           </table>
         </div>
       </div>
     </div>
+
+    <h3>The Report team <span class="pill new">v5</span></h3>
+    <p class="sub">Writing the report is a different job from solving the case, so it has its own team. The Report team reads the board and writes; it never judges. It builds the report in the background after every Sherlock run, so a download is usually instant.</p>
+    <div class="tablewrap">
+      <table class="wrapcells">
+        <thead><tr><th>Member</th><th>Writes</th><th>From</th><th>Model?</th></tr></thead>
+        <tbody>
+          <tr><td>P1 Report editor (lead)</td><td>Freezes one board version, picks internal or file, hands out the parts, writes Part F (actions) and the annex (id list, index by person, audit), links every id across parts, builds the PDF</td><td>The whole board, S4, S1, audit log</td><td>no, code</td></tr>
+          <tr><td>P2 Evidence writer</td><td>Part A (overview, people table) and Part B (register by topic, one summary per record, custody, pending reports, CDR analysis, presence)</td><td>S10, A4, CDR team, presence matrix</td><td>templates; model only to join</td></tr>
+          <tr><td>P3 Statements and timeline writer</td><td>Part C (each person's statements, versions, conflicts; officer's statements; questions asked) and Part E (master timeline)</td><td>S7, O3, ledger, S2, S10</td><td>templates; model only to join</td></tr>
+          <tr><td>P4 Analysis writer</td><td>Part D (contradictions register, leads register, hypothesis matrix, Skeptic's challenges, suspicions, how the assessment changed). Leaves out what the file version may not hold</td><td>S6, S8, S1, S9</td><td>templates; model only to join</td></tr>
+          <tr><td>P5 Summary writer</td><td>The executive summary, written <b>last</b>, from the finished parts, so it says only what the body shows</td><td>Parts A–F</td><td>yes</td></tr>
+          <tr><td>P6 Report checker</td><td>Checks the whole report: every id exists, numbers match, tiers marked, no stale entry, every section of the report shape present, and every summary sentence backed by a part of the body</td><td>The draft report, the board</td><td>code first, model only for "does this contradict"</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="cols">
+      <div>
+        <h3 style="margin-bottom:8px">How a report is built</h3>
+        <ol class="steps">
+          <li><b>P1</b> freezes the board version and starts the parts.</li>
+          <li><b>P2, P3 and P4</b> write their parts at the same time.</li>
+          <li><b>P1</b> writes Part F and the annex and links the ids.</li>
+          <li><b>P5</b> writes the executive summary from the finished parts.</li>
+          <li><b>P6</b> checks everything. A failed section goes back to its writer once; if it fails again, it goes out with a visible warning.</li>
+          <li><b>P1</b> builds the internal and file PDFs and caches them by board version.</li>
+        </ol>
+      </div>
+      <div>
+        <h3 style="margin-bottom:8px">Rules</h3>
+        <ul class="plain">
+          <li>The team never judges and never looks anything up. It writes only what is on the board.</li>
+          <li>All parts use the same frozen board version, so no part is newer than another.</li>
+          <li>The summary is written last, so it can't claim anything the body doesn't show.</li>
+          <li>Its writes never wake the Sherlock team, and the Sherlock team's run budget is not used.</li>
+          <li>If the model is down, every part is built from templates and the cover says so.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="cols">
+      <div>
+        <h3 style="margin-bottom:8px">What makes it useful to an investigator</h3>
+        <ul class="plain">
+          <li><b>Linked ids.</b> Every contradiction points to the evidence rows behind it; every evidence row lists the contradictions and leads it feeds. A reader can follow X1 to D10 and D14 and back.</li>
+          <li><b>Index by person.</b> For each person, every page where they appear: role, records, statements, contradictions, leads.</li>
+          <li><b>Tables where things are compared.</b> People, FIRs, records, contradictions and leads are tables; explanations are short paragraphs.</li>
+          <li><b>Tiers on every line.</b> Fact, inference or speculation is marked, so nothing is read as stronger than it is.</li>
+          <li><b>Gaps are visible.</b> Missing records and "checked, nothing found" are listed, so the reader knows what the report can't say.</li>
+        </ul>
+      </div>
+      <div>
+        <h3 style="margin-bottom:8px">On download</h3>
+        <ol class="steps">
+          <li><b>Up to date?</b> The report is tied to a board version. The Report team prebuilds it after every Sherlock run, so if the assessment covers the current board, the download is instant.</li>
+          <li><b>If not, bring it up to date.</b> The full Sherlock run goes first (S10 → S5 → S6, S7, S8 → S2 → S1 → S9 → S1 → S4), then the Report team. The officer sees "Sherlock is finishing his assessment…" with progress. Budget 90 s.</li>
+          <li><b>Over budget.</b> The report is built from the last assessment. The cover says "Assessment as of 14:02 (board v41). 6 newer entries are not yet assessed" and lists them. The report never pretends to be newer than it is.</li>
+          <li><b>Checked like a chat answer.</b> P6 runs on the report: every id exists, every number matches, speculation is labelled, no <span class="pill ext">stale</span> entry is used.</li>
+          <li><b>Kept per version.</b> The PDF is cached by board version. A newer board means a new report.</li>
+        </ol>
+      </div>
+    </div>
     <div class="rules">
-      <div><b>Nothing new at download</b>The report says only what is on the board. A judgment that isn't in S1's assessment can't appear in the report, so chat and report never disagree.</div>
-      <div><b>Cites or is dropped</b>The current rule stays and covers the new ids too: a statement with no real G, D, F, L, H, Q, row or call id is removed.</div>
-      <div><b>Tiers visible</b>Every assessment line shows fact, inference or speculation. Speculation never appears in the executive summary.</div>
+      <div><b>Nothing new at download</b>The report says only what is on the board. A judgment that isn't in S1's assessment can't appear in it, so chat and report never disagree.</div>
+      <div><b>Cites or is dropped</b>A sentence with no real G, D, F, W, X, K, H, Q, row or call id is removed.</div>
+      <div><b>Speculation stays out of the summary's facts</b>The summary's facts and disputes are records and findings. Sherlock's view appears only in "Where the case stands", labelled, and only in the internal version.</div>
       <div><b>Corrections respected</b>Replaced and stale entries are left out of the body; they appear only under "How the assessment changed".</div>
-      <div><b>Same everywhere</b>The report, the chat and the dashboard all read the same assessment version. Reports from the same board version always say the same thing.</div>
-      <div><b>Works without the model</b>If the model is down, S3 builds every section from the board entries with templates, as <code>_rule_written</code> does today. The cover says it was built without the model.</div>
+      <div><b>Two versions</b>The <i>internal</i> report holds everything. The <i>file</i> report, for court and the case file, leaves out suspicions, the hypothesis matrix, views on persons and leads; contradictions appear as source conflicts. Both come from the same board version. <a href="#decisions">Decision</a></div>
+      <div><b>Works without the model</b>If the model is down, the Report team builds every section from board entries with templates, as <code>_rule_written</code> does today. The cover says so.</div>
     </div>
   </section>
 
@@ -843,8 +1617,8 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
     <h2>Which agents use the AI model</h2>
     <p class="sub">An agent that follows fixed rules is written as code. Code is faster and cheaper, and it can't hallucinate. The model is used only where judgment or language is needed.</p>
     <div class="cols">
-      <div><h3 style="margin-bottom:6px">AI model</h3><ul class="plain"><li>O1 Officer agent: understanding the question, drafting the answer</li><li>O5 Presenter: only for free-form answers; templates in all three languages handle the rest without the model</li><li>S1 Sherlock, S2 Summarizer</li><li>A2 Document reader, for scanned pages and photos</li><li>CDR R1 Intake, only for odd headers or a scanned CDR report</li><li>O2 Answer checker, only for "does this contradict something"</li><li>Q1 Gatekeeper, only to compare a free-form question with the chat</li></ul></div>
-      <div><h3 style="margin-bottom:6px">Code only</h3><ul class="plain"><li>Q1 Gatekeeper topic-key checks, Q2 Question ledger</li><li>API router and its catalog</li><li>CDR team R2–R6: lookups, counts, distances, matching</li><li>O4 Case briefer, Board reader, Dossier, Chat memory (model only to summarise old chat turns)</li><li>O2 checks on numbers, sources and "was it answered"</li><li>O5 format guard: numbers, names and sources unchanged, language matches</li><li>O3 Statement recorder (model optional, for free-form statements)</li></ul></div>
+      <div><h3 style="margin-bottom:6px">AI model</h3><ul class="plain"><li>O1 Officer agent: understanding the question, drafting the answer</li><li>O5 Presenter: only for free-form answers; templates in all three languages handle the rest without the model</li><li>S1 Sherlock, S2 Summarizer, S9 Skeptic</li><li>S5 Claim extractor, reading free text</li><li>P5 Summary writer; P2–P4 only to join template sections</li><li>S6 Contradiction finder, only on pairs code flags as "maybe"</li><li>S7 Statement analyst, comparing versions; S8 Lead spotter, only for the one-line description</li><li>A2 Document reader, for scanned pages and photos</li><li>CDR R1 Intake, only for odd headers or a scanned CDR report</li><li>O2 Answer checker, only for "does this contradict something"</li><li>Q1 Gatekeeper, only to compare a free-form question with the chat</li></ul></div>
+      <div><h3 style="margin-bottom:6px">Code only</h3><ul class="plain"><li>Q1 Gatekeeper topic-key checks, Q2 Question ledger</li><li>API router and its catalog</li><li>CDR team R2–R6: lookups, counts, distances, matching</li><li>O4 Case briefer, Board reader, Dossier, Chat memory (model only to summarise old chat turns)</li><li>O2 checks on numbers, sources and "was it answered"</li><li>O5 format guard: numbers, names and sources unchanged, language matches</li><li>O3 Statement recorder (model optional, for free-form statements)</li><li>S6 contradiction rules and tolerances; presence matrix; hypothesis matrix counts and ranking</li><li>S8 anomaly detection: rates, gaps, changes, repeats</li><li>A5 Entity resolver; Q3 Insight desk; S10 Fact collector</li><li>P1 Report editor; P6 Report checker (model only for "does this contradict")</li></ul></div>
     </div>
   </section>
 
@@ -854,23 +1628,38 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
     <div class="groups">
       <div class="group" style="--c:var(--navy)"><h3>Officer team</h3>
         <div class="team">
-          <div class="agent" style="--c:var(--navy)"><div class="role">O1 Officer agent <span class="pill ext">extend</span></div><p>Works out the answer. Starts each turn with the whole chat, the case summary and Sherlock's view. Uses any tool; asks Sherlock when the facts don't answer. Drafts the answer as structured content with sources, plus one approved question, for the checker and the Presenter.</p><div class="io">from: conversation.py, understanding.py</div></div>
+          <div class="agent" style="--c:var(--navy)"><div class="role">O1 Officer agent <span class="pill ext">extend</span></div><p>Works out the answer. Starts each turn with the whole chat, the case summary and Sherlock's view. Uses any tool; asks Sherlock when the facts don't answer. Fills the answer shape for the kind of question, section by section, with ids, and marks what is not on record. Adds one finding or approved question, for the checker and the Presenter.</p><div class="io">from: conversation.py, understanding.py</div></div>
           <div class="agent" style="--c:var(--navy)"><div class="role">O4 Case briefer <span class="pill new">new</span></div><p>Gives the Officer agent everything the case board knows that matters for this turn: chat, case summary, Sherlock's view, matched facts, and a list of what is missing.</p><div class="io">from: conversation.case_memory, knowledge.search, dossiers</div></div>
-          <div class="agent" style="--c:var(--navy)"><div class="role">O5 Presenter <span class="pill new">new</span></div><p>The voice the user reads. Writes the checked answer in the user's language (English, Roman Urdu or Urdu) and lays it out to read easily: answer first, bullets, tables, evidence quotes, Sherlock's view and the next question set apart.</p><div class="io">from: conversation.compose, narrate.py, offences.py</div></div>
-          <div class="agent" style="--c:var(--red)"><div class="role">O2 Answer checker <span class="pill ext">extend</span></div><p>Makes sure the user is answered correctly: answered what was asked, correct, sourced, consistent, honest about gaps.</p><div class="io">from: sherlock_team.validate</div></div>
-          <div class="agent" style="--c:var(--navy)"><div class="role">O3 Statement recorder <span class="pill">exists</span></div><p>Writes the user's answers and new information to the board in their own words, and tells the ledger which question was answered.</p><div class="io">from: sherlock_team.collect</div></div>
+          <div class="agent" style="--c:var(--navy)"><div class="role">O5 Presenter <span class="pill new">new</span></div><p>The voice the user reads. Writes the checked answer in the user's language (English, Roman Urdu or Urdu) and lays it out to read easily: answer first, then the answer shape under headings, with tables, evidence quotes, Sherlock's view and the next question set apart. Streams section by section.</p><div class="io">from: conversation.compose, narrate.py, offences.py</div></div>
+          <div class="agent" style="--c:var(--red)"><div class="role">O2 Answer checker <span class="pill ext">extend</span></div><p>Makes sure the user is answered correctly: answered what was asked, complete for its answer shape, correct, sourced, consistent, honest about gaps.</p><div class="io">from: sherlock_team.validate</div></div>
+          <div class="agent" style="--c:var(--navy)"><div class="role">O3 Statement recorder <span class="pill ext">extend</span></div><p>Writes the user's answers and new information to the board in their own words and as fields: told by, original speaker, about whom, what, when it happened, where, how known, how sure. One fact per entry. Tells the ledger which question was answered. <a href="#recorder">Details</a></p><div class="io">from: sherlock_team.collect</div></div>
         </div></div>
       <div class="group" style="--c:var(--violet)"><h3>Sherlock team</h3>
         <div class="team">
-          <div class="agent" style="--c:var(--violet)"><div class="role">S1 Sherlock <span class="pill ext">extend</span></div><p>Works the case quietly: hypotheses, concerns, contradictions, labelled speculation, next steps. Uses the toolbox. Wakes on new information.</p><div class="io">from: investigator.py tools · out: board.assessment</div></div>
+          <div class="agent" style="--c:var(--violet)"><div class="role">S1 Sherlock <span class="pill ext">extend</span></div><p>Works the case quietly. Keeps the hypothesis matrix: sets each cell with a reason and an id, answers every Skeptic challenge, writes labelled speculation and next steps. Works one person or hypothesis at a time. Wakes on new information.</p><div class="io">from: investigator.py tools · out: board.assessment</div></div>
           <div class="agent" style="--c:var(--violet)"><div class="role">S2 Summarizer <span class="pill new">new</span></div><p>Keeps a rolling summary and timeline of the case for Sherlock and the report.</p><div class="io">out: board.summary, board.timeline</div></div>
-          <div class="agent" style="--c:var(--violet)"><div class="role">S3 Report writer <span class="pill ext">extend</span></div><p>Builds the downloadable case report: Sherlock's full assessment, hypotheses, contradictions, CDR analysis, the officer's statements and next steps, all from the board. Writes no new judgments. Brings the assessment up to date first if it is behind, and stores each report by board version. <a href="#report">Details</a></p><div class="io">from: case_report.py, report_pdf.py · in: board.assessment, board.summary</div></div>
-          <div class="agent" style="--c:var(--violet)"><div class="role">S4 Questioner <span class="pill ext">extend</span></div><p>Proposes the questions that would move the case most, ranked by Sherlock's gaps. Sends them to the Gatekeeper.</p><div class="io">from: questioner.gaps</div></div>
+          <div class="agent" style="--c:var(--violet)"><div class="role">S4 Questioner <span class="pill ext">extend</span></div><p>Proposes questions from contradictions, leads, statement changes, gaps and identity checks, ranked by how much each answer would move the hypothesis matrix. Each question carries its source id; neutral wording; tasks tracked separately. Sends them to the Gatekeeper. <a href="#questioner">Details</a></p><div class="io">from: questioner.gaps</div></div>
+          <div class="agent" style="--c:var(--violet)"><div class="role">S10 Fact collector <span class="pill new">v5</span></div><p>Files every fact from every record card into one evidence register, organized by record, person, topic and time. Links records (weapon → forensic → empties; sample → DNA result), tracks chain of custody and pending reports. Code only; never judges. <a href="#register">Details</a></p><div class="io">in: A2 record cards, CDR facts, W# · out: board.register</div></div>
+          <div class="agent" style="--c:var(--violet)"><div class="role">S5 Claim extractor <span class="pill new">v5</span></div><p>Turns every document, recorded statement, CDR fact and officer statement into claims: said by, about, topic, value, when, where, quote, source, trust.</p><div class="io">in: D#, W#, F#, statements · out: board.claims</div></div>
+          <div class="agent" style="--c:var(--violet)"><div class="role">S6 Contradiction finder <span class="pill new">v5</span></div><p>Compares claims with the same person and topic in code, with tolerances; the model judges only flagged pairs. Writes X# with both sides, severity, status and what would settle it.</p><div class="io">in: claims, presence matrix · out: board.contradictions</div></div>
+          <div class="agent" style="--c:var(--violet)"><div class="role">S7 Statement analyst <span class="pill new">v5</span></div><p>Each person's recorded statements in order: what changed between versions, where they disagree with the evidence, relations to the parties. Says "changed", never "lied".</p><div class="io">in: W#, claims · out: board.statement_analysis</div></div>
+          <div class="agent" style="--c:var(--violet)"><div class="role">S8 Lead spotter <span class="pill new">v5</span></div><p>Finds anomalies in code and keeps them as leads K#: the hypothesis each bears on, the next step, and its status through to confirmed or dead end.</p><div class="io">in: CDR facts, claims, graph · out: board.leads</div></div>
+          <div class="agent" style="--c:var(--violet)"><div class="role">S9 Skeptic <span class="pill new">v5</span></div><p>After each S1 run, tries to break the leading hypothesis, keeps an alternative open, flags single-source chains and any use of past FIRs or protected traits as evidence.</p><div class="io">in: board.assessment · out: board.challenges</div></div>
         </div></div>
-      <div class="group" style="--c:var(--red)"><h3>Question desk</h3>
+      <div class="group" style="--c:var(--muted)"><h3>Report team <span class="pill new">v5</span></h3>
+        <div class="team">
+          <div class="agent" style="--c:var(--muted)"><div class="role">P1 Report editor <span class="pill ext">from S3</span></div><p>Leads the team. Freezes the board version, hands out the parts, writes Part F (open points with their questions, next steps, tasks) and the annex, links ids across parts, builds and caches the internal and file PDFs. <a href="#report">Details</a></p><div class="io">from: case_report.py, report_pdf.py</div></div>
+          <div class="agent" style="--c:var(--muted)"><div class="role">P2 Evidence writer <span class="pill new">v5</span></div><p>Part A overview and people, Part B records and evidence: FIRs, medical, forensic and lab, recoveries, police system records (Hotel Eye, tenant, NADRA, SIMs, vehicles, PSRMS), CDR and presence, evidence by topic.</p><div class="io">in: S10, A4, CDR team</div></div>
+          <div class="agent" style="--c:var(--muted)"><div class="role">P3 Statements and timeline <span class="pill new">v5</span></div><p>Part C statements and Q&amp;A, Part E master timeline with sources and conflicting times side by side.</p><div class="io">in: S7, O3, ledger, S2, S10</div></div>
+          <div class="agent" style="--c:var(--muted)"><div class="role">P4 Analysis writer <span class="pill new">v5</span></div><p>Part D: contradictions and leads registers, hypothesis matrix, Skeptic's challenges, suspicions, how the assessment changed. Filters what the file version may not hold.</p><div class="io">in: S6, S8, S1, S9</div></div>
+          <div class="agent" style="--c:var(--muted)"><div class="role">P5 Summary writer <span class="pill new">v5</span></div><p>Writes the seven-part executive summary last, from the finished parts, every sentence with its ids.</p><div class="io">in: Parts A–F</div></div>
+          <div class="agent" style="--c:var(--muted)"><div class="role">P6 Report checker <span class="pill ext">from O2</span></div><p>Checks ids, numbers, tiers, stale entries, the report shape, and that every summary sentence is backed by the body. Sends a failed section back once.</p><div class="io">rules from: sherlock_team.validate</div></div>
+        </div></div>
+      <div class="group" style="--c:var(--red)"><h3>Question and Insight desk</h3>
         <div class="team">
           <div class="agent" style="--c:var(--red)"><div class="role">Q1 Gatekeeper <span class="pill new">new</span></div><p>Knows the whole conversation, the ledger and the board. Checks every proposed question: if the user already answered it, or said they don't know, even in other words or without being asked, it rejects the question and tells the Sherlock team the answer and the turn it came in.</p><div class="io">rules from: questioner.next_question, ask_gaps · reads: chat memory</div></div>
-          <div class="agent" style="--c:var(--red)"><div class="role">Q2 Question ledger <span class="pill ext">extend</span></div><p>Every question ever asked: topic key, times asked, status, the answer and the turn it came in.</p><div class="io">from: case.questions</div></div>
+          <div class="agent" style="--c:var(--red)"><div class="role">Q2 Ledger <span class="pill ext">extend</span></div><p>Every question ever asked (topic key, times asked, status, the answer and its turn) and every finding told (id and turn).</p><div class="io">from: case.questions</div></div>
+          <div class="agent" style="--c:var(--red)"><div class="role">Q3 Insight desk <span class="pill new">v5</span></div><p>Decides which of Sherlock's findings the officer hears: critical and major only, one extra item per reply, after the answer, never twice.</p><div class="io">in: X#, K#, H# changes · reads: ledger</div></div>
         </div></div>
       <div class="group" style="--c:var(--orange)"><h3>CDR team</h3>
         <div class="team">
@@ -884,8 +1673,9 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
       <div class="group" style="--c:var(--teal)"><h3>Ingest team</h3>
         <div class="team">
           <div class="agent" style="--c:var(--teal)"><div class="role">A1 Graph analyst <span class="pill new">new</span></div><p>Turns each graph change into facts and inferences: shared phones, addresses, co-accused FIRs, hotel overlaps.</p><div class="io">in: graph delta, JSON</div></div>
-          <div class="agent" style="--c:var(--teal)"><div class="role">A2 Document reader <span class="pill ext">extend</span></div><p>FIR, CRO, MLO, DNA, Chemical: quoted facts with report type and page number.</p><div class="io">from: collector.py, readers.py, uploads.py</div></div>
-                    <div class="agent" style="--c:var(--teal)"><div class="role">A4 Dossier agent <span class="pill new">new</span></div><p>One cached card per person, refreshed only when something about that person changes.</p><div class="io">out: board.dossiers</div></div>
+          <div class="agent" style="--c:var(--teal)"><div class="role">A2 Document reader <span class="pill ext">extend</span></div><p>FIR, CRO, MLO, DNA, Chemical: quoted facts with report type and page number. Fills a typed card for every record: FIR, MLO, postmortem, DNA, chemical, forensic, recovery memo, site plan. Each field with page and quote. <span class="pill new">v5</span></p><div class="io">from: collector.py, readers.py, uploads.py</div></div>
+          <div class="agent" style="--c:var(--teal)"><div class="role">A4 Dossier agent <span class="pill new">new</span></div><p>One cached card per person, refreshed only when something about that person changes.</p><div class="io">out: board.dossiers</div></div>
+          <div class="agent" style="--c:var(--teal)"><div class="role">A5 Entity resolver <span class="pill new">v5</span></div><p>Who is who: identifiers first, spelling variants in code, three states (same, maybe, different). A "maybe" that matters becomes a question.</p><div class="io">in: graph, D#, W#, F# · out: board.entities</div></div>
         </div></div>
     </div>
   </section>
@@ -912,6 +1702,7 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
       <div><b>Officer's access applies</b>Today the portal token holds only the username (<code>auth.py</code>). Add the officer's allowed systems to the token. The API router checks them on every call, so the agents never get more access than the officer has.</div>
       <div><b>Every call logged</b>Who (officer), which case, which agent, the reason (the turn or event), which system, which identifier, the result size and the time. Kept in the database and viewable by admins. A background call is logged under the officer whose case it is.</div>
       <div><b>Limits per case</b>Each team has a limit on API calls per case and per hour. Going over stops the calls and tells the officer. A sudden jump in lookups is flagged to admins.</div>
+      <div><b>No protected traits</b>Sect, caste, ethnicity, religion and family name never count as evidence in any hypothesis, lead or answer. S9 and O2 both check for it. <span class="pill new">v5</span></div>
       <div><b>The checker checks quotes too</b>O2 drops any quoted text that isn't in the source document, using the existing <code>quote_in</code> check, so made-up or injected text can't appear as evidence.</div>
     </div>
   </section>
@@ -922,15 +1713,19 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
       <table>
         <thead><tr><th>Event</th><th>Agents woken</th><th>Why</th></tr></thead>
         <tbody>
-          <tr><td>Graph adds people or links</td><td>A1, then A4</td><td>New relations become facts; touched dossiers refresh</td></tr>
-          <tr><td>Document fetched or uploaded</td><td>A2, then A4</td><td>Facts per page; dossiers of people named in it</td></tr>
+          <tr><td>Graph adds people or links</td><td>A1 and A5, then A4</td><td>New relations become facts; touched dossiers refresh</td></tr>
+          <tr><td>Document fetched or uploaded</td><td>A2 and A5, then S10 and A4</td><td>Record card filed in the register; dossiers of people named in it</td></tr>
+          <tr><td>Recorded statement provided <span class="pill new">v5</span></td><td>A2 → A5 → S5 → S7, then S6</td><td>Stored as W#; versions compared; contradictions checked</td></tr>
+          <tr><td>A5 finds a "maybe" match that matters <span class="pill new">v5</span></td><td>Q1</td><td>The officer is asked who it is; nothing merges until then</td></tr>
           <tr><td>CDR, tower dump or CDR report provided</td><td>CDR team R1 → R6, then A4 and Sherlock</td><td>Facts with rows; phone links; map pins</td></tr>
           <tr><td>Incident pinned or moved; CDR owner confirmed</td><td>CDR team R4, or R6 re-files findings</td><td>Location and ownership findings stay correct</td></tr>
           <tr><td>User asks a question</td><td>Officer team</td><td>Answer it; Sherlock is not waited on</td></tr>
           <tr><td>User answers or gives info</td><td>O3 → ledger → Sherlock team</td><td>Recorded, question closed, Sherlock re-assesses</td></tr>
           <tr><td>User corrects earlier info</td><td>O3 → ledger → the agents behind each stale entry → Sherlock team</td><td>Old answer replaced; everything built on it redone (<a href="#corrections">Corrections</a>)</td></tr>
-          <tr><td>Graph phase finished, a batch finished, or 15 facts from outside any batch</td><td>S2 → S1 → S4 → Q1</td><td>Assessment stays current; new questions filtered</td></tr>
-          <tr><td>User downloads the report</td><td>S3 alone if the assessment is current; otherwise S2 → S1 → S4 → S3</td><td>Report is Sherlock's full, current assessment (<a href="#report">Case report</a>)</td></tr>
+          <tr><td>Graph phase finished, a batch finished, or 15 facts from outside any batch</td><td>S10 → S5 → S6, S7, S8 → S2 → S1 → S9 → S1 → S4 → Q1, Q3</td><td>Claims checked, assessment current and challenged; new questions and findings filtered</td></tr>
+          <tr><td>Sherlock run finished <span class="pill new">v5</span></td><td>Report team: P1 → P2, P3, P4 → P5 → P6 → P1</td><td>Report prebuilt for this board version, so the download is instant</td></tr>
+          <tr><td>Critical contradiction found <span class="pill new">v5</span></td><td>Q3 at once</td><td>Badge on the case board panel; leads the next reply</td></tr>
+          <tr><td>User downloads the report</td><td>The prebuilt report if it is current; otherwise S10 → S5 → S6, S7, S8 → S2 → S1 → S9 → S1 → S4 → Report team</td><td>Report is Sherlock's full, current assessment (<a href="#report">Case report</a>)</td></tr>
         </tbody>
       </table>
     </div>
@@ -938,8 +1733,41 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
       <div><b>Never woken by its own writes</b>Each event carries <code>by</code>. An agent is never woken by its own writes. The Sherlock team's writes (summary, assessment, hypotheses, gaps) never wake the Sherlock team; only the Question desk reads the Questioner's gaps.</div>
       <div><b>A batch is one event</b>A CDR, a document, a graph phase or a correction is one batch with one <code>event</code> id. The hundreds of facts it writes count as a single wake when the batch finishes, not toward the 15-fact count.</div>
       <div><b>No wake without new input</b>Sherlock runs only if something from outside the Sherlock team changed since his last run (user, ingest, CDR, API). Otherwise the wake is skipped and doesn't count against the run budget.</div>
+      <div><b>S9 never loops</b>S9's challenges are answered by S1 in the same run, once. Like every Sherlock team write, they never wake the team again. <span class="pill new">v5</span></div>
       <div><b>One run at a time</b>Several events within a few seconds start one run, and runs never overlap. An event during a run queues exactly one follow-up run.</div>
     </div>
+  </section>
+
+  <section class="panel" id="golden">
+    <h2>Testing Sherlock: golden cases <span class="pill new">v5</span></h2>
+    <p class="sub">The 491 tests check that the parts work. They don't say whether Sherlock got better or worse at solving a case after a prompt or model change. Golden cases do.</p>
+    <div class="cols">
+      <div>
+        <h3 style="margin-bottom:8px">What a golden case is</h3>
+        <ul class="plain">
+          <li>A closed case with a known outcome (anonymised), or a made-up case with planted contradictions, leads and a known answer.</li>
+          <li>Its documents, recorded statements, CDRs and a scripted officer chat in English, Urdu and Roman Urdu, including corrections.</li>
+          <li>An answer key: which contradictions exist, which lead mattered, which hypothesis is right, which people are the same.</li>
+          <li>Built with investigators. Start with 10, grow to 30. A few are held back and never used for tuning.</li>
+        </ul>
+      </div>
+      <div class="tablewrap">
+        <table class="wrapcells" style="min-width:0">
+          <thead><tr><th>Measure</th><th>Suggested bar</th></tr></thead>
+          <tbody>
+            <tr><td>Planted contradictions found</td><td>90% or more</td></tr>
+            <tr><td>False contradictions</td><td>at most 1 per case</td></tr>
+            <tr><td>The lead that solved it, ranked in the top 3</td><td>80% or more</td></tr>
+            <tr><td>Right hypothesis ranked first, after all evidence</td><td>tracked</td></tr>
+            <tr><td>Wrong merges of different people</td><td>0</td></tr>
+            <tr><td>Speculation shown as fact anywhere</td><td>0</td></tr>
+            <tr><td>Questions asked that the answer key needed</td><td>tracked</td></tr>
+            <tr><td>Time from upload to the key finding reaching the officer</td><td>tracked</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <p class="sub">Runs on every change to prompts, models, rules or tolerances, next to the chat test set. A change fails if any measure with a bar gets worse.</p>
   </section>
 
   <section class="panel">
@@ -959,18 +1787,36 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
       <li><b>Ingest.</b> A1 Graph analyst streaming during the run; A4 Dossier cache.</li>
       <li><b>CDR team.</b> Server path for known formats and a full own analysis for new formats or no report; compare the two when both exist. Split <code>cdr.analyse</code> into intake, enricher, patterns, location, cross-CDR and fact writer; add row references and re-runs on new pin, owner or CDR.</li>
       <li><b>Sherlock team in the background.</b> S2 → S1 → S4 on events, writing summary, assessment and ranked gaps.</li>
-      <li><b>Report writer from the board.</b> Replace the one-shot <code>_llm_written</code> with S3 laying out the board: new sections for the assessment (H#), contradictions, suspicions, how the assessment changed, CDR analysis, statements and Q&amp;A, chat views and "checked, nothing found". Bring the assessment up to date on download; store each PDF by board version; run the Answer checker on the report; template fallback. Tests for each step with real messages in English, Urdu and Roman Urdu.</li>
+      <li><b>Report writer from the board.</b> Replace the one-shot <code>_llm_written</code> with the board laid out section by section: new sections for the assessment (H#), contradictions, suspicions, how the assessment changed, CDR analysis, statements and Q&amp;A, chat views and "checked, nothing found". Bring the assessment up to date on download; store each PDF by board version; run the Answer checker on the report; template fallback. Tests for each step with real messages in English, Urdu and Roman Urdu.</li>
+      <li><b>Golden cases first</b> <span class="pill new">v5</span>. Ten cases with planted contradictions, leads and a known answer. Score today's Sherlock on them to get the starting numbers before any v5 change.</li>
+      <li><b>Entity resolver A5</b> <span class="pill new">v5</span>. Identifiers first, the transliteration table, three states, "maybe" becomes a question, wrong matches undone as corrections.</li>
+      <li><b>Recorded statements and claims</b> <span class="pill new">v5</span>. The W# type with speaker, role, date and page; S5 Claim extractor with the quote check and the fixed topic list; the Statements tool.</li>
+      <li><b>Presence matrix and S6</b> <span class="pill new">v5</span>. The presence matrix in code; contradiction rules and tolerances in code; the model on flagged pairs only; X# entries with severity and status.</li>
+      <li><b>S7 Statement analyst and S8 Lead spotter</b> <span class="pill new">v5</span>. Versions per person; anomaly rules; K# with status and next step.</li>
+      <li><b>Hypothesis matrix and S9 Skeptic</b> <span class="pill new">v5</span>. Cells with reasons and ids, ranking in code; S1 → S9 → S1 in one run; the protected-traits and past-FIR rules.</li>
+      <li><b>Insight desk Q3</b> <span class="pill new">v5</span>. Ranking, told-once records in the ledger, one extra item per reply, board badge for critical findings, the pause command.</li>
+      <li><b>Report v5</b> <span class="pill new">v5</span>. The Report team (P1–P6) with prebuilds after each Sherlock run; the seven-part executive summary written last; parts A–F and the annex; linked ids and the index by person; master timeline; internal and file versions from the same board version.</li>
+      <li><b>Background reasoning and the three fixes</b> <span class="pill new">v5</span>. The background model or sampling for S1, S6 and S9; per-problem runs; temperature 0 and run records; Sherlock's quick view only when relevant; deep investigation only in the background. Golden cases and the chat test set must not get worse.</li>
+      <li><b>Answer shapes</b> <span class="pill new">v5</span>. O0 picks the shape and depth; a shape definition per kind of question; O4 fetches what each shape needs; O1 fills it section by section; O2 completeness check; O5 headings and streaming; the FIR card in A2. Chat tests that fail when an FIR answer misses a section.</li>
+      <li><b>Statement recorder fields</b> <span class="pill new">v5</span>. Original speaker, how known, certainty and tolerance, event date from relative words, A5 names, one fact per entry, read-back line.</li>
+      <li><b>Fact collector S10</b> <span class="pill new">v5</span>. Typed cards in A2 for MLO, postmortem, DNA, chemical, forensic, recovery memo and site plan; the register by record, person, topic and time; links across records; chain of custody; pending reports as gaps; the Evidence register tool.</li>
+      <li><b>Questioner sources</b> <span class="pill new">v5</span>. Questions from X#, K#, W#, gaps and A5; ranking by impact on the matrix; source id on each question and answers written back; open tasks.</li>
     </ol>
   </section>
 
-  <section class="panel">
+  <section class="panel" id="decisions">
     <h2>Decisions needed</h2>
+    <p class="sub">Recommendations from the v5 review are marked. New questions from v5 are tagged.</p>
     <div class="cols">
-      <div><h3>Sherlock's suspicions in chat?</h3><p class="sub">Recommended: the Officer agent may mention them, clearly labelled as a suspicion. The alternative is to keep them in the report only.</p></div>
-      <div><h3>Background budget</h3><p class="sub">How many Sherlock runs and live API calls per case? Suggested: up to 20 runs and 30 background calls.</p></div>
-      <div><h3>Sherlock on the dashboard</h3><p class="sub">Show Sherlock's hypotheses live on the case board panel, or only when the user asks?</p></div>
-      <div><h3>Report language</h3><p class="sub">English only (recommended for court and file), or also in Urdu? Quotes stay in the language of the record either way.</p></div>
-      <div><h3>Suspicions in the report</h3><p class="sub">Recommended: include them in their own labelled section. Alternative: an "internal" version with suspicions and a "file" version without them.</p></div>
+      <div><h3>Sherlock's suspicions in chat?</h3><p class="sub">Recommended: yes, clearly labelled as a suspicion, through the Insight desk. The alternative is to keep them in the report only.</p></div>
+      <div><h3>Background budget</h3><p class="sub">Suggested: up to 20 Sherlock runs and 30 background calls per case to start, then adjusted using the golden cases.</p></div>
+      <div><h3>Sherlock on the dashboard</h3><p class="sub">Recommended: show the hypothesis matrix, open contradictions and leads live on the case board panel, read-only and labelled.</p></div>
+      <div><h3>Report language</h3><p class="sub">Recommended: English first, Urdu later. Quotes stay in the language of the record either way.</p></div>
+      <div><h3>Suspicions in the report</h3><p class="sub">Recommended (changed in v5): two versions, internal with suspicions and file without them. Speculation in a court file can do real harm.</p></div>
+      <div><h3>Background model <span class="pill new">v5</span></h3><p class="sub">A larger model for S1, S6 and S9 in the background, or several samples of Qwen 27B? Depends on the GPUs available; decide by golden-case scores.</p></div>
+      <div><h3>Insight threshold <span class="pill new">v5</span></h3><p class="sub">Recommended: critical and major findings. Alternative: critical only, for fewer interruptions.</p></div>
+      <div><h3>Golden cases <span class="pill new">v5</span></h3><p class="sub">Who builds them with us, and may closed real cases be used once anonymised?</p></div>
+      <div><h3>Cross-case hits <span class="pill new">v5</span></h3><p class="sub">Flag a number or CNIC that appears in another open case, within the officer's access? Recommended later, once access rules for other cases are agreed.</p></div>
     </div>
   </section>
 </div>

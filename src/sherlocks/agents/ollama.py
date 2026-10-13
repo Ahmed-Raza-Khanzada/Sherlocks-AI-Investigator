@@ -108,6 +108,48 @@ def _extract_json(text: str) -> Any:
     raise ValueError(f"no JSON object found in response: {text[:200]!r}")
 
 
+def close_truncated(text: str, *, keep: float = 0.6) -> Any | None:
+    """An answer cut off at the token limit is valid JSON up to its last complete value.
+    Cut back to there and close what was left open, so a long answer that ran out of room
+    is used for everything it did say instead of being thrown away. Returns None when
+    that would lose more than ``1 - keep`` of the text (the error is not at the end)."""
+    start = (text or "").find("{")
+    if start < 0:
+        return None
+    body = text[start:]
+    stack: list[str] = []
+    cuts: list[tuple[int, tuple[str, ...]]] = []
+    in_string = escaped = False
+    for i, ch in enumerate(body):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "{[":
+            stack.append(ch)
+        elif ch in "}]":
+            if not stack:
+                break
+            stack.pop()
+            cuts.append((i + 1, tuple(stack)))
+        elif ch == "," and stack:
+            cuts.append((i, tuple(stack)))            # everything before this comma is complete
+    for pos, open_ in reversed(cuts[-40:]):
+        if pos < keep * len(body):
+            break
+        try:
+            return json.loads(body[:pos] + "".join("}" if c == "{" else "]" for c in reversed(open_)))
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
 class OllamaClient:
     def __init__(self, settings: OllamaSettings, cache: LlmCacheBackend | None = None) -> None:
         self.settings = settings

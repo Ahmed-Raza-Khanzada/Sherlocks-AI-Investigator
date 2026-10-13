@@ -123,4 +123,4 @@ def pack_ids(pack: dict[str, Any]) -> set[str]:
     """Every id in the pack - what the Answer checker accepts as a source for this turn."""
     import re
 
-    return set(re.findall(r"\b([DFLHQ]\d{1,4})\b", json.dumps(pack, ensure_ascii=False, default=str)))
+    return set(re.findall(r"\b([DFLHQWXK]\d{1,4})\b", json.dumps(pack, ensure_ascii=False, default=str)))

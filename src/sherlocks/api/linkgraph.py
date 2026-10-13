@@ -416,20 +416,22 @@ def build_router(settings: Settings, manager: Callable[[], RunManager],
                         headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
 
     @router.get("/runs/{run_id}/report.pdf")
-    def report_pdf(run_id: str, rebuild: bool = False, _: None = Depends(auth)) -> Response:
+    def report_pdf(run_id: str, rebuild: bool = False, version: str = "internal",
+                   _: None = Depends(auth)) -> Response:
         """The case report as a PDF: written when the run finished or was stopped (or now,
         with ``rebuild=true`` - e.g. after the chat fetched more documents). A link the
-        browser can open directly: pass the token as ``?token=``."""
+        browser can open directly: pass the token as ``?token=``. ``version=file`` gives the
+        report for court and the case file: no suspicions, hypothesis ranking or leads."""
         mgr = manager()
         graph = mgr.graph_for(run_id)
         if graph is None:
             raise HTTPException(status_code=404, detail="Run not found")
         try:
-            pdf = mgr.report_pdf(graph, run_id, rebuild=rebuild)
+            pdf = mgr.report_pdf(graph, run_id, rebuild=rebuild, version="file" if version == "file" else "internal")
         except Exception as exc:
             logger.exception("Case report PDF for %s failed", run_id)
             raise HTTPException(status_code=500, detail=f"Case report failed: {exc}") from exc
-        return _pdf_response(pdf, f"sherlocks_case_report_{run_id[:8]}.pdf")
+        return _pdf_response(pdf, f"sherlocks_case_{'file_' if version == 'file' else ''}report_{run_id[:8]}.pdf")
 
     @router.post("/report")
     def report_from_graph(body: AnalyzeRequest, _: None = Depends(auth)) -> Response:
@@ -497,6 +499,37 @@ def build_router(settings: Settings, manager: Callable[[], RunManager],
         if case is None:
             raise HTTPException(status_code=404, detail="Run not found")
         return {"summary": audit_summary(case), "calls": case.calls[-500:]}
+
+    @router.get("/runs/{run_id}/trace")
+    def trace_list(run_id: str, _: None = Depends(auth)) -> dict:
+        """How the agents worked on each question of this run: per question the path through
+        the agents, the time, the model calls - and the Sherlock team's background runs.
+        ``GET .../trace/{turn}`` gives one question in full."""
+        from sherlocks.team.trace import overview
+
+        case = manager().board(run_id)
+        if case is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return {"run_id": run_id, **(overview(case) or {})}
+
+    @router.get("/runs/{run_id}/trace/{turn}")
+    def trace_turn(run_id: str, turn: str, _: None = Depends(auth)) -> dict:
+        """One question in full: every step (agent, what it did, its notes, how long), every
+        model call (which agent, what it was given, what it answered), who handed what to
+        whom, and what finished after the reply. ``turn``: the question's number in the
+        conversation, or ``latest``."""
+        from sherlocks.team.trace import overview
+
+        case = manager().board(run_id)
+        if case is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        if turn != "latest" and not turn.isdigit():
+            raise HTTPException(status_code=422, detail="turn is a number, or 'latest'")
+        found = overview(case, 0 if turn == "latest" else int(turn))
+        if found is None:
+            raise HTTPException(status_code=404, detail="No trace kept for this turn (the last 30 questions asked "
+                                                        "since tracing was added are kept)")
+        return {"run_id": run_id, **found}
 
     @router.get("/runs/{run_id}/case")
     def case_index(run_id: str, _: None = Depends(auth)) -> dict:

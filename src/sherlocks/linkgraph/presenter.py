@@ -127,7 +127,7 @@ def point_label(sentence: str) -> tuple[str | None, str]:
 
 
 _FILLER = re.compile(r"^(sure|okay|ok|certainly|of course|absolutely|let'?s|let me|here is|here's|here are|"
-                     r"zaroor|ji haan|theek hai|chaliye|جی|ضرور)\b[^.!?؟۔]*[.!?:؟۔]\s*", re.I)
+                     r"zaroor|ji haan|theek hai|chaliye|جی|ضرور)\b[^.!?؟۔]*[.!?:؟۔]\s*", re.IGNORECASE)
 _SENTENCE = re.compile(r"(?<=[.!?؟۔])\s+(?=[A-Z\"“(\[؀-ۿ])")
 
 
@@ -168,8 +168,12 @@ def bracket_ids(text: str, case: Any) -> str:
     if case is None:
         return text
     known = case.known_ids() if hasattr(case, "known_ids") else set()
-    return re.sub(r"(?<![\[\w])([DFLH]\d{1,4})(?![\w\]])",
-                  lambda m: f"[{m.group(1)}]" if m.group(1) in known else m.group(1), text)
+    # Text already inside [brackets] is a source list ("[F7, F8, F9]"): left as it is.
+    parts = re.split(r"(\[[^\[\]]*\])", text)
+    return "".join(part if part.startswith("[") else
+                   re.sub(r"(?<![\[\w])([DFLHWXK]\d{1,4})(?![\w\]])",
+                          lambda m: f"[{m.group(1)}]" if m.group(1) in known else m.group(1), part)
+                   for part in parts)
 
 
 EVIDENCE_LABEL = {"en": "Evidence", "roman": "Saboot", "ur": "ثبوت"}
@@ -186,6 +190,25 @@ def _translate(llm: Any, quote: str, language: str) -> str | None:
     except Exception as exc:  # noqa: BLE001 - the quote in its own language still stands
         logger.info("Quote translation failed: %s", exc)
         return None
+
+
+def translate_line(llm: Any, text: str, language: str) -> str | None:
+    """One line of the team's own writing (a finding) in the officer's language: every id,
+    name and number kept as it is. None when it could not be done faithfully."""
+    target = {"en": "English", "roman": "Roman Urdu (Urdu in Latin letters)", "ur": "Urdu (Urdu script)"}[language]
+    try:
+        tr, _ = llm.generate_structured(
+            prompt=text, schema=_Translation, cache_kind="line_translation", prompt_version="v1", max_tokens=400,
+            system=f"Put this note of a police investigation team into {target}, faithfully: nothing added, nothing "
+                   "left out. Keep every id in [brackets], every name, number and date exactly as written.")
+    except Exception as exc:  # noqa: BLE001 - the line in English still stands
+        logger.info("Line translation failed: %s", exc)
+        return None
+    said = tr.text.strip()
+    from sherlocks.linkgraph.conversation import detect_language
+
+    wrong_script = (language == "roman" and detect_language(said) == "ur") or (language == "ur" and detect_language(said) != "ur")
+    return said if said and not wrong_script and not format_guard(text, said) else None
 
 
 def _evidence(case: Any, text: str, language: str, llm: Any = None, limit: int = 3) -> list[str]:
@@ -255,7 +278,7 @@ def sources_of(text: str) -> list[str]:
     for group in re.findall(r"\[([^\]]{1,80})\]", text or ""):
         for part in re.split(r",\s*", group):
             part = part.strip()
-            ref = re.search(r"\b([DFLHQ]\d{1,4})\b", part)
+            ref = re.search(r"\b([DFLHQWXK]\d{1,4})\b", part)
             item = ref.group(1) if ref else part
             if item and len(item) <= 40 and item not in out and not item.isdigit():
                 out.append(item)
@@ -333,3 +356,40 @@ def present(checked: str, *, language: str, facts: dict[str, Any] | None = None,
         return "\n\n".join(x for x in (body, f"{VIEW_LABEL.get(language, VIEW_LABEL['en'])}: {view}" if view else "", ask)
                              if x)
     return shown
+
+
+def layout(checked: str, *, language: str, case: Any = None, llm: Any = None, lines: list[str] | None = None,
+           view: str | None = None, finding: str | None = None, question: str | None = None,
+           question_priority: str = "orange", evidence: bool = True, facts: dict[str, Any] | None = None) -> str:
+    """The Officer graph's layout: the checked answer as it is (its first line and its
+    sections are already laid out by the answer shape), then the evidence quoted from the
+    records, what else belongs with it (corrections, conflicts, news), Sherlock's view in
+    its own block, one finding from the Insight desk, and the question last. Nothing of
+    the checked answer is rewritten here, so no number, name or source can change."""
+    from sherlocks.team.shapes import FINDING_MARK
+
+    body = bracket_ids((checked or "").strip(), case)
+    rows = (facts or {}).get("rows") or []
+    if (isinstance(rows, list) and 3 <= len(rows) <= 12 and all(isinstance(r, dict) and r.get("label") for r in rows)
+            and (facts or {}).get("type") in ("cases", "count_cases", "serious_cases")):
+        # Three or more FIRs side by side: a table instead of the bullets - only when the
+        # table keeps every number, FIR and source the bullets had.
+        kept = body.splitlines()
+        bullets = [ln for ln in kept if ln.strip().startswith(("•", "-"))]
+        table = _table(rows, language)
+        if bullets and not format_guard("\n".join(bullets), "\n".join(table)):
+            at = kept.index(bullets[0])
+            body = "\n".join([*[ln for ln in kept[:at] if ln not in bullets], *table,
+                              *[ln for ln in kept[at:] if ln not in bullets]])
+    out = [body] if body else []
+    if evidence and body:
+        out += _evidence(case, body, language, llm)
+    out += [x.strip() for x in lines or [] if x and x.strip() and x.strip() not in body]
+    if view and view.strip():
+        out.append(f"{VIEW_MARK} {VIEW_LABEL.get(language, VIEW_LABEL['en'])}: {view.strip()}")
+    if finding and finding.strip():
+        out.append(f"{FINDING_MARK} {finding.strip()}")
+    q = (question or "").strip()
+    if q:
+        out.append(f"{ASK_MARK}{question_priority if question_priority in ('red', 'orange', 'green') else 'orange'}: {q}")
+    return "\n".join(out)

@@ -28,8 +28,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-RANKS = {1: "official system record", 2: "official document", 3: "the officer's statement", 4: "derived by us",
-         5: "unverified"}
+RANKS = {1: "official system record", 2: "official document", 3: "the officer's statement",
+         4: "recorded statement (what a person said, not proof that it is true)", 5: "derived by us", 6: "unverified"}
 OFFICER_LEADS = ("incident:date", "incident:time", "incident:place", "role")
 _FIR_ROLE = {"nominated_suspects": "accused", "accused": "accused", "complainant": "complainant",
              "witnesses": "witness", "victims": "victim", "victim": "victim"}
@@ -41,7 +41,7 @@ def leader(values: list[dict[str, Any]], topic: str) -> list[dict[str, Any]]:
     officer_first = topic.startswith(OFFICER_LEADS)
 
     def key(v: dict[str, Any]) -> tuple:
-        trust = int(v.get("trust") or 4)
+        trust = int(v.get("trust") or 5)
         if officer_first and trust == 3:
             trust = 0
         return (trust, 0 if v.get("page") else 1, "".join(chr(255 - ord(c)) for c in str(v.get("at") or "")))
@@ -113,7 +113,7 @@ def conflicts(case: Any, net: Any = None) -> list[dict[str, Any]]:
 
 
 CONFLICT_LINE = {
-    "en": "Note: {a} {says} {x}; {b} says {y}. Both are kept - {lead} leads.",
+    "en": "Note: {a} {says} {x}; {b} says {y}. Both are kept on record - what {lead} {says} is followed.",
     "roman": "Note: {a} ke mutabiq {x}; {b} ke mutabiq {y}. Dono record mein hain - {lead} ko tarjeeh.",
     "ur": "نوٹ: {a} کے مطابق {x}؛ {b} کے مطابق {y}۔ دونوں ریکارڈ میں ہیں - {lead} کو ترجیح۔",
 }
