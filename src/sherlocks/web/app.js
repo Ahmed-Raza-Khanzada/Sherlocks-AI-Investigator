@@ -428,6 +428,8 @@
     try {
       const created = await api('/graph/runs', { method: 'POST', body: JSON.stringify(body) });
       openRun(created.run_id, true);
+      // One-column screens (phones): the progress and the graph are below the form.
+      if (NARROW.matches) $('runCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
       if (typeof HOST.onRunStarted === 'function') HOST.onRunStarted(created.run_id);
     } catch (err) {
       logLocal('error', `Could not start: ${err.message}`);
@@ -723,7 +725,7 @@
     set.forEach((id) => keep.merge(cy.getElementById(id).removeClass('faded').addClass('cmp')));
     cy.edges().filter((e) => set.has(e.data('source')) && set.has(e.data('target')))
       .addClass('cmppath').removeClass('faded').forEach((e) => keep.merge(e));
-    cy.animate({ fit: { eles: keep, padding: 90 } }, { duration: 400 });
+    cy.animate({ fit: { eles: keep, padding: fitPad(90) } }, { duration: 400 });
   }
 
   function findingHtml(f, index) {
@@ -1099,6 +1101,10 @@
   function drawStrings(body) {
     const svg = body.querySelector('.bstrings');
     if (!svg) return;
+    // Shrink the string layer first, so it never holds the board wider than the screen
+    // (after a phone turns, for one).
+    svg.setAttribute('width', 0);
+    svg.setAttribute('height', 0);
     const box = body.getBoundingClientRect();
     svg.setAttribute('width', body.scrollWidth);
     svg.setAttribute('height', body.scrollHeight);
@@ -1805,12 +1811,44 @@
   // The toolbar is a bar across the top of the stage: the graph starts below it, so
   // "Fit" never puts a person under the buttons. Its height changes as it wraps.
   const toolbarEl = document.querySelector('.stage .toolbar');
+  // The one-column layout of app.css (phones, a folded Galaxy Fold).
+  const NARROW = window.matchMedia('(max-width: 760px)');
+  // Margin around the graph when it is fitted to the screen: smaller on a small screen,
+  // so a phone's graph is not shrunk to dots.
+  const fitPad = (px) => Math.min(px, Math.round(Math.min(cy.width(), cy.height()) * 0.12));
+  // Phones and tablets, where app.css folds the graph toolbar behind a Tools button.
+  const COMPACT = window.matchMedia('(max-width: 1024px), (hover: none) and (pointer: coarse)');
   if (toolbarEl && window.ResizeObserver) {
     new ResizeObserver(() => {
-      $('cy').style.top = `${toolbarEl.offsetTop + toolbarEl.offsetHeight}px`;
+      // On phones and tablets the toolbar opens over the graph (Tools button), so the
+      // graph keeps the whole stage.
+      $('cy').style.top = COMPACT.matches ? '0px' : `${toolbarEl.offsetTop + toolbarEl.offsetHeight}px`;
       cy.resize();
     }).observe(toolbarEl);
   }
+
+  // Phones and tablets: the toolbar is folded behind one Tools button on the graph.
+  // Tapping an action (Fit, Tidy, Case board, PNG…) folds it again; filters and the
+  // Connections list keep it open until Tools or the graph is tapped.
+  const toolsBtn = document.createElement('button');
+  toolsBtn.type = 'button';
+  toolsBtn.id = 'toolsBtn';
+  toolsBtn.className = 'toolsbtn';
+  toolsBtn.title = 'Graph tools';
+  toolsBtn.setAttribute('aria-expanded', 'false');
+  toolsBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg><span>Tools</span>';
+  function showTools(open) {
+    document.querySelector('.stage').classList.toggle('toolsopen', open);
+    toolsBtn.classList.toggle('on', open);
+    toolsBtn.setAttribute('aria-expanded', String(open));
+    toolsBtn.querySelector('span').textContent = open ? 'Close' : 'Tools';
+  }
+  toolsBtn.onclick = () => showTools(!document.querySelector('.stage').classList.contains('toolsopen'));
+  document.querySelector('.stage').appendChild(toolsBtn);
+  toolbarEl?.addEventListener('click', (evt) => {
+    const button = evt.target.closest('button');
+    if (COMPACT.matches && button && button.id !== 'connBtn' && !button.closest('#connPanel')) showTools(false);
+  });
 
   function initials(name) {
     const parts = String(name || '?').replace(/[^A-Za-z؀-ۿ ]/g, ' ').trim().split(/\s+/);
@@ -2169,7 +2207,7 @@
     if (cy.nodes().length === 0) return;
     lastLayoutAt = Date.now();
     const mode = $('layoutSel').value;
-    const common = { fit, padding: 60, animate: state.laidOut, animationDuration: 500 };
+    const common = { fit, padding: fitPad(60), animate: state.laidOut, animationDuration: 500 };
     let opts;
     if (mode === 'concentric') {
       // Subject in the middle, each depth its own ring.
@@ -2319,7 +2357,7 @@
     cy.edges().filter((e) => [e.data('source'), e.data('target')].sort().join() === [c.a.id, c.b.id].sort().join())
       .addClass('cmppath').forEach((e) => keep.merge(e));
     keep.removeClass('faded');
-    if (keep.nonempty()) cy.animate({ fit: { eles: keep, padding: 80 } }, { duration: 400 });
+    if (keep.nonempty()) cy.animate({ fit: { eles: keep, padding: fitPad(80) } }, { duration: 400 });
   }
 
   async function openCompare(a, b, { explain = false } = {}) {
@@ -2798,7 +2836,7 @@
     select(id);
   });
   cy.on('tap', 'edge', (evt) => select(evt.target.data('ref') || evt.target.id()));
-  cy.on('tap', (evt) => { if (evt.target === cy) { closeDetails(); clearGroup(); } });
+  cy.on('tap', (evt) => { if (evt.target === cy) { closeDetails(); clearGroup(); showTools(false); } });
 
   // ---- Groups: a person with everyone attached to them, moved as one -------------------
   // Selected nodes move together when any one of them is dragged (cytoscape does that by
@@ -2853,6 +2891,9 @@
 
   $('groupBtn')?.addEventListener('click', () => setGroupMode(!state.groupMode));
   cy.on('dbltap', 'node[kind="person"]', (evt) => selectGroup(evt.target));
+  // Double-tap empty space: fit the graph to the screen (the Fit button is hidden on
+  // phones and tablets).
+  cy.on('dbltap', (evt) => { if (evt.target === cy) cy.fit(undefined, fitPad(30)); });
   cy.on('boxend', () => setTimeout(showGroup, 0));   // the box selects after boxend fires
 
   // ------------------------------------------------------------------ legend, history, misc
@@ -2940,15 +2981,17 @@
   });
   $('cancelBtn').onclick = async () => { try { await api(`/graph/runs/${state.runId}/cancel`, { method: 'POST' }); } catch (err) { logLocal('error', err.message); } };
   $('closeDetails').onclick = closeDetails;
-  $('fitBtn').onclick = () => cy.fit(undefined, 50);
+  $('fitBtn').onclick = () => cy.fit(undefined, fitPad(50));
   $('layoutBtn').onclick = () => { state.laidOut = false; runLayout(true); };
   $('layoutSel').onchange = () => { state.laidOut = false; runLayout(true); };
   $('recordsMode').onchange = () => { state.recordsModeTouched = true; syncView(true); };
-  $('legendBtn').onclick = () => {
-    const legend = $('legend');
-    legend.classList.toggle('collapsed');
-    $('legendBtn').textContent = legend.classList.contains('collapsed') ? 'Legend ▸' : 'Legend ▾';
-  };
+  function showLegend(open) {
+    $('legend').classList.toggle('collapsed', !open);
+    $('legendBtn').textContent = open ? 'Legend ▾' : 'Legend ▸';
+  }
+  $('legendBtn').onclick = () => showLegend($('legend').classList.contains('collapsed'));
+  // On phones and tablets the legend would cover much of the graph: it starts folded away.
+  if (COMPACT.matches) showLegend(false);
   $('showWeak').onchange = () => syncView();
   $('minWeak').oninput = () => { $('minWeakVal').textContent = (Number($('minWeak').value) / 100).toFixed(2); syncView(); };
   $('filter').oninput = applyFilter;

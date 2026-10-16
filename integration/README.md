@@ -178,6 +178,11 @@ pasting it inside the portal layout would break both. Either:
 
 For a saved graph: `route('sherlocks.graph', $id)`.
 
+Phones and tablets: the portal page that holds the iframe needs the usual
+`<meta name="viewport" content="width=device-width, initial-scale=1">` in its `<head>` (most
+Laravel layouts have it). Without it the phone draws the page at desktop width and Sherlocks
+shows its desktop layout, shrunk.
+
 Your own "saved graphs" list simply links to `route('sherlocks.graph', $id)` for each row.
 
 ### Proxy through Laravel: server settings
@@ -223,6 +228,7 @@ All of it comes from Sherlocks' own page script: deploying Sherlocks updates the
 
 - **Live graph** over Server-Sent Events: people and links appear as each police system answers.
 - **Light / dark theme** (moon/sun button in the header, kept per browser) and **Select group**: pick a person with everyone attached, or draw a box, and drag them together.
+- **Phones, tablets and the Galaxy Fold** (open or folded): the page rearranges itself. On a phone it is one column (search, progress, graph, then the case cards), a person's details open as a sheet from the bottom, and Sherlock's chat takes the whole screen. On phones and tablets the graph toolbar (Find in graph, Fit, Tidy, Layout, Connections, Select group, Case board, PNG…) folds behind one **Tools** button at the top of the graph; tap it to open them all. Pinch to zoom, drag to move, double-tap empty space to fit the graph.
 - **Search by** CNIC, mobile, email, or several people at once ("Multiple people").
 - **Live EMS only.** The page is pinned with `backend: 'ems'`, so the data-source choice is hidden. It asks for confirmation before each live search.
 - **Chat** about the graph, **person briefs**, **compare two people**, **leads** (linkage patterns), and the **AI investigator**, which streams its steps.

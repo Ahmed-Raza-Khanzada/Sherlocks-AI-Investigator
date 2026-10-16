@@ -123,7 +123,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 :root[data-theme="dark"] .themebtn .moon { display: none; }
 
 /* ---- layout: three floating panels ------------------------------------------------ */
-.layout { display: grid; grid-template-columns: 310px minmax(0, 1fr) auto; gap: 12px; padding: 12px; height: calc(100% - 52px); }
+.layout { position: relative; display: grid; grid-template-columns: 310px minmax(0, 1fr) auto; gap: 12px; padding: 12px; height: calc(100% - 52px); }
 .left { overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; background: var(--panel);
   border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); min-width: 0; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 12px; }
@@ -355,17 +355,6 @@ dialog::backdrop { background: var(--overlay); }
 .history button { text-align: left; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; color: var(--text); }
 .history button:hover { border-color: var(--blue); }
 .history .meta { color: var(--muted); font-size: 11.5px; }
-
-@media (max-width: 1100px) {
-  .layout { grid-template-columns: 290px minmax(0, 1fr); }
-  .right { position: absolute; right: 12px; top: 64px; bottom: 12px; z-index: 50; box-shadow: var(--shadow-lg); }
-}
-@media (max-width: 760px) {
-  .layout { grid-template-columns: 1fr; grid-template-rows: auto 70vh; height: auto; }
-  .right { width: auto; left: 12px; }
-  .legend { display: none; }
-  .brand em, .whoami { display: none; }
-}
 
 /* ---- sign in ------------------------------------------------------------------------- */
 .login { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
@@ -721,7 +710,7 @@ dialog.boarddlg::backdrop { background: rgba(5,8,15,.75); }
 .bsticky.ok { background: #bbf7d0; } .bsticky.weak { background: #fed7aa; } .bsticky.out { background: #e5e7eb; opacity: .8; }
 .bsticky p { margin: 6px 0; }
 .bsticky.bfocus { outline: 3px solid #b91c1c; }
-.bindex { background: linear-gradient(#fffdf6 0 22px, #ef4444 22px 23px, #fffdf6 23px) top / 100% 100% no-repeat,
+.bindex { background: linear-gradient(#fffdf6 0 36px, #ef4444 36px 37px, #fffdf6 37px) top / 100% 100% no-repeat,
   repeating-linear-gradient(#fffdf6 0 18px, #bfdbfe 18px 19px); }
 .bfact { margin: 6px 0 0; }
 .btier { display: inline-block; font: 700 9.5px system-ui; text-transform: uppercase; padding: 0 4px; margin-inline-end: 5px; border-radius: 3px; background: #dcfce7; color: #166534; }
@@ -734,6 +723,149 @@ dialog.boarddlg::backdrop { background: rgba(5,8,15,.75); }
   box-shadow: 0 4px 10px rgba(0,0,0,.3); font-size: 11.5px; }
 .btick::before { content: ""; position: absolute; top: -27px; left: 50%; width: 10px; height: 10px; margin-left: -5px; border-radius: 50%; background: #fde68a; border: 2px solid #78350f; }
 .btick b { display: block; color: #7f1d1d; }
+/* Tablets and phones: one column, the new case first. Within a zone the cards sit side by
+   side while there is room (two or three on a tablet, one on a phone). */
 @media (max-width: 900px) {
-  .cork { grid-template-columns: 1fr; grid-template-areas: "case" "people" "facts" "notes" "questions" "timeline"; }
+  .cork { grid-template-columns: minmax(0, 1fr); grid-template-areas: "case" "people" "facts" "notes" "questions" "timeline"; }
+  .bzone { min-width: 0; }
+  .bpeople, .bfacts, .bnotes, .bquestions { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr)); gap: 14px; align-items: start; }
+  .bzone > h3 { grid-column: 1 / -1; }
+  .bhyps { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(200px, 100%), 1fr)); gap: 14px; }
+  .bsticky { width: auto; }
+}
+
+/* ---- responsive: tablets, Galaxy Fold (open and folded) and phones ---------------------
+ *  ≤1100px                   the person panel floats over the graph instead of a column
+ *  ≤1024px or a touch screen the graph toolbar folds behind a Tools button on the graph;
+ *                            pinch to zoom, drag to move, double-tap empty space to fit
+ *  ≤760px                    one column - search, progress, graph, then the case cards;
+ *                            the person panel is a bottom sheet, Sherlock's chat full screen
+ *  ≤400px                    folded Fold and small phones: tighter spacing
+ *  short landscape screens   (phones on their side) a lower header, chat full screen */
+@media (max-width: 1100px) {
+  .layout { grid-template-columns: 290px minmax(0, 1fr); }
+  .right { position: absolute; right: 12px; top: 12px; bottom: 12px; z-index: 50; width: min(390px, calc(100% - 24px)); box-shadow: var(--shadow-lg); }
+}
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 260px minmax(0, 1fr); }
+  .whoami { display: none; }
+}
+/* the Tools button exists only where the toolbar is folded away (phones and tablets) */
+.toolsbtn { display: none; }
+@media (max-width: 1024px), (hover: none) and (pointer: coarse) {
+  .toolsbtn { display: inline-flex; align-items: center; gap: 6px; position: absolute; top: 12px; right: 12px; z-index: 12;
+    padding: 8px 14px; border-radius: 99px; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+    font-size: 13px; font-weight: 600; box-shadow: var(--shadow); }
+  .toolsbtn svg { width: 16px; height: 16px; }
+  .toolsbtn.on { background: var(--blue); border-color: var(--blue); color: var(--on-blue); }
+  /* folded: hidden; open: a panel over the graph, under the Tools button */
+  .stage:not(.toolsopen) .toolbar { display: none; }
+  .stage.toolsopen .toolbar { top: 60px; max-height: calc(100% - 72px); overflow-y: auto; box-shadow: var(--shadow-lg); gap: 8px; }
+  .toolbar input#filter { width: 100%; }
+  .toolbar button, .toolbar .tog { padding: 7px 12px; }
+  .toolbar .tog.range { flex: 1 1 100%; }
+  .toolbar .tog.range input { flex: 1; width: auto; }
+  .connfilter { flex: 1 1 100%; }
+  .connpanel { position: static; width: 100%; margin-top: 6px; box-shadow: none; }
+  .pickbanner { top: 60px; }
+  .stage.toolsopen .legendwrap { display: none; }
+  .legend { max-height: 55vh; overflow-y: auto; }
+}
+@media (hover: none) and (pointer: coarse) {
+  /* 16px stops phones zooming the page when a field is tapped */
+  input, select, textarea, .shinput textarea { font-size: 16px; }
+  .ghost.small { padding: 6px 11px; }
+}
+.pickbanner { max-width: calc(100% - 24px); flex-wrap: wrap; justify-content: center; text-align: center; }
+
+@media (max-width: 760px) {
+  #appShell, #sherlocksRoot { height: auto; min-height: 100%; }
+  .top { position: sticky; top: 0; z-index: 55; gap: 8px; padding: 0 10px; padding-top: env(safe-area-inset-top, 0px); height: calc(52px + env(safe-area-inset-top, 0px)); }
+  .brand em { display: none; }
+  .top .ghost { padding: 5px 8px; }
+
+  /* the side panel's cards join the page column, in reading order around the graph */
+  .layout { display: flex; flex-direction: column; gap: 10px; padding: 10px; height: auto; }
+  .left { display: contents; }
+  .left > .card { box-shadow: var(--shadow); }
+  #searchForm { order: 1; }
+  #runCard { order: 2; scroll-margin-top: 62px; }
+  .stage { order: 3; flex: none; height: 64vh; height: 64dvh; min-height: 320px; max-height: 760px; border-radius: 14px; scroll-margin-top: 62px; }
+  #evidenceCard { order: 4; }
+  #relationsCard { order: 5; }
+  #investCard { order: 6; }
+  #chatCard { order: 7; }
+  .left > .logcard { order: 8; flex: none; min-height: 0; }
+  .log { min-height: 120px; max-height: 50vh; }
+
+  .empty { inset: 10px; max-width: none; max-height: calc(100% - 20px); overflow-y: auto; padding: 16px; font-size: 12.5px; }
+  .empty h2 { font-size: 16px; }
+  .legend { grid-template-columns: auto; max-width: calc(100vw - 60px); max-height: 46vh; overflow-y: auto; }
+  .pickbanner.groupbanner { bottom: 54px; }
+
+  /* the person panel: a sheet from the bottom of the screen */
+  .right { position: fixed; left: 0; right: 0; bottom: 0; top: auto; width: auto; max-height: 80vh; max-height: 80dvh; z-index: 65;
+    border-radius: 18px 18px 0 0; border-bottom: 0; padding: 10px 14px calc(16px + env(safe-area-inset-bottom, 0px)); }
+  .right::before { content: ""; display: block; width: 42px; height: 4px; border-radius: 99px; background: var(--line-2); margin: 0 auto 8px; }
+  .right .close { position: sticky; top: 0; float: right; z-index: 2; width: 36px; height: 36px; margin: -6px -6px 0 4px;
+    border-radius: 50%; background: var(--panel-2); line-height: 1; }
+  .cmpprofiles { grid-template-columns: 1fr; }
+  .runhead { flex-wrap: wrap; }
+
+  /* Sherlock: the bubble sits lower, the chat takes the whole screen */
+  .fab { right: 14px; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); width: 52px; height: 52px; }
+  .fab svg { width: 28px; height: 28px; }
+  .sherlock { inset: 0; width: 100%; height: 100%; height: 100dvh; border: 0; border-radius: 0; z-index: 90; }
+  header.shhead { padding-top: max(12px, env(safe-area-inset-top, 0px)); }
+  .shform { padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px)); }
+  .shcol { max-width: 92%; }
+
+  dialog { width: calc(100vw - 20px); max-width: none; max-height: calc(100dvh - 20px); padding: 12px; }
+  .maprow { grid-template-columns: 1fr 1fr; }
+  .maprow label.wide { grid-column: 1 / -1; }
+  dialog.boarddlg { width: 100vw; height: 100dvh; max-height: none; border-radius: 0; }
+  .cork { height: calc(100dvh - 52px); padding: 14px; gap: 18px; }
+  .boardhead { flex-wrap: wrap; gap: 6px 12px; padding: 10px 12px; }
+  /* cards lie straight on a phone: tilted, a full-width card pokes past the screen edge */
+  .bcard { transform: none !important; }
+  .bcard:hover { transform: none !important; }
+  .bzone h3 { font-size: 12px; }
+  .bnew { padding: 14px; font-size: 13px; }
+  .btick { min-width: 130px; }
+}
+@media (max-width: 560px) {
+  /* header: only "Sherlocks", and a dot for the live badge */
+  .top .brand span { font-size: 0; }
+  .top .brand b { font-size: 15px; }
+  .badge.live { font-size: 0; gap: 0; padding: 5px; }
+}
+@media (max-width: 400px) {
+  .top { gap: 6px; padding-inline: 8px; }
+  .top .brand svg { width: 28px; height: 28px; padding: 4px; }
+  .themebtn { width: 30px; height: 30px; }
+  .top .ghost { padding: 4px 7px; font-size: 12px; }
+  .layout { padding: 8px; gap: 8px; }
+  .card { padding: 10px; }
+  #searchForm { padding: 0 10px 12px; }
+  .findhead { margin: 0 -10px 10px; padding: 12px; gap: 10px; }
+  .findhead span { font-size: 11px; }
+  .seg.tabs button { font-size: 12px; }
+  #depth { gap: 4px; }
+  #depth button small { font-size: 9px; }
+  .toggles > label { padding: 8px 10px; font-size: 11.5px; }
+  .lookups { grid-template-columns: 1fr; }
+  .photo { width: 66px; height: 82px; }
+  .stat b { font-size: 15px; }
+  .maprow { grid-template-columns: 1fr; }
+}
+@media (max-width: 340px) {
+  /* the first Galaxy Fold, folded (280px): no room for the badge */
+  .top .badge { display: none; }
+  .top .brand b { font-size: 14px; }
+}
+@media (max-height: 520px) and (orientation: landscape) and (min-width: 761px) {
+  .top { height: 44px; }
+  .layout { height: calc(100% - 44px); padding: 8px; gap: 8px; }
+  .sherlock { inset: 0; width: 100%; height: 100%; border: 0; border-radius: 0; z-index: 90; }
+  .fab { width: 48px; height: 48px; right: 14px; bottom: 14px; }
 }
