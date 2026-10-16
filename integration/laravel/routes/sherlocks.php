@@ -4,6 +4,7 @@
 // auth / permission middleware the rest of the portal uses.
 
 use App\Http\Controllers\SherlocksController;
+use App\Http\Controllers\SherlocksProxyController;
 use Illuminate\Support\Facades\Route;
 
 Route::middleware(['web', 'auth'])->prefix('sherlocks')->group(function () {
@@ -11,4 +12,9 @@ Route::middleware(['web', 'auth'])->prefix('sherlocks')->group(function () {
     Route::get('/graphs/{graphId}', [SherlocksController::class, 'show'])->name('sherlocks.graph'); // reopen a saved graph
     Route::get('/token', [SherlocksController::class, 'token'])->name('sherlocks.token');
     Route::post('/graphs', [SherlocksController::class, 'store'])->name('sherlocks.graphs.store');
+
+    // Everything the tab asks Sherlocks for (script, styles, API, live streams) goes through
+    // here, so officers' browsers only ever talk to the portal. Leave it out of the CSRF
+    // check (README step 3); every change it passes on carries the Sherlocks token.
+    Route::any('/api/{path?}', SherlocksProxyController::class)->where('path', '.*')->name('sherlocks.api');
 });

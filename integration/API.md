@@ -4,7 +4,9 @@ The tab page (`tab.blade.php`) already uses all of this; it is here in case the 
 wants to call Sherlocks directly (e.g. its own "chat with saved graph" widget).
 
 
-All paths are under `{apiBase}` = `https://<host>/sindhpolice-sherlocks`. Send the
+All paths are under `{apiBase}`: from the browser, the portal's proxy route
+`/sherlocks/api` (it passes every path below on to Sherlocks unchanged); from the
+Laravel server, `SHERLOCKS_API_BASE` (`http://192.168.200.239:7401/sindhpolice-sherlocks`). Send the
 token as `X-Session-Token: <token>`. Where a header can't be set (EventSource, `<img>`),
 use `?token=<token>` instead. The full schema is at `{host}/docs` (OpenAPI).
 
@@ -168,6 +170,16 @@ Kept on the case board and returned by `GET /graph/runs/{id}/case` and in `graph
 | `incident.fir` | e.g. `604/25` | this case's own FIR, when the officer gave one |
 | `incident.target_status` | `arrested`, `not arrested`, `on bail`, `absconding`, absent | only as the officer said |
 | `incident.offence`, `date`, `time`, `place` | | what the officer said - or, with `fir_on_record`, taken from that FIR's file (`incident.from_fir` lists which) |
+| `incident.from_fir` | e.g. `["date", "offence", "place"]` | the fields above that were taken from the FIR file, not said by the officer |
+| `incident.date_as_recorded` | text | the FIR's own words for when it happened, kept when no exact date could be read from them. "When did it happen?" is then not asked |
+| `incident.offence_said` | `true`, absent | the officer named the crime himself; `offence` then reads "murder (302 PPC)": his word, then the FIR's sections |
+| `roles` | `{<person id>: "main suspect" \| "suspect" \| ...}` | includes whom the officer said he **suspects** - his view, recorded as a role, never as a fact |
+
+The model decides `case_basis` by comparing the officer's words with what each FIR on file
+says (number, police station, sections, date, place, complainant, the facts). A message
+without an FIR number can still be `fir_on_record`. When the basis changes, the questions
+written for the old reading and not yet asked become `withdrawn`, and the background team
+runs again.
 
 Question keys Sherlock may ask (`final.asking.key`, `questions[].key`): `case:which`,
 `incident:what`, `incident:when`, `incident:place`, `incident:pin`, `incident:fir`,
@@ -177,6 +189,40 @@ and `source:<X#|K#|E#>` (a question that comes from a contradiction, a lead or a
 check - at most four of these wait at once). Question `status`: `open`, `answered`,
 `muted`, `withdrawn` (its reason went away). Answer any of them with
 `POST /graph/runs/{id}/questions/{Q#}` or simply in the chat.
+
+### Link labels: the tenant register (TRUST)
+
+Every link in `graph.edges[]` (and in `graph.case` where links are listed) carries a
+`label` - the part the person has in the record the link comes from - and `reasons[]`,
+the details of that record. For the tenant register the label used to be the catch-all
+"Named in property record". It is now one of these, read from the register's own answer
+(tenancies as the tenant, as a witness, as a family member, properties owned):
+
+| `label` | Who is linked to the person searched | Reads as |
+|---|---|---|
+| `Tenancy witness` | a witness on a tenancy where the person is the tenant | "A was witness to the tenancy of B" |
+| `Landlord` | the landlord of that tenancy | "A is landlord of B" |
+| `Family member`, `Family member (wife)` ... | a family member listed on that tenancy | family, same rented home |
+| `Tenancy witnessed by the subject` | the tenant whose tenancy the person witnessed | "B was witness to the tenancy of A" |
+| `Co-witness of a tenancy` | the other witness of that tenancy | "was a witness in the same tenancy as" |
+| `Family of a tenant whose tenancy the subject witnessed` | that tenant's family | "is family of a tenant linked to" |
+| `Tenant (home the subject lives in)` | the tenant of the home where the person lives as family | "is the tenant of the home of" |
+| `Landlord (home the subject lives in)` | that home's landlord | "is landlord of the home of" |
+| `Tenancy witness (home the subject lives in)` | that home's witnesses | "was witness to the tenancy of the home of" |
+| `Family member, same rented home` | the others living there | family, same rented home |
+| `Tenant of owned property` | a tenant of a property the person owns | "A is tenant of B" |
+| `Tenancy witness (property the subject owns)` | a witness of such a tenancy | "was witness to a tenancy in a property owned by" |
+| `Family of a tenant of the subject` | that tenant's family | "is family of a tenant linked to" |
+| `Named on a tenancy record (role not stated)` | only when the register gives no role at all | "is named on a tenancy record of" |
+
+`reasons[]` holds the tenancy: `property: ...; landlord: ...; lease <start> to <end>;
+PS <police station>; <status>`. A tenancy witness signed the form to vouch for the tenant:
+it does not mean they live in or own the property. The register's `relation` field next to
+a witness is the witness's **father's name**; it is kept as a relation only when it is a
+kinship word (wife, son, brother ...).
+
+Do not match on the old label for new graphs. Graphs searched before this version keep
+"Named in property record"; a link's label is fixed when the graph is built.
 
 ### The case report
 

@@ -1,13 +1,17 @@
 {{--
     Sherlocks tab - the live link graph + AI chat, served by the Sherlocks server.
 
+    This page holds only the portal's own part: the config below (token, saving). The
+    Sherlocks page itself - markup, styles, scripts - is loaded from the Sherlocks server by
+    embed.js when the tab opens, so a change on the Sherlocks side shows up here without
+    touching this file.
+
     A full page on purpose: Sherlocks' stylesheet styles html/body and uses class names
     (.card, .row, .badge) that Bootstrap/Tailwind layouts also use. Show this page from
     the portal's menu, or inside the portal layout with a same-site iframe (README step 4).
 
     Variables (from SherlocksController::show): $sherlocksApiBase, $sherlocksAssets,
     $sherlocksToken, $tokenUrl, $saveUrl (nullable), $savedRun (nullable array).
-    The markup in the verbatim block below is Sherlocks' own - keep the element ids.
 --}}
 <!doctype html>
 <html lang="en">
@@ -16,290 +20,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sherlocks · Link Graph</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='9' cy='9' r='5' fill='%23fbbf24'/%3E%3Ccircle cx='24' cy='12' r='4' fill='%2338bdf8'/%3E%3Ccircle cx='14' cy='25' r='4' fill='%23f43f5e'/%3E%3Cpath d='M9 9L24 12M9 9L14 25' stroke='%23e5e7eb' stroke-width='2'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="{{ $sherlocksAssets }}/app.css">
   <meta name="csrf-token" content="{{ csrf_token() }}">
 </head>
 <body>
-@verbatim
-  <section id="loginScreen" class="login" hidden>
-    <form id="loginForm" class="logincard" autocomplete="on">
-      <div class="brand">
-        <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="9" cy="9" r="5" fill="#fbbf24"/><circle cx="24" cy="12" r="4" fill="#38bdf8"/><circle cx="14" cy="25" r="4" fill="#f43f5e"/><path d="M9 9L24 12M9 9L14 25" stroke="#e5e7eb" stroke-width="2"/></svg>
-        <span><b>Sherlocks</b> Link Graph</span>
-      </div>
-      <p class="muted small">Restricted system. Sign in to continue.</p>
-      <label class="lbl" for="loginUser">Username</label>
-      <input id="loginUser" name="username" autocomplete="username" spellcheck="false" required>
-      <label class="lbl" for="loginPass">Password</label>
-      <input id="loginPass" name="password" type="password" autocomplete="current-password" required>
-      <div id="loginError" class="loginerror" role="alert"></div>
-      <button type="submit" id="loginBtn" class="primary">Sign in</button>
-    </form>
-  </section>
-
-  <div id="appShell" hidden>
-  <header class="top">
-    <div class="brand">
-      <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="9" cy="9" r="5" fill="#fbbf24"/><circle cx="24" cy="12" r="4" fill="#38bdf8"/><circle cx="14" cy="25" r="4" fill="#f43f5e"/><path d="M9 9L24 12M9 9L14 25" stroke="#e5e7eb" stroke-width="2"/></svg>
-      <span><b>Sherlocks</b> Link Graph</span>
-    </div>
-    <span id="backendBadge" class="badge">…</span>
-    <div class="spacer"></div>
-    <button id="historyBtn" class="ghost" title="Previous graphs">History</button>
-    <button id="keyBtn" class="ghost" title="API key">Key</button>
-    <span id="whoami" class="whoami"></span>
-    <button id="signOutBtn" class="ghost" title="Sign out" hidden>Sign out</button>
-  </header>
-
-  <main class="layout">
-    <aside class="left">
-      <form id="searchForm" class="card" autocomplete="off">
-        <div id="modeTabs" class="seg tabs" role="tablist">
-          <button type="button" id="modeSingle" class="on" data-mode="single">One person</button>
-          <button type="button" id="modeMulti" data-mode="multi">Multiple people</button>
-        </div>
-
-        <div id="singlePane">
-          <label class="lbl" for="identifier">CNIC, mobile number or email</label>
-          <input id="identifier" placeholder="42101-1234567-1  ·  0300-1234567  ·  name@mail.com" spellcheck="false">
-          <div id="idChips" class="chips small"></div>
-          <p class="hint">Give several, separated by a space, to search them as one person. An email is also searched online.</p>
-        </div>
-
-        <div id="multiPane" hidden>
-          <label class="lbl" for="identifiers">CNIC / mobile of each person — one per line</label>
-          <textarea id="identifiers" rows="5" spellcheck="false"
-            placeholder="42101-1234567-1&#10;0300-1234567&#10;someone@gmail.com"></textarea>
-          <div id="multiChips" class="chips small"></div>
-          <p class="hint">Each line is one person. Sherlocks searches them all, then finds how every pair connects.</p>
-          <label class="tog"><input type="checkbox" id="optConnect"> Stop as soon as they are connected (fewer live queries)</label>
-        </div>
-
-        <div class="row">
-          <div>
-            <span class="lbl">Depth</span>
-            <div id="depth" class="seg" role="radiogroup"></div>
-          </div>
-          <div>
-            <label class="lbl" for="maxPersons">Max people searched</label>
-            <input id="maxPersons" type="number" min="1" max="100" value="25">
-          </div>
-        </div>
-        <p class="hint" id="depthHint"></p>
-
-        <details id="systemsBox">
-          <summary><span>Systems</span> <span id="systemsCount" class="muted"></span></summary>
-          <div class="sysactions"><a href="#" id="sysAll">all</a> · <a href="#" id="sysNone">none</a></div>
-          <div id="systemsList" class="syslist"></div>
-        </details>
-
-        <div class="toggles">
-          <label><input type="checkbox" id="optFir" checked> Open FIR reports (co-accused, witnesses)</label>
-          <label><input type="checkbox" id="optAi" checked> <span id="aiLabel">AI similarity review &amp; address matching</span></label>
-          <label id="callerRow" hidden><input type="checkbox" id="optCaller"> Caller ID name tags</label>
-          <label id="osintRow"><input type="checkbox" id="optOsint"> OSINT / social media search</label>
-          <select id="osintScope" class="osintscope" title="Who gets an online name search">
-            <option value="subject">Target person only (full OSINT tools)</option>
-            <option value="everyone">Target + everyone found (name search, max 8)</option>
-          </select>
-        </div>
-
-        <div class="row" id="backendRow">
-          <div>
-            <label class="lbl" for="backendSel">Data source</label>
-            <select id="backendSel">
-              <option value="ems">All systems (live)</option>
-              <option value="demo">Demo data (synthetic)</option>
-            </select>
-          </div>
-        </div>
-
-        <button type="submit" id="goBtn" class="primary">Build link graph</button>
-        <div id="seeds" class="seeds"></div>
-      </form>
-
-      <section class="card" id="runCard" hidden>
-        <div class="runhead">
-          <b id="runTitle">Run</b>
-          <span id="statusPill" class="pill">…</span>
-        </div>
-        <div class="progress"><div id="progressBar"></div></div>
-        <p id="runMsg" class="muted small"></p>
-        <button id="cancelBtn" class="stopbtn" hidden>■ Stop run</button>
-        <div id="stats" class="stats"></div>
-        <div id="failedSystems" hidden>
-          <div class="failhead">⚠ Failed systems — fix these APIs</div>
-          <ul id="failedList" class="faillist"></ul>
-        </div>
-      </section>
-
-      <section class="card" id="evidenceCard" hidden>
-        <div class="runhead"><b>Case evidence</b>
-          <button id="reportBtn2" class="ghost small" type="button" disabled title="Available when the graph finishes or is stopped">📑 Case report</button></div>
-        <div id="evidenceCounts" class="evcounts"></div>
-        <div id="reportStatus" class="muted small"></div>
-        <div id="sherlockWork" class="shwork" hidden></div>
-        <ul id="evidenceList" class="evlist"></ul>
-      </section>
-
-      <section class="card" id="relationsCard" hidden>
-        <div class="runhead"><b>Relations between the people</b>
-          <button id="relAiBtn" class="ghost small" type="button">Explain with AI</button></div>
-        <div id="relationsBody"></div>
-      </section>
-
-      <section class="card" id="investCard" hidden>
-        <div class="runhead"><b>AI investigator</b>
-          <button id="leadsBtn" class="ghost small" type="button">Refresh leads</button></div>
-        <form id="investForm" class="chatform">
-          <input id="investInput" placeholder="e.g. who connects Asif Ali to the FIR accused?" autocomplete="off">
-          <button class="ghost small" type="submit">Investigate</button>
-        </form>
-        <ol id="investSteps" class="investsteps"></ol>
-        <div id="investOut"></div>
-        <div id="leadsBody"></div>
-      </section>
-
-      <section class="card" id="chatCard" hidden>
-        <div class="runhead"><b>Ask about this graph</b><span class="muted small" id="chatModel"></span></div>
-        <div id="chatLog" class="chatlog"></div>
-        <form id="chatForm" class="chatform">
-          <input id="chatInput" placeholder="e.g. how is Bilal Khan linked to the subject?" autocomplete="off">
-          <button class="ghost small" type="submit">Ask</button>
-        </form>
-      </section>
-
-      <section class="card logcard">
-        <div class="runhead">
-          <b>Activity</b>
-          <div class="logtools">
-            <span id="logCount" class="muted small"></span>
-            <button id="copyLogBtn" class="ghost small" title="Copy the activity log">Copy</button>
-          </div>
-        </div>
-        <ol id="log" class="log"></ol>
-      </section>
-    </aside>
-
-    <section class="stage">
-      <div id="cy"></div>
-      <div id="pickBanner" class="pickbanner" hidden></div>
-      <div class="toolbar">
-        <input id="filter" placeholder="Find in graph…" spellcheck="false">
-        <button id="fitBtn" title="Fit to screen">Fit</button>
-        <button id="layoutBtn" title="Tidy the graph now">Tidy</button>
-        <label class="tog" title="How the graph is arranged">Layout
-          <select id="layoutSel">
-            <option value="fcose">Organic</option>
-            <option value="concentric">Rings by depth</option>
-            <option value="breadthfirst">Hierarchy from subject</option>
-          </select>
-        </label>
-        <label class="tog" title="Record nodes: one per system that holds a record about a person">Records
-          <select id="recordsMode">
-            <option value="all">all</option>
-            <option value="linking">linking only</option>
-            <option value="none">hidden (person → person)</option>
-          </select>
-        </label>
-        <label class="tog"><input type="checkbox" id="showWeak" checked> Weak links</label>
-        <label class="tog range">min <input type="range" id="minWeak" min="0" max="100" value="35"><span id="minWeakVal">0.35</span></label>
-        <div class="connfilter"><button id="connBtn" type="button" title="Choose which kinds of connection are drawn">Connections ▾</button><div id="connPanel" class="connpanel" hidden></div></div>
-        <button id="boardBtn" class="boardbtn" title="Open the detective's case board">🕵 Case board</button>
-        <button id="reportBtn" class="reportbtn" title="Download the case report (PDF) - available when the graph finishes or is stopped" disabled>📑 Case report</button>
-        <button id="pngBtn" title="Save picture">PNG</button>
-        <button id="jsonBtn" title="Save data">JSON</button>
-      </div>
-      <div class="legendwrap">
-        <button id="legendBtn" class="legendbtn" type="button">Legend ▾</button>
-        <div class="legend" id="legend"></div>
-      </div>
-      <div id="empty" class="empty">
-        <h2>Enter a CNIC, mobile number or email</h2>
-        <p>Sherlocks searches every connected system for that person, draws a <b>record node</b> for each system that knows them, and a <b>person node</b> for everyone those records name. It then searches those people too, until the depth you set.</p>
-        <p><span class="sw strong"></span> <b>Strong link</b> — a system states the relationship (landlord, co-accused, SIM owner…)</p>
-        <p><span class="sw weak"></span> <b>Weak link</b> — inferred: similar address, same father's name, overlapping hotel stay, OSINT. A lead, not evidence.</p>
-      </div>
-    </section>
-
-    <button id="sherlockFab" class="fab" type="button" title="Chat with Sherlock about this case">
-      <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M6 14c0-5 4.5-8 10-8s10 3 10 8H6z" fill="#fbbf24"/><rect x="4" y="13" width="24" height="3" rx="1.5" fill="#d97706"/><circle cx="16" cy="21" r="5.5" fill="none" stroke="#e6ebf5" stroke-width="2.2"/><path d="M20 25l5 5" stroke="#e6ebf5" stroke-width="2.6" stroke-linecap="round"/></svg>
-      <span id="fabBadge" class="fabbadge" hidden></span>
-    </button>
-    <section id="sherlockPanel" class="sherlock" hidden aria-label="Sherlock case chat">
-      <header class="shhead">
-        <span class="shavatar big" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M6 14c0-5 4.5-8 10-8s10 3 10 8H6z" fill="#fbbf24"/><rect x="4" y="13" width="24" height="3" rx="1.5" fill="#d97706"/><circle cx="16" cy="21" r="5.5" fill="none" stroke="#e6ebf5" stroke-width="2.2"/><path d="M20 25l5 5" stroke="#e6ebf5" stroke-width="2.6" stroke-linecap="round"/></svg></span>
-        <div class="shwho">
-          <b>Sherlock</b>
-          <span class="shstatus"><i class="dot"></i><span id="sherlockStatus">online</span> · <span id="sherlockCtx"></span></span>
-        </div>
-        <button id="sherlockClose" class="shclose" type="button" title="Close" aria-label="Close">×</button>
-      </header>
-      <div id="sherlockLog" class="shlog"></div>
-      <div id="sherlockQuick" class="shquick">
-        <button type="button" data-q="Summarise this case: who are the targets, what connects them, and what do the documents establish?">Summarise the case</button>
-        <button type="button" data-q="How are the targets connected? Give every route with its source.">How are they connected?</button>
-        <button type="button" data-q="Who keeps reappearing across records and documents (witness, guarantor, co-accused, hotel, SIM owner)?">Who keeps reappearing?</button>
-        <button type="button" data-q="What do the FIR files, case diaries and lab reports say about the targets?">What do the documents say?</button>
-      </div>
-      <form id="sherlockForm" class="shform">
-        <button type="button" id="sherlockAttach" class="shattach" title="Upload a file for the agents to read: image (JPG, PNG), PDF, Word (.docx) or Excel (.xlsx) - CDRs, tower dumps, documents, photos">📎</button>
-        <button type="button" id="sherlockPin" class="shattach" title="Pin the incident location on the map">📍</button>
-        <input type="file" id="sherlockFile" accept=".jpg,.jpeg,.png,.pdf,.docx,.xlsx" multiple hidden>
-        <div class="shinput">
-          <textarea id="sherlockInput" rows="1" placeholder="Message Sherlock - English, اردو or Roman Urdu" dir="auto" autocomplete="off"></textarea>
-        </div>
-        <button class="shsend" type="submit" id="sherlockSend" title="Send" aria-label="Send"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.4 20.4 21 12 3.4 3.6 3.4 10l12.6 2-12.6 2z" fill="currentColor"/></svg></button>
-      </form>
-    </section>
-
-    <aside class="right" id="details" hidden>
-      <button class="close" id="closeDetails" title="Close">×</button>
-      <div id="detailsBody"></div>
-    </aside>
-  </main>
-
-  <dialog id="historyDlg">
-    <form method="dialog" class="dlghead"><b>Previous graphs</b><button class="ghost">Close</button></form>
-    <div id="historyList" class="history"></div>
-  </dialog>
-
-  <dialog id="boardDlg" class="boarddlg">
-    <form method="dialog" class="dlghead boardhead"><b>🕵 Case board</b><span id="boardMeta" class="muted small"></span><button class="ghost">Close</button></form>
-    <div id="boardBody" class="cork"></div>
-  </dialog>
-
-  <dialog id="docDlg" class="docdlg">
-    <form method="dialog" class="dlghead"><b id="docTitle">Document</b><button class="ghost">Close</button></form>
-    <div id="docBody" class="docbody"></div>
-  </dialog>
-
-  <dialog id="mapDlg" class="mapdlg">
-    <form method="dialog" class="dlghead"><b>Pin the incident location</b><button class="ghost" value="cancel">Close</button></form>
-    <p class="muted small">Click the map where the incident happened (or type the coordinates), add the date and time, and save. The agents then check whose phones were near the point and find the nearest police station.</p>
-    <div id="incidentMap" class="incidentmap"></div>
-    <div class="maprow">
-      <label>Latitude <input id="incLat" inputmode="decimal" placeholder="24.8607"></label>
-      <label>Longitude <input id="incLon" inputmode="decimal" placeholder="67.0011"></label>
-      <label class="wide">Place <input id="incPlace" placeholder="e.g. University Road, Block 5, Gulshan-e-Iqbal"></label>
-      <label>Date <input id="incDate" type="date"></label>
-      <label>Time <input id="incTime" type="time"></label>
-      <label>FIR <input id="incFir" placeholder="604/2025"></label>
-    </div>
-    <div class="dlgbtns"><span id="mapMsg" class="muted small"></span><button type="button" id="incSave" class="primary">Save incident</button></div>
-  </dialog>
-
-  <dialog id="keyDlg">
-    <form method="dialog" id="keyForm">
-      <b>API key</b>
-      <p class="muted small">This deployment requires the Sherlocks API key. It is kept for this browser tab only.</p>
-      <input id="keyInput" type="password" placeholder="X-API-Key">
-      <div class="dlgbtns"><button value="cancel" class="ghost">Cancel</button><button value="ok" class="primary">Save</button></div>
-    </form>
-  </dialog>
-
-  </div>
-@endverbatim
+  <div id="sherlocksRoot"></div>
 
   <script>
     function saveRun(run) {
@@ -319,6 +43,7 @@
       apiBase: @json($sherlocksApiBase),
       token: @json($sherlocksToken),
       savedRun: @json($savedRun ?? null),   // a graph the portal saved earlier, or null for a new search
+      // theme: 'dark',                     // optional: start officers in dark (default light)
 
       // A search finished: `run` is the whole graph (nodes, edges, params, stats, log, and
       // graph.case - the case file: documents, facts, uploads, incident, questions, report).
@@ -339,10 +64,6 @@
       },
     };
   </script>
-  <script src="{{ $sherlocksAssets }}/vendor/cytoscape.min.js"></script>
-  <script src="{{ $sherlocksAssets }}/vendor/layout-base.js"></script>
-  <script src="{{ $sherlocksAssets }}/vendor/cose-base.js"></script>
-  <script src="{{ $sherlocksAssets }}/vendor/cytoscape-fcose.js"></script>
-  <script src="{{ $sherlocksAssets }}/app.js"></script>
+  <script src="{{ $sherlocksAssets }}/embed.js"></script>
 </body>
 </html>

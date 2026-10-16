@@ -6,7 +6,8 @@ background. The **Question desk** sits between them, so a question is never aske
 every answer the officer gives reaches Sherlock. The **Ingest team** and the **CDR team**
 fill the board; the **shared toolbox** finds information for both teams and never guesses.
 
-The design, with its reasons, is in `docs/sherlock-agent-plan.html`.
+The design, with its reasons, is in `docs/sherlock-agent-plan.html`; its section "What
+changed in v6" has the current diagram of one question, one background run and one report.
 
 **Orchestration: LangGraph** (`src/sherlocks/team/`). Each team is one compiled graph:
 `team/officer_graph.py` is a chat turn, `team/sherlock_graph.py` is one background run,
@@ -121,6 +122,17 @@ explanation of every system in play (`what_each_system_tells`), and the **dossie
 person carries what each system returned about them: `records`, `hotel_stays`, `vehicles`,
 `organisations`, `police_officer`, the systems searched with nothing found and the ones that
 could not be checked (an error is never reported as "no record").
+
+**The tenant register (TRUST)** answers with the person's tenancies by the part they have
+in each: `tenacies_as_tenant` (with the landlord, `witness1`, `witness2` and
+`family_members`), `tenacies_as_witness`, `tenacies_as_family_member` and
+`properties_owned`. `extractors._trust_tenancies` reads each list for what it means, so a
+link is "Tenancy witness", "Landlord", "Tenant (home the subject lives in)", "Family
+member, same rented home" - never "named in property record" - and carries the property,
+the landlord, the lease dates, the status and the police station. The `relation` field
+beside a witness is his father's name; it is read as a relation only when it is a kinship
+word. `relations.py` turns each label into its sentence ("A was witness to the tenancy of
+B"). A link's label is fixed when the graph is built: older runs need a new search.
 
 **Who a name means** (`network.resolve`): every name the records give a person counts, not
 only the one shown - the exact name first, then a word of it, then the same name in the

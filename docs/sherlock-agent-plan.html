@@ -110,6 +110,7 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
 .bubble.desk .who { color: var(--red); }
 .bubble.team { border-left: 4px solid var(--violet); font-size: 13px; }
 .bubble.team .who { color: var(--violet); }
+pre.code { margin: 0; padding: 12px 14px; border-radius: 10px; background: var(--chip); color: var(--ink); font: 500 12.5px/1.5 var(--mono); overflow-x: auto; }
 /* Live status demo: the chat is dark, so the demo is too, in both themes. */
 .statusdemo { background: #131c33; border: 1px solid #22304d; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; max-width: 520px; }
 .sdrow { display: flex; align-items: baseline; gap: 8px; min-height: 24px; }
@@ -127,10 +128,425 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
 
 <div class="wrap">
   <header>
-    <div class="eyebrow">Plan · v5 · built on LangGraph · 12 October 2026</div>
+    <div class="eyebrow">Plan · v6 · built on LangGraph · 13 October 2026</div>
     <h1>Sherlock agent plan</h1>
-    <p class="lede">Two teams share one case board. The <b>Officer team</b> talks to the user and makes sure every question gets a correct answer. The <b>Sherlock team</b> works quietly to solve the case. The <b>Question desk</b> sits between them, so a question is never asked twice and every answer the user gives reaches Sherlock. In v5 the Sherlock team gets specialists for claims, contradictions, statements and leads, a Skeptic that tries to break the leading hypothesis, and an <b>Insight desk</b> that brings what they find to the officer.</p>
+    <p class="lede">Two teams share one case board. The <b>Officer team</b> talks to the user and makes sure every question gets a correct answer. The <b>Sherlock team</b> works quietly to solve the case. The <b>Question desk</b> sits between them, so a question is never asked twice and every answer the user gives reaches Sherlock. In v5 the Sherlock team gets specialists for claims, contradictions, statements and leads, a Skeptic that tries to break the leading hypothesis, and an <b>Insight desk</b> that brings what they find to the officer. <b>v6</b> makes Sherlock settle which case is being investigated before it reasons about it, keeps a trace of every agent on every question, and gives the report one fixed reading order.</p>
   </header>
+
+  <section class="panel" id="v6">
+    <h2>What changed in v6 <span class="pill new">built</span></h2>
+    <p class="sub">Built on 13 October 2026, after testing on live cases with the office model. All of it is in the code on branch <code>dev1.5</code>. 502 tests: 501 pass and one fails because of a one-word slip in <code>team/trace.py</code> (<a href="#v6-limits">Known limits</a>). To see it on the server the branch has to be deployed; runs searched before that keep their old link labels until a new search.</p>
+    <div class="rules">
+      <div><b>Which case is this?</b>A target can have no record, an unrelated past record, or be the accused of the very case being investigated. Sherlock asks once, naming the recent FIRs, and the model decides from the officer's words. <a href="#v6-case">Section</a></div>
+      <div><b>Nothing assumed about the current case</b>Until the officer says what the case is, no agent forms a theory about it: not in chat, not in Sherlock's assessment, not in the report. The target's past cases are told as the past and never mixed in.</div>
+      <div><b>A suspicion is understood</b>"I suspect the father killed his daughter himself" is matched to the murder FIR on file and recorded as the officer's suspicion. Before, Sherlock answered "new matter?" and asked what the case was again.</div>
+      <div><b>Agent trace for every question</b>Which agent ran, what it was given, what it answered, how long it took and whom it handed to. Kept per question and read through an API by run id. <a href="#v6-trace">Section</a></div>
+      <div><b>Report in a fixed reading order</b>Eight sections under headings and points: case summary, person by person, who said what, relations, timeline, contradictions, leads, next steps. The rest is annex. <a href="#v6-report">Section</a></div>
+      <div><b>Person by person</b>The target, then each related person: who they are, how they are tied to the target, the FIRs that name them, medical and other reports, what they said, what the police systems hold.</div>
+      <div><b>Relations pair by pair</b>One row for two people with every tie between them: co-accused in FIR 488/25, witness of the same tenancy, same employer on record. Each tie names its FIR number or record.</div>
+      <div><b>Timeline as the story of each FIR</b>The earliest FIR first: the people in it and their roles, each person's statement, the medical and lab reports and what they found, the investigation steps. Each case-diary step appears once.</div>
+      <div><b>Tenant register read by role</b>TRUST answers with tenancies by role. Each person is now linked as tenant, landlord, tenancy witness or family member, never "named in property record". <a href="#v6-trust">Section</a></div>
+      <div><b>Fewer, fresher questions</b>At most four questions wait for the officer, two of them Sherlock's own per run. Questions made stale by a new answer are withdrawn before they are asked. The sweep also reads the message just sent.</div>
+      <div><b>One lead per pattern</b>A pattern found again in a later run updates its lead instead of adding a second one. Leads are written around the person they concern, in plain words.</div>
+      <div><b>Cut-off model answers repaired</b>An answer the model did not finish inside its limit is closed and used when most of it is there, instead of failing the turn. The draft's first line comes first, so it survives a cut.</div>
+      <div><b>Urdu and English on one line</b>In the PDF a mostly-English line with Urdu names reads left to right, so names and FIR numbers no longer swap places.</div>
+      <div><b>Integration folder</b><code>integration/</code> now documents the which-case fields, the question keys, the report structure and the trace API for the portal developer.</div>
+    </div>
+
+    <h3 id="v6-diagram">The updated diagram: one question, one background run, one report</h3>
+    <p class="sub">The teams are the same as in v5. This shows the path inside them as it runs now, with every v6 addition marked. Node names are the names in the code and in the trace.</p>
+    <div class="legend">
+      <span style="--c:var(--navy)">Officer graph</span>
+      <span style="--c:var(--red)">Desk and checks</span>
+      <span style="--c:var(--blue)">Toolbox</span>
+      <span style="--c:var(--gold)">Case board</span>
+      <span style="--c:var(--violet)">Sherlock graph</span>
+      <span style="--c:var(--muted)">Report graph</span>
+      <span style="--c:var(--teal)">New or changed in v6</span>
+    </div>
+    <div class="diagram">
+      <svg viewBox="0 0 1200 1040" role="img" aria-labelledby="v6-t">
+        <title id="v6-t">A question runs through the Officer graph: read, then record or brief, draft with lookups, desk, check and present. Every node and model call is kept as an agent trace on the case board. The recorder also settles which case is being investigated. The link graph feeds the board, with the tenant register read by role. The board wakes the Sherlock graph, and after each Sherlock run the Report graph writes the report in eight sections.</title>
+        <defs>
+          <marker id="v-navy" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--navy)"/></marker>
+          <marker id="v-violet" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--violet)"/></marker>
+          <marker id="v-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--red)"/></marker>
+          <marker id="v-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--blue)"/></marker>
+          <marker id="v-gold" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--gold)"/></marker>
+          <marker id="v-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--teal)"/></marker>
+          <marker id="v-muted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker>
+        </defs>
+
+        <!-- Officer graph: one chat turn -->
+        <rect class="lane" x="20" y="20" width="1160" height="226" rx="14"/>
+        <text class="lanelbl" x="36" y="42" style="fill:var(--navy)">OFFICER GRAPH · ONE CHAT TURN</text>
+        <text class="al" x="1164" y="42" text-anchor="end">model off or no answer → rules node (fallback)</text>
+
+        <g class="box" style="--c:var(--muted)"><rect x="36" y="107" width="138" height="66" rx="10"/>
+          <text class="bt" x="48" y="129">Officer</text>
+          <text class="bs" x="48" y="147">asks, tells,</text>
+          <text class="bs" x="48" y="163">corrects</text></g>
+        <g class="box" style="--c:var(--navy)"><rect x="201" y="107" width="138" height="66" rx="10"/>
+          <text class="bt" x="213" y="129"><tspan class="id">O0 </tspan>Reader</text>
+          <text class="bs" x="213" y="147">node: read</text>
+          <text class="bs" x="213" y="163">question or info?</text></g>
+        <g class="box" style="--c:var(--navy)"><rect x="366" y="64" width="138" height="66" rx="10"/>
+          <text class="bt" x="378" y="86"><tspan class="id">O3 </tspan>Recorder</text>
+          <text class="bs" x="378" y="104">node: record</text>
+          <text class="bs" x="378" y="120">and: which case?</text>
+          <text class="al" x="496" y="78" text-anchor="end" style="fill:var(--teal)">v6</text></g>
+        <g class="box" style="--c:var(--navy)"><rect x="366" y="150" width="138" height="66" rx="10"/>
+          <text class="bt" x="378" y="172"><tspan class="id">O4 </tspan>Briefer</text>
+          <text class="bs" x="378" y="190">node: brief</text>
+          <text class="bs" x="378" y="206">dossier, facts</text></g>
+        <g class="box" style="--c:var(--navy)"><rect x="531" y="64" width="138" height="66" rx="10"/>
+          <text class="bt" x="543" y="86"><tspan class="id">O1 </tspan>Officer agent</text>
+          <text class="bs" x="543" y="104">node: draft</text>
+          <text class="bs" x="543" y="120">fills the answer</text></g>
+        <g class="box" style="--c:var(--blue)"><rect x="531" y="150" width="138" height="66" rx="10"/>
+          <text class="bt" x="543" y="172">Toolbox</text>
+          <text class="bs" x="543" y="190">node: lookup</text>
+          <text class="bs" x="543" y="206">board + API agent</text></g>
+        <g class="box" style="--c:var(--red)"><rect x="696" y="107" width="138" height="66" rx="10"/>
+          <text class="bt" x="708" y="129">Desk</text>
+          <text class="bs" x="708" y="147">not found · Q3</text>
+          <text class="bs" x="708" y="163">Q1: one question</text></g>
+        <g class="box" style="--c:var(--red)"><rect x="861" y="107" width="138" height="66" rx="10"/>
+          <text class="bt" x="873" y="129"><tspan class="id">O2 </tspan>Checker</text>
+          <text class="bs" x="873" y="147">node: check</text>
+          <text class="bs" x="873" y="163">right? sourced?</text></g>
+        <g class="box" style="--c:var(--navy)"><rect x="1026" y="107" width="138" height="66" rx="10"/>
+          <text class="bt" x="1038" y="129"><tspan class="id">O5 </tspan>Presenter</text>
+          <text class="bs" x="1038" y="147">node: present</text>
+          <text class="bs" x="1038" y="163">EN · Roman · Urdu</text></g>
+
+        <path class="ar" d="M174 140H199" style="stroke:var(--navy)" marker-end="url(#v-navy)"/>
+        <path class="ar" d="M339 140H352V97H364" style="stroke:var(--navy)" marker-end="url(#v-navy)"/>
+        <path class="ar" d="M352 140V183H364" style="stroke:var(--navy)" marker-end="url(#v-navy)"/>
+        <path class="ar" d="M435 130V148" style="stroke:var(--navy)" marker-end="url(#v-navy)"/>
+        <path class="ar" d="M450 64V52H765V105" style="stroke:var(--navy)" marker-end="url(#v-navy)"/>
+        <text class="al" x="607" y="47" text-anchor="middle">told us something, asked nothing</text>
+        <path class="ar" d="M504 183H517V97H529" style="stroke:var(--navy)" marker-end="url(#v-navy)"/>
+        <path class="ar" d="M600 130V148" style="stroke:var(--blue)" marker-start="url(#v-blue)" marker-end="url(#v-blue)"/>
+        <text class="al" x="612" y="143">max 2</text>
+        <path class="ar" d="M669 97H682V140H694" style="stroke:var(--navy)" marker-end="url(#v-navy)"/>
+        <path class="ar" d="M834 140H859" style="stroke:var(--red)" marker-end="url(#v-red)"/>
+        <path class="ar" d="M999 140H1024" style="stroke:var(--navy)" marker-end="url(#v-navy)"/>
+        <path class="ar" d="M1095 173V226H105V175" style="stroke:var(--navy)" marker-end="url(#v-navy)"/>
+        <text class="al" x="600" y="239" text-anchor="middle">the reply: checked, in the officer's language</text>
+
+        <!-- Agent trace -->
+        <path class="ar dash" d="M270 246V266" style="stroke:var(--teal)" marker-end="url(#v-teal)"/>
+        <path class="ar dash" d="M435 246V266" style="stroke:var(--teal)" marker-end="url(#v-teal)"/>
+        <path class="ar dash" d="M765 246V266" style="stroke:var(--teal)" marker-end="url(#v-teal)"/>
+        <path class="ar dash" d="M930 246V266" style="stroke:var(--teal)" marker-end="url(#v-teal)"/>
+        <path class="ar dash" d="M1130 246V266" style="stroke:var(--teal)" marker-end="url(#v-teal)"/>
+        <g class="box" style="--c:var(--teal)"><rect x="20" y="268" width="1160" height="64" rx="12"/>
+          <text x="40" y="292"><tspan class="bt">Agent trace</tspan><tspan class="al" dx="10" style="fill:var(--teal)">v6</tspan><tspan class="al" dx="12">one per question · the last 30 stay on the case board · never changes an answer</tspan></text>
+          <text class="al" x="1160" y="292" text-anchor="end">GET /graph/runs/{id}/trace · /trace/{turn|latest}</text>
+          <text class="boardrow" x="40" y="316">steps: agent, time, what it did  ·  model calls: given, answered, ms, used or failed  ·  flow: who handed what to whom  ·  late work</text></g>
+        <path class="ar" d="M930 332V354" style="stroke:var(--teal)" marker-end="url(#v-teal)"/>
+
+        <!-- Which case -->
+        <rect class="lane" x="20" y="356" width="660" height="196" rx="14"/>
+        <text class="lanelbl" x="36" y="378" style="fill:var(--navy)">WHICH CASE IS THIS? · ASKED ONCE, DECIDED BY THE MODEL</text>
+        <text class="al" x="664" y="378" text-anchor="end" style="fill:var(--teal)">v6</text>
+        <g class="box" style="--c:var(--red)"><rect x="36" y="404" width="190" height="66" rx="10"/>
+          <text class="bt" x="48" y="426">Asked once</text>
+          <text class="bs" x="48" y="444">names his recent FIRs:</text>
+          <text class="bs" x="48" y="460">same crime, or a new one?</text></g>
+        <g class="box" style="--c:var(--navy)"><rect x="250" y="404" width="190" height="66" rx="10"/>
+          <text class="bt" x="262" y="426"><tspan class="id">O3 </tspan>Recorder reads</text>
+          <text class="bs" x="262" y="444">his words, compared with</text>
+          <text class="bs" x="262" y="460">each FIR's own account</text></g>
+        <g class="box" style="--c:var(--gold)"><rect x="464" y="390" width="200" height="50" rx="10"/>
+          <text class="bt" x="476" y="411">New matter</text>
+          <text class="bs" x="476" y="429">past FIRs stay background</text></g>
+        <g class="box" style="--c:var(--gold)"><rect x="464" y="450" width="200" height="50" rx="10"/>
+          <text class="bt" x="476" y="471">Same as an FIR on file</text>
+          <text class="bs" x="476" y="489">date, place, offence taken</text></g>
+        <path class="ar" d="M226 437H248" style="stroke:var(--navy)" marker-end="url(#v-navy)"/>
+        <path class="ar" d="M440 437H452V415H462" style="stroke:var(--navy)" marker-end="url(#v-navy)"/>
+        <path class="ar" d="M452 437V475H462" style="stroke:var(--navy)" marker-end="url(#v-navy)"/>
+        <path class="ar" d="M664 415H698" style="stroke:var(--gold)" marker-end="url(#v-gold)"/>
+        <path class="ar" d="M664 475H698" style="stroke:var(--gold)" marker-end="url(#v-gold)"/>
+        <text class="al" x="36" y="522">Not declared yet → nothing is assumed about the current case, in chat or in the report.</text>
+        <text class="al" x="36" y="538">Case changes → stale questions withdrawn, hypotheses marked stale, Sherlock runs again.</text>
+
+        <!-- Case board -->
+        <rect class="boardr" x="700" y="356" width="480" height="196" rx="14"/>
+        <text x="720" y="384"><tspan class="boardt">CASE BOARD</tspan><tspan class="al" dx="12">one memory for every team</tspan></text>
+        <text class="boardrow" x="720" y="410">Incident · <tspan class="tier">which case: new matter | FIR on record</tspan></text>
+        <text class="boardrow" x="720" y="432">Officer's words · <tspan class="tier">suspected</tspan> · roles · read-back</text>
+        <text class="boardrow" x="720" y="454">Facts F# · Documents D# · Statements W# · Claims</text>
+        <text class="boardrow" x="720" y="476">Contradictions X# · Leads K# · Hypotheses H#</text>
+        <text class="boardrow" x="720" y="498">Questions Q# <tspan class="tier">(4 open at most)</tspan> · Entities E#</text>
+        <text class="boardrow" x="720" y="520"><tspan class="tier">Agent traces (last 30 questions)</tspan></text>
+        <text class="al" x="720" y="540">red = new or changed in v6</text>
+
+        <!-- Link graph -->
+        <rect class="lane" x="20" y="576" width="1070" height="56" rx="14"/>
+        <text class="lanelbl" x="36" y="598" style="fill:var(--teal)">LINK GRAPH · EACH POLICE SYSTEM READ FOR WHAT IT REALLY RETURNS</text>
+        <text class="al" x="1074" y="598" text-anchor="end" style="fill:var(--teal)">v6</text>
+        <text class="bs" x="36" y="618">TRUST tenant register: tenant, landlord, tenancy witness, family member. Each link carries the property, the lease dates and the police station.</text>
+        <path class="ar" d="M900 576V554" style="stroke:var(--teal)" marker-end="url(#v-teal)"/>
+        <path class="ar dash" d="M1120 552V646" style="stroke:var(--gold)" marker-end="url(#v-gold)"/>
+        <text class="al" transform="translate(1112 600) rotate(-90)" text-anchor="middle">wakes</text>
+        <path class="ar" d="M1160 648V554" style="stroke:var(--violet)" marker-end="url(#v-violet)"/>
+        <text class="al" transform="translate(1176 600) rotate(-90)" text-anchor="middle">writes</text>
+
+        <!-- Sherlock graph -->
+        <rect class="lane" x="20" y="648" width="1160" height="108" rx="14"/>
+        <text class="lanelbl" x="36" y="670" style="fill:var(--violet)">SHERLOCK GRAPH · ONE BACKGROUND RUN</text>
+        <g class="box" style="--c:var(--violet)"><rect x="36" y="682" width="204" height="66" rx="10"/>
+          <text class="bt" x="48" y="704">A2 · A5 · S10 · S5</text>
+          <text class="bs" x="48" y="722">records read, who is who,</text>
+          <text class="bs" x="48" y="738">register, claims, presence</text></g>
+        <g class="box" style="--c:var(--violet)"><rect x="267" y="682" width="204" height="66" rx="10"/>
+          <text class="bt" x="279" y="704">S6 · S7 · S8 together</text>
+          <text class="bs" x="279" y="722">contradictions, statements,</text>
+          <text class="bs" x="279" y="738">leads: one per pattern</text>
+          <text class="al" x="463" y="696" text-anchor="end" style="fill:var(--teal)">v6</text></g>
+        <g class="box" style="--c:var(--violet)"><rect x="498" y="682" width="204" height="66" rx="10"/>
+          <text class="bt" x="510" y="704">S2 → S1 ⇄ S9</text>
+          <text class="bs" x="510" y="722">summary, hypotheses, Skeptic</text>
+          <text class="bs" x="510" y="738">undeclared case: no theory</text>
+          <text class="al" x="694" y="696" text-anchor="end" style="fill:var(--teal)">v6</text></g>
+        <g class="box" style="--c:var(--violet)"><rect x="729" y="682" width="204" height="66" rx="10"/>
+          <text class="bt" x="741" y="704"><tspan class="id">S4 </tspan>Questioner</text>
+          <text class="bs" x="741" y="722">at most 4 open at a time</text>
+          <text class="bs" x="741" y="738">stale ones are withdrawn</text>
+          <text class="al" x="925" y="696" text-anchor="end" style="fill:var(--teal)">v6</text></g>
+        <g class="box" style="--c:var(--red)"><rect x="960" y="682" width="204" height="66" rx="10"/>
+          <text class="bt" x="972" y="704"><tspan class="id">Q3 </tspan>Insight desk</text>
+          <text class="bs" x="972" y="722">one finding per reply,</text>
+          <text class="bs" x="972" y="738">never told twice</text></g>
+        <path class="ar" d="M240 715H265" style="stroke:var(--violet)" marker-end="url(#v-violet)"/>
+        <path class="ar" d="M471 715H496" style="stroke:var(--violet)" marker-end="url(#v-violet)"/>
+        <path class="ar" d="M702 715H727" style="stroke:var(--violet)" marker-end="url(#v-violet)"/>
+        <path class="ar" d="M933 715H958" style="stroke:var(--violet)" marker-end="url(#v-violet)"/>
+        <path class="ar" d="M600 756V776" style="stroke:var(--muted)" marker-end="url(#v-muted)"/>
+        <text class="al" x="608" y="771">after every Sherlock run</text>
+
+        <!-- Report graph -->
+        <rect class="lane" x="20" y="778" width="1160" height="146" rx="14"/>
+        <text class="lanelbl" x="36" y="800" style="fill:var(--muted)">REPORT GRAPH · ONE REPORT FROM ONE FROZEN BOARD VERSION</text>
+        <g class="box" style="--c:var(--muted)"><rect x="36" y="831" width="120" height="66" rx="10"/>
+          <text class="bt" x="46" y="853"><tspan class="id">P1 </tspan>freeze</text>
+          <text class="bs" x="46" y="871">one board</text>
+          <text class="bs" x="46" y="887">version</text></g>
+        <g class="box" style="--c:var(--muted)"><rect x="180" y="819" width="120" height="26" rx="8"/>
+          <text class="bt" x="190" y="837" style="font-size:13px"><tspan class="id">P2 </tspan>evidence</text></g>
+        <g class="box" style="--c:var(--muted)"><rect x="180" y="851" width="120" height="26" rx="8"/>
+          <text class="bt" x="190" y="869" style="font-size:13px"><tspan class="id">P3 </tspan>statements</text></g>
+        <g class="box" style="--c:var(--muted)"><rect x="180" y="883" width="120" height="26" rx="8"/>
+          <text class="bt" x="190" y="901" style="font-size:13px"><tspan class="id">P4 </tspan>analysis</text></g>
+        <g class="box" style="--c:var(--muted)"><rect x="324" y="831" width="120" height="66" rx="10"/>
+          <text class="bt" x="334" y="853"><tspan class="id">P1 </tspan>editor</text>
+          <text class="bs" x="334" y="871">next steps,</text>
+          <text class="bs" x="334" y="887">annex, ids</text></g>
+        <g class="box" style="--c:var(--teal)"><rect x="468" y="831" width="120" height="66" rx="10"/>
+          <text class="bt" x="478" y="853"><tspan class="id">P2 </tspan>persons</text>
+          <text class="bs" x="478" y="871">each one: FIRs,</text>
+          <text class="bs" x="478" y="887">medical, record</text>
+          <text class="al" x="581" y="845" text-anchor="end" style="fill:var(--teal)">v6</text></g>
+        <g class="box" style="--c:var(--teal)"><rect x="612" y="831" width="120" height="66" rx="10"/>
+          <text class="bt" x="622" y="853"><tspan class="id">P4 </tspan>relations</text>
+          <text class="bs" x="622" y="871">pair by pair,</text>
+          <text class="bs" x="622" y="887">FIR no. named</text>
+          <text class="al" x="725" y="845" text-anchor="end" style="fill:var(--teal)">v6</text></g>
+        <g class="box" style="--c:var(--muted)"><rect x="756" y="831" width="120" height="66" rx="10"/>
+          <text class="bt" x="766" y="853"><tspan class="id">P5 </tspan>summary</text>
+          <text class="bs" x="766" y="871">10 headings,</text>
+          <text class="bs" x="766" y="887">written last</text></g>
+        <g class="box" style="--c:var(--red)"><rect x="900" y="831" width="120" height="66" rx="10"/>
+          <text class="bt" x="910" y="853"><tspan class="id">P6 </tspan>check</text>
+          <text class="bs" x="910" y="871">sources, ids,</text>
+          <text class="bs" x="910" y="887">no guessing</text></g>
+        <g class="box" style="--c:var(--muted)"><rect x="1044" y="831" width="120" height="66" rx="10"/>
+          <text class="bt" x="1054" y="853"><tspan class="id">P1 </tspan>build</text>
+          <text class="bs" x="1054" y="871">PDF, kept by</text>
+          <text class="bs" x="1054" y="887">board version</text></g>
+        <path class="ar" d="M156 864H168" style="stroke:var(--muted)"/>
+        <path class="ar" d="M168 832V896" style="stroke:var(--muted)"/>
+        <path class="ar" d="M168 832H178" style="stroke:var(--muted)" marker-end="url(#v-muted)"/>
+        <path class="ar" d="M168 864H178" style="stroke:var(--muted)" marker-end="url(#v-muted)"/>
+        <path class="ar" d="M168 896H178" style="stroke:var(--muted)" marker-end="url(#v-muted)"/>
+        <path class="ar" d="M300 832H312" style="stroke:var(--muted)"/>
+        <path class="ar" d="M300 896H312" style="stroke:var(--muted)"/>
+        <path class="ar" d="M312 832V896" style="stroke:var(--muted)"/>
+        <path class="ar" d="M300 864H322" style="stroke:var(--muted)" marker-end="url(#v-muted)"/>
+        <path class="ar" d="M444 864H466" style="stroke:var(--muted)" marker-end="url(#v-muted)"/>
+        <path class="ar" d="M588 864H610" style="stroke:var(--muted)" marker-end="url(#v-muted)"/>
+        <path class="ar" d="M732 864H754" style="stroke:var(--muted)" marker-end="url(#v-muted)"/>
+        <path class="ar" d="M876 856H898" style="stroke:var(--muted)" marker-end="url(#v-muted)"/>
+        <path class="ar dash" d="M900 876H878" style="stroke:var(--red)" marker-end="url(#v-red)"/>
+        <text class="al" x="888" y="914" text-anchor="middle">fails: back once</text>
+        <path class="ar" d="M1020 864H1042" style="stroke:var(--muted)" marker-end="url(#v-muted)"/>
+        <path class="ar" d="M1104 897V944" style="stroke:var(--muted)" marker-end="url(#v-muted)"/>
+
+        <!-- The report -->
+        <g class="box" style="--c:var(--muted)"><rect x="20" y="946" width="1160" height="78" rx="14"/>
+          <text x="40" y="972"><tspan class="bt">The report</tspan><tspan class="al" dx="12">fixed order · headings and points · the current case only as the officer declared it · everything else is annex</tspan></text>
+          <text class="boardrow" x="40" y="994">1 Case summary  ·  2 Person by person  ·  3 Who said what  ·  4 People and their relations, pair by pair</text>
+          <text class="boardrow" x="40" y="1012">5 Timeline: the story of each FIR, by date  ·  6 Contradictions with the evidence  ·  7 Hints and leads  ·  8 Next steps</text></g>
+      </svg>
+    </div>
+
+    <h3 id="v6-case">Which case is this?</h3>
+    <p class="sub">A person searched in Sherlock is in one of three situations. The records alone cannot tell which, so the officer is asked once, with the recent crimes named, and the answer is read by the model, not matched by keywords. Illustrative names and numbers.</p>
+    <div class="tablewrap">
+      <table class="wrapcells">
+        <thead><tr><th>Situation</th><th>What the records show</th><th>What Sherlock asks</th><th>What goes on the board</th></tr></thead>
+        <tbody>
+          <tr><td>No record</td><td>The target is in no FIR</td><td>Nothing about past crimes. The usual first questions: what happened, where, when</td><td>New matter</td></tr>
+          <tr><td>Unrelated past record</td><td>FIRs on file, and the officer describes a different crime</td><td>"Kamran is already on record: FIR 488/25, PS Gulberg - attempted murder (as accused, per PSRMS). Are you investigating Kamran for one of these same crimes (which one - and has Kamran already been arrested in it), or is this a new matter and these are only the earlier record?"</td><td>New matter. The past FIRs stay as background and are never read as evidence for it</td></tr>
+          <tr><td>Same case as an FIR on file</td><td>The officer's words fit one FIR: its number, or what it describes</td><td>The same question, or none when the message already says it</td><td>FIR on record: FIR number, date, time, place, offence and police station are taken from the FIR file, with the target's status (arrested or not). "When did it happen?" is not asked when the FIR gives the date</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="rules">
+      <div><b>The model compares, no rule decides</b>O3 is given each FIR on file with what it says in plain English: number, police station, sections, date, place, complainant and the facts. It decides whether the officer is talking about one of them. A missing FIR number no longer means "new matter".</div>
+      <div><b>Suspicion is its own field</b>"I suspect X" records X as suspected, as the officer's view. It becomes a role on the case, not a fact and not an FIR number.</div>
+      <div><b>Read back at once</b>"Noted: you suspect Aslam killed his daughter in FIR 214/26." The officer can correct it in the next message.</div>
+      <div><b>A changed case clears what was built on the old one</b>Unasked questions written for the old reading are withdrawn, hypotheses are marked stale and the Sherlock team runs again.</div>
+      <div><b>Until then, silence about the case</b>Chat, Sherlock's assessment and the report describe the target, the connections and the earlier cases. About the current case they say only that it has not been described yet.</div>
+    </div>
+    <div class="chat">
+      <div class="bubble officer"><span class="who">Officer</span>Mujhe shak hai ke Aslam ne apni beti ko khud qatl kiya.</div>
+      <div class="bubble sher"><span class="who">Officer agent · v6</span>Noted: you suspect Aslam killed his daughter in FIR 214/26, PS Saddar.<span class="q">Has Aslam been arrested in this FIR?</span></div>
+      <div class="bubble desk"><span class="who">Before v6</span>"Is this a new matter? Which crime are you investigating?" The recorder had only FIR numbers, and a rule read "no FIR number" as a new matter.</div>
+      <div class="bubble team"><span class="who">Case board</span>Which case: FIR on record, 214/26. Offence: murder (302 PPC), from the FIR file. Aslam: suspected by the officer. Sherlock runs again on the declared case.</div>
+    </div>
+
+    <h3 id="v6-trace">The agent trace</h3>
+    <p class="sub">To see why a question got the answer it got, give the run id from the portal link (<code>#run=…</code>). The trace shows every agent that worked on each question and how they talked to each other.</p>
+    <div class="cols">
+      <div>
+        <ul class="plain">
+          <li><b>steps</b>: each node of the graph in the order it ran: the agent, how long it took, what it did and what it passed on</li>
+          <li><b>model_calls</b>: every call to the model: which agent, in which step, the parts of its input and their size, what it answered, how long it took, and whether the answer was used, cached or failed</li>
+          <li><b>flow</b>: who handed what to whom, one line per hand-over, ending with the officer</li>
+          <li><b>late</b>: what finished after the reply had gone out</li>
+          <li><b>background_runs</b>: the Sherlock team's runs between questions, agent by agent</li>
+        </ul>
+        <div class="tablewrap" style="margin-top:12px">
+          <table class="wrapcells" style="min-width:0">
+            <thead><tr><th>Call</th><th>Returns</th></tr></thead>
+            <tbody>
+              <tr><td><code>GET /graph/runs/{id}/trace</code></td><td>Every traced question in brief: the question, the path, time, model calls, failed calls; and the background runs</td></tr>
+              <tr><td><code>GET /graph/runs/{id}/trace/{turn}</code></td><td>One question in full. <code>latest</code> for the newest. 404 for a turn that is not kept</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+<pre class="code">GET /graph/runs/{id}/trace/latest
+
+{ "turn": 7,
+  "question": "Kamran kitni FIRs mein hai?",
+  "path": ["read","brief","draft","desk","check","present"],
+  "ms": 9120,
+  "steps": [
+    { "n": 1, "node": "read", "agent": "O0 Question reader",
+      "ms": 1840, "passes": "a question about a person" } ],
+  "model_calls": [
+    { "agent": "O1 Officer agent", "step": "draft",
+      "kind": "officer_draft", "ms": 5210,
+      "ok": true, "cached": false,
+      "given": { "facts": "42 item(s), 9130 chars" },
+      "answer": { "first_line": "Kamran is named in 5 FIRs" } } ],
+  "flow": [
+    { "from": "O2 Checker", "to": "Presenter",
+      "handed_over": "the checked answer" } ],
+  "late": [] }</pre>
+      </div>
+    </div>
+    <div class="rules">
+      <div><b>Never changes an answer</b>Every hook is best-effort. A trace that fails to write is skipped, and the reply goes out the same.</div>
+      <div><b>Stays on the board</b>The last 30 questions of a run are kept with its case board. Nothing is sent anywhere.</div>
+      <div><b>For developers and admins</b>A trace holds what the case holds: names, records, the officer's words. It is not for the portal's ordinary users.</div>
+    </div>
+
+    <h3 id="v6-report">The report, in the order it is read</h3>
+    <p class="sub">The parts A to F of v5 are still built. v6 lays them out in one fixed reading order, each section under headings and points, and moves the working material (evidence register, systems checked, references) to the annex.</p>
+    <div class="tablewrap">
+      <table class="wrapcells">
+        <thead><tr><th>Section</th><th>Written by</th><th>What it holds</th></tr></thead>
+        <tbody>
+          <tr><td>1 · Case summary</td><td>P5 Summary writer</td><td>Ten headings of short points: the case in brief, the target, connections, earlier cases on record, what the evidence establishes, what is disputed, leads to check, where the case stands, what is not clear yet, next steps. When the case is not declared, code writes that line, not the model</td></tr>
+          <tr><td>2 · Person by person <span class="pill new">v6</span></td><td>P2 Person writer</td><td>The target, then each related person: who they are, how they are tied to the target, the FIRs that name them, medical and other reports about them, what they said, what the police systems hold</td></tr>
+          <tr><td>3 · Who said what</td><td>P3 Statement writer</td><td>Each person's recorded statements in order, what changed between them, what does not fit the evidence</td></tr>
+          <tr><td>4 · People and their relations <span class="pill new">v6</span></td><td>P4 Relations writer</td><td>One row for each pair of people with every tie between them and the record each tie comes from; the network picture; patterns found across the records</td></tr>
+          <tr><td>5 · Timeline <span class="pill new">v6</span></td><td>P3 Statement writer</td><td>The story of each case, earliest first: the FIR, the people in it and their roles, what each said, the medical and laboratory reports and what they found, what the investigation did. Then the dated records that belong to no case</td></tr>
+          <tr><td>6 · Contradictions with the evidence</td><td>P4 Analysis writer</td><td>Where two sources disagree or a statement does not fit a record: both sides, how serious, what would settle it</td></tr>
+          <tr><td>7 · Hints and leads</td><td>P4 Analysis writer</td><td>What looks worth checking and why, the next step for each, where each stands. Marked as not evidence</td></tr>
+          <tr><td>8 · Next steps</td><td>P1 Report editor</td><td>What to do now, in order, the questions still open and the reports awaited</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="cols">
+      <div>
+        <h3 style="margin-bottom:8px">Example: relations, one row per pair</h3>
+        <div class="tablewrap">
+          <table class="wrapcells" style="min-width:0">
+            <thead><tr><th>Pair</th><th>Every tie between them</th></tr></thead>
+            <tbody>
+              <tr><td>Kamran Ahmed and Imran Rashid</td><td>Co-accused in FIR 488/25, PS Gulberg · Co-accused in FIR 391/26, PS Model Town · Imran was witness to Kamran's tenancy, House 12, Model Town (TRUST)</td></tr>
+              <tr><td>Kamran Ahmed and Sajid Ali</td><td>Sajid is a named witness in FIR 488/25 · Same employer on record (PRVS)</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="sub" style="margin-top:8px">Pairs of people who only share an FIR as minor parties are left out, so the table stays readable.</p>
+      </div>
+      <div>
+        <h3 style="margin-bottom:8px">Example: timeline, one story per FIR</h3>
+        <div class="bubble sher longans"><span class="who">Timeline · illustrative</span>
+          <h4>FIR 112/24, PS Saddar · 14 June 2024 · cheque bounce</h4>
+          <ul><li>People: Kamran (accused), Tariq (complainant)</li><li>Tariq said: the cheque for the shop rent was returned unpaid [W1]</li><li>Reports: none on record</li><li>Investigation: notice served, bail granted. Each case-diary step once</li></ul>
+          <h4>FIR 488/25, PS Gulberg · 1 March 2025 · attempted murder</h4>
+          <ul><li>People: Kamran and Imran (accused), Asif (complainant), Naveed (injured)</li><li>Asif said: Kamran fired with a pistol [W2]. Imran said: at home all night [W3]</li><li>MLO: incised wound, right thigh; no firearm injury [D10]</li><li>Investigation: pistol recovered 9 March [D12]; challan not submitted</li></ul>
+          <h4>Dated records that belong to no case</h4>
+          <ul><li>10–12 Jan 2025: Hotel Eye stay, Faisalabad</li></ul>
+        </div>
+      </div>
+    </div>
+    <div class="rules">
+      <div><b>An undeclared case is never described</b>The summary's line about the current case comes from code. Sentences that lean on a past FIR to describe the new case are removed by the checker.</div>
+      <div><b>Past cases are told as past</b>"Earlier cases on record" and the person sections describe old FIRs in full, labelled as earlier.</div>
+      <div><b>Record lines keep their source</b>A line about the target, a connection or a past case cites its record or its system by name, such as [Hotel Eye].</div>
+    </div>
+
+    <h3 id="v6-trust">The tenant register (TRUST), read by role</h3>
+    <p class="sub">The reader expected an older response and found nothing, so a fallback linked everyone on a tenancy as "named in property record". TRUST really answers with the person's tenancies by role. Each list is now read for what it means.</p>
+    <div class="tablewrap">
+      <table class="wrapcells">
+        <thead><tr><th>In the TRUST answer</th><th>People linked</th><th>How the relation reads</th></tr></thead>
+        <tbody>
+          <tr><td>Tenancies as the tenant</td><td>Both witnesses, the landlord, the family members listed</td><td>"Imran was witness to the tenancy of Kamran" · "Sohail is landlord of Kamran" · family member, same rented home</td></tr>
+          <tr><td>Tenancies as a witness</td><td>The tenant, the other witness, the tenant's family</td><td>"Kamran was witness to the tenancy of Bilal" · "was a witness in the same tenancy as"</td></tr>
+          <tr><td>Tenancies as a family member</td><td>The tenant, the landlord and the witnesses of the home the person lives in</td><td>"is the tenant of the home of" · "was witness to the tenancy of the home of"</td></tr>
+          <tr><td>Properties owned</td><td>Tenants, their witnesses and families</td><td>"is tenant of" · "was witness to a tenancy in a property owned by"</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul class="plain">
+      <li>Each link carries the property address, the landlord, the lease dates, the status and the police station that verified it.</li>
+      <li>A tenancy witness signed the form to vouch for the tenant. It does not mean he lives in or owns the property; the chat agents are told this.</li>
+      <li>The register's "relation" field is the witness's father's name. It is read as a relation only when it is a kinship word such as wife or son.</li>
+    </ul>
+
+    <h3 id="v6-limits">Known limits</h3>
+    <div class="rules">
+      <div><b>One failing test</b><code>team/trace.py</code> line 38 names the draft node <code>"/mo/"</code> instead of <code>"draft"</code>. The draft step then shows as "draft" in a trace, not "O1 Officer agent". One word to restore.</div>
+      <div><b>"I suspect" can be recorded as sure</b>The suspicion itself is recorded as a suspicion, but its certainty is sometimes set to sure.</div>
+      <div><b>Whole-case answers are slow</b>"Tell me about the whole case" takes about 40 s on the office model and repeats itself when the case is not declared.</div>
+      <div><b>Roman Urdu drift</b>A reply to a Roman Urdu message can come back partly in English.</div>
+      <div><b>Old runs keep old wording</b>Lead text changes on the next background run. Link labels, including the tenant register ones, change only on a new search.</div>
+      <div><b>"When did it happen?"</b>Still asked when the FIR file itself holds no date of occurrence.</div>
+      <div><b>Report clean-up</b>A list of twenty items proposed for removal from the report is waiting for a decision. Nothing has been removed.</div>
+    </div>
+  </section>
 
   <section class="panel" id="v5">
     <h2>What changed in v5</h2>
@@ -156,7 +572,7 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
 
   <section class="panel" id="built">
     <h2>Built</h2>
-    <p class="sub">Every step of the build order is implemented and tested (491 tests). Where each part lives:</p>
+    <p class="sub">Every step of the build order is implemented and tested (502 tests; one fails, see <a href="#v6-limits">Known limits</a>). Where each part lives:</p>
     <div class="tablewrap">
       <table>
         <thead><tr><th>Part of the plan</th><th>Code</th><th>Tests</th></tr></thead>
@@ -190,6 +606,12 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
           <tr><td>Questioner sources, Insight desk Q3 <span class="pill new">v5</span></td><td><code>team/questions.py</code>, <code>team/insight_desk.py</code>, <code>question_desk.sweep</code></td><td><code>test_sherlock_v5.py</code>, <code>test_officer_graph.py</code></td></tr>
           <tr><td>Report team P1–P6: parts A–F, annex, the summary written last, internal and file versions <span class="pill new">v5</span></td><td><code>team/report_graph.py</code>, <code>case_report.py</code>, <code>report_pdf.py</code></td><td><code>test_sherlock_v5.py</code></td></tr>
           <tr><td>Golden cases: the harness and one made-up case <span class="pill new">v5</span></td><td><code>team/golden.py</code>, <code>scripts/golden_cases.py</code>, <code>tests/fixtures/golden/</code></td><td><code>test_sherlock_v5.py</code></td></tr>
+          <tr><td>Which case is this: the question, the model's decision, the FIR adopted <span class="pill new">v6</span></td><td><code>team/recorder.py</code> (<code>firs_on_file</code>, <code>adopt_fir</code>, <code>case_changed</code>), <code>evidence/questioner.py</code> (<code>recent_crimes</code>, <code>case:which</code>), <code>team/runtime.NEW_CASE</code></td><td><code>test_officer_graph.py</code>, <code>test_sherlock_v5.py</code></td></tr>
+          <tr><td>Agent trace for every question, and its API <span class="pill new">v6</span></td><td><code>team/trace.py</code>, <code>linkgraph/budget.CountingLlm</code>, <code>case_file.add_trace</code>, <code>api/linkgraph.py</code></td><td><code>test_officer_graph.py</code></td></tr>
+          <tr><td>Report in eight sections: person writer, relations by pair, timeline as case stories <span class="pill new">v6</span></td><td><code>team/report_graph.py</code> (<code>STRUCTURE</code>, <code>_persons</code>, <code>_relations</code>, <code>_story</code>), <code>evidence/report_pdf.py</code></td><td><code>test_sherlock_v5.py</code></td></tr>
+          <tr><td>Tenant register (TRUST) read by role <span class="pill new">v6</span></td><td><code>linkgraph/extractors.py</code> (<code>_trust_tenancies</code>), <code>linkgraph/relations.py</code>, <code>systems.MEANING</code></td><td><code>test_ems.py</code></td></tr>
+          <tr><td>Question limits, stale questions withdrawn, one lead per pattern <span class="pill new">v6</span></td><td><code>team/questions.py</code>, <code>casework.rank_gaps</code>, <code>question_desk.sweep</code>, <code>graph_analyst.restated</code>, <code>team/leads.py</code></td><td><code>test_sherlock_v5.py</code></td></tr>
+          <tr><td>Cut-off model answers repaired <span class="pill new">v6</span></td><td><code>agents/ollama.close_truncated</code>, <code>agents/openai_compat._repaired</code>, <code>team/officer_agent._Draft</code></td><td>-</td></tr>
         </tbody>
       </table>
     </div>
@@ -204,12 +626,13 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
         <h3 style="margin-bottom:8px">Officer graph: one chat turn</h3>
         <ol class="steps">
           <li><b>read</b> O0 reads the message with the model: act, people, answer shape, depth, language. No model, or no answer from it: the turn goes to <b>rules</b>, the one node where the keyword rules live.</li>
-          <li><b>record</b> O3, when the officer tells us something: the model fills the recorder's fields, marks corrections and says which open question was answered.</li>
+          <li><b>record</b> O3, when the officer tells us something: the model fills the recorder's fields, marks corrections and says which open question was answered. It also settles <a href="#v6-case">which case this is</a>. <span class="pill new">v6</span></li>
           <li><b>brief</b> A4 dossiers, O4 context pack, the Facts agent's exact counts, and every source the answer shape needs. Sherlock's quick view starts alongside when the reading says his judgment helps.</li>
           <li><b>draft</b> O1 fills the shape's sections with source ids. If something is missing he names the <b>lookups</b> he needs: any toolbox tool, with its arguments.</li>
           <li><b>lookup</b> The graph runs them in parallel. The live ones are the API agent. Then O1 drafts once more. Two drafts at most.</li>
           <li><b>desk</b> Nothing found: said plainly, with every place checked. Then one extra item: a critical finding from the Insight desk, else the Gatekeeper's question.</li>
           <li><b>check</b> O2, then <b>present</b> O5.</li>
+          <li><b>trace</b> Every node and model call of the turn is kept as one <a href="#v6-trace">agent trace</a> on the board. <span class="pill new">v6</span></li>
         </ol>
       </div>
       <div>
@@ -227,6 +650,7 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
           <li><b>freeze</b> P1 fixes one board version.</li>
           <li><b>evidence</b> P2, <b>statements</b> P3 and <b>analysis</b> P4 write their parts side by side.</li>
           <li><b>editor</b> P1 writes part F and the annex and links the ids.</li>
+          <li><b>persons</b> P2 writes each person's own section, then <b>relations</b> P4 writes the ties pair by pair. <span class="pill new">v6</span></li>
           <li><b>summary</b> P5, last. <b>check</b> P6 sends a failed summary back once.</li>
           <li><b>build</b> P1 keeps the report with its board version. It runs after every Sherlock run.</li>
         </ol>
@@ -245,7 +669,7 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
     <h2>Not built yet</h2>
     <p class="sub">What v5 describes and the code does not do yet, so nobody assumes it.</p>
     <div class="rules">
-      <div><b>A run on the real model and live systems</b>The 491 tests use scripted models and fake backends. Prompts, timings and the bars are not measured on Qwen 27B yet.</div>
+      <div><b>A run on the real model and live systems</b>The 502 tests use scripted models and fake backends. v6 was checked by hand against the office model on three live runs, read-only and replayed locally. Timings and the golden-case bars are still not measured.</div>
       <div><b>Golden cases with investigators</b>The harness, the scoring and one made-up case exist. The ten real or realistic cases, and the starting scores, are still to do.</div>
       <div><b>Checks left to the model</b>Weapon against injury, order of events and counts between statements are judged by the model on the pairs code flags, not by a code table. Times, impossible travel and identifiers are code.</div>
       <div><b>Question ranking</b>Questions are ranked by the severity of what they come from, not by a computed effect on the hypothesis matrix.</div>
@@ -291,7 +715,7 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
       <div class="teamcard" style="--c:var(--navy)"><b class="t">Officer team</b><span class="job">Answers what the user asked, correctly.</span><span>Officer agent, Case briefer, Answer checker, Presenter (the voice the user reads), Statement recorder. Knows the whole chat and the case summary, uses any tool in the toolbox, and can ask Sherlock what he thinks.</span></div>
       <div class="teamcard" style="--c:var(--violet)"><b class="t">Sherlock team</b><span class="job">Solves the case in the background.</span><span>Sherlock (lead), Fact collector, Claim extractor, Contradiction finder, Statement analyst, Lead spotter, Skeptic, Summarizer, Questioner. Uses the same toolbox.</span></div>
       <div class="teamcard" style="--c:var(--red)"><b class="t">Question and Insight desk</b><span class="job">No repeated questions or findings; answers go back to Sherlock.</span><span>Gatekeeper, Insight desk and ledger. Every question from the Questioner passes the Gatekeeper; every finding Sherlock wants the officer to hear passes the Insight desk.</span></div>
-      <div class="teamcard" style="--c:var(--muted)"><b class="t">Report team</b><span class="job">Writes the case report from the board. Never judges.</span><span>Report editor, Evidence writer, Statements and timeline writer, Analysis writer, Summary writer, Report checker. Builds the report after every Sherlock run.</span></div>
+      <div class="teamcard" style="--c:var(--muted)"><b class="t">Report team</b><span class="job">Writes the case report from the board. Never judges.</span><span>Report editor, Evidence writer, Person writer, Statements and timeline writer, Analysis writer, Relations writer, Summary writer, Report checker. Builds the report after every Sherlock run.</span></div>
       <div class="teamcard" style="--c:var(--blue)"><b class="t">Shared toolbox</b><span class="job">Finds information. Never guesses.</span><span>Board reader, Dossier, Chat memory, Report reader, CDR query, API router, Statements, Presence matrix.</span></div>
       <div class="teamcard" style="--c:var(--teal)"><b class="t">Ingest team</b><span class="job">Fills the case board while the graph builds.</span><span>Graph analyst, Document reader, Dossier agent, Entity resolver.</span></div>
       <div class="teamcard" style="--c:var(--orange)"><b class="t">CDR team</b><span class="job">Turns every CDR, tower dump or CDR report into facts.</span><span>Intake, Enricher, Pattern analyst, Location analyst, Cross-CDR linker, Fact writer. Starts as soon as a CDR is provided.</span></div>
@@ -300,6 +724,7 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
 
   <section class="panel">
     <h2>How it works</h2>
+    <p class="sub">The teams and how they share the case board. What runs inside them since v6 is in the <a href="#v6-diagram">updated diagram</a>.</p>
     <div class="legend">
       <span style="--c:var(--navy)">Officer team</span>
       <span style="--c:var(--violet)">Sherlock team</span>
@@ -453,9 +878,9 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
         <!-- Case board -->
         <rect class="boardr" x="20" y="690" width="1160" height="116" rx="14"/>
         <text x="40" y="718"><tspan class="boardt">CASE BOARD</tspan><tspan class="al" dx="12">shared memory · every entry has a source and a tier</tspan></text>
-        <text class="boardrow" x="40" y="744">Facts F# <tspan class="tier">[fact | inference | speculation]</tspan>  ·  Documents D#  ·  Evidence register  ·  Dossiers  ·  Incident  ·  Roles  ·  Timeline</text>
+        <text class="boardrow" x="40" y="744">Facts F# <tspan class="tier">[fact | inference | speculation]</tspan>  ·  Documents D#  ·  Evidence register  ·  Dossiers  ·  Incident, which case  ·  Roles  ·  Timeline</text>
         <text class="boardrow" x="40" y="766">User statements  ·  Recorded statements W#  ·  Claims  ·  Contradictions X#  ·  Leads K#  ·  Answered questions Q#</text>
-        <text class="boardrow" x="40" y="788">Summary  ·  Hypothesis matrix H#  ·  Skeptic's challenges  ·  Ranked gaps  ·  Findings told  ·  Conversation</text>
+        <text class="boardrow" x="40" y="788">Summary  ·  Hypothesis matrix H#  ·  Skeptic's challenges  ·  Ranked gaps  ·  Findings told  ·  Conversation  ·  Agent traces</text>
 
         <!-- Ingest -->
         <rect class="lane" x="20" y="822" width="1160" height="100" rx="14"/>
@@ -1241,6 +1666,7 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
           </table>
         </div>
         <p class="sub" style="margin-top:10px">Read back: "Note kar liya: muddai ke mutabiq Kamran ne 11 Oct raat taqreeban 10 baje fire kiya."</p>
+        <p class="sub" style="margin-top:10px"><span class="pill new">v6</span> O3 also records whom the officer suspects, and decides whether his words are about an FIR already on file: <a href="#v6-case">Which case is this?</a></p>
       </div>
     </div>
   </section>
@@ -1452,6 +1878,7 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
   <section class="panel" id="report">
     <h2>The case report: structured knowledge for the investigator <span class="pill new">v5</span></h2>
     <p class="sub">The PDF the officer downloads holds everything the teams know about the case, organized so an investigator can read it top down: first a structured summary in plain language, then the evidence, the statements, the analysis, one timeline and the actions to take. Its own <b>Report team</b> writes it and makes no new judgments. It lays out what is on the board, so the report and the chat always agree. Today <code>case_report.assemble</code> makes one model call over the graph and case file and nothing from the chat, the CDR team or Sherlock reaches it; v5 replaces that.</p>
+    <p class="sub"><span class="pill new">v6</span> The report is now read in a fixed order of eight sections, with the working material moved to the annex. This section describes the v5 parts those sections are built from: <a href="#v6-report">The report, in the order it is read</a>.</p>
 
     <h3>The executive summary</h3>
     <p class="sub">One to two pages of plain-language paragraphs in a fixed order, covering facts, contradictions, leads, what is missing and what to do. Every sentence cites its ids, so a reader can jump to the detail. It is written last by P5 Summary writer, from the finished parts, and checked by P6 Report checker.</p>
@@ -1652,6 +2079,8 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
           <div class="agent" style="--c:var(--muted)"><div class="role">P2 Evidence writer <span class="pill new">v5</span></div><p>Part A overview and people, Part B records and evidence: FIRs, medical, forensic and lab, recoveries, police system records (Hotel Eye, tenant, NADRA, SIMs, vehicles, PSRMS), CDR and presence, evidence by topic.</p><div class="io">in: S10, A4, CDR team</div></div>
           <div class="agent" style="--c:var(--muted)"><div class="role">P3 Statements and timeline <span class="pill new">v5</span></div><p>Part C statements and Q&amp;A, Part E master timeline with sources and conflicting times side by side.</p><div class="io">in: S7, O3, ledger, S2, S10</div></div>
           <div class="agent" style="--c:var(--muted)"><div class="role">P4 Analysis writer <span class="pill new">v5</span></div><p>Part D: contradictions and leads registers, hypothesis matrix, Skeptic's challenges, suspicions, how the assessment changed. Filters what the file version may not hold.</p><div class="io">in: S6, S8, S1, S9</div></div>
+          <div class="agent" style="--c:var(--muted)"><div class="role">P2 Person writer <span class="pill new">v6</span></div><p>One section for the target and one for each related person: who they are, the tie to the target, FIRs, medical and other reports, statements, police system records.</p><div class="io">in: A4 dossiers, S10, W#, graph</div></div>
+          <div class="agent" style="--c:var(--muted)"><div class="role">P4 Relations writer <span class="pill new">v6</span></div><p>One row for each pair of people with every tie between them, each tie with its FIR number or record. Leaves out pairs who only share an FIR as minor parties.</p><div class="io">in: graph relations, FIR cards</div></div>
           <div class="agent" style="--c:var(--muted)"><div class="role">P5 Summary writer <span class="pill new">v5</span></div><p>Writes the seven-part executive summary last, from the finished parts, every sentence with its ids.</p><div class="io">in: Parts A–F</div></div>
           <div class="agent" style="--c:var(--muted)"><div class="role">P6 Report checker <span class="pill ext">from O2</span></div><p>Checks ids, numbers, tiers, stale entries, the report shape, and that every summary sentence is backed by the body. Sends a failed section back once.</p><div class="io">rules from: sherlock_team.validate</div></div>
         </div></div>
@@ -1722,6 +2151,7 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
           <tr><td>User asks a question</td><td>Officer team</td><td>Answer it; Sherlock is not waited on</td></tr>
           <tr><td>User answers or gives info</td><td>O3 → ledger → Sherlock team</td><td>Recorded, question closed, Sherlock re-assesses</td></tr>
           <tr><td>User corrects earlier info</td><td>O3 → ledger → the agents behind each stale entry → Sherlock team</td><td>Old answer replaced; everything built on it redone (<a href="#corrections">Corrections</a>)</td></tr>
+          <tr><td>The officer says which case it is, or changes it <span class="pill new">v6</span></td><td>O3 → Sherlock team</td><td>Unasked questions from the old reading withdrawn, hypotheses marked stale, a fresh run on the declared case</td></tr>
           <tr><td>Graph phase finished, a batch finished, or 15 facts from outside any batch</td><td>S10 → S5 → S6, S7, S8 → S2 → S1 → S9 → S1 → S4 → Q1, Q3</td><td>Claims checked, assessment current and challenged; new questions and findings filtered</td></tr>
           <tr><td>Sherlock run finished <span class="pill new">v5</span></td><td>Report team: P1 → P2, P3, P4 → P5 → P6 → P1</td><td>Report prebuilt for this board version, so the download is instant</td></tr>
           <tr><td>Critical contradiction found <span class="pill new">v5</span></td><td>Q3 at once</td><td>Badge on the case board panel; leads the next reply</td></tr>
@@ -1740,7 +2170,7 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
 
   <section class="panel" id="golden">
     <h2>Testing Sherlock: golden cases <span class="pill new">v5</span></h2>
-    <p class="sub">The 491 tests check that the parts work. They don't say whether Sherlock got better or worse at solving a case after a prompt or model change. Golden cases do.</p>
+    <p class="sub">The 502 tests check that the parts work. They don't say whether Sherlock got better or worse at solving a case after a prompt or model change. Golden cases do.</p>
     <div class="cols">
       <div>
         <h3 style="margin-bottom:8px">What a golden case is</h3>
@@ -1801,6 +2231,11 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
       <li><b>Statement recorder fields</b> <span class="pill new">v5</span>. Original speaker, how known, certainty and tolerance, event date from relative words, A5 names, one fact per entry, read-back line.</li>
       <li><b>Fact collector S10</b> <span class="pill new">v5</span>. Typed cards in A2 for MLO, postmortem, DNA, chemical, forensic, recovery memo and site plan; the register by record, person, topic and time; links across records; chain of custody; pending reports as gaps; the Evidence register tool.</li>
       <li><b>Questioner sources</b> <span class="pill new">v5</span>. Questions from X#, K#, W#, gaps and A5; ranking by impact on the matrix; source id on each question and answers written back; open tasks.</li>
+      <li><b>Which case is this</b> <span class="pill new">v6 · done</span>. The <code>case:which</code> question naming the recent crimes; the recorder compares the officer's words with each FIR on file; the FIR's date, place and offence adopted; no theory about an undeclared case.</li>
+      <li><b>Agent trace</b> <span class="pill new">v6 · done</span>. Steps, model calls, hand-overs and late work per question on the board; the trace API by run id.</li>
+      <li><b>Report structure</b> <span class="pill new">v6 · done</span>. Eight sections in a fixed order; the Person writer; relations pair by pair; the timeline as the story of each FIR; undeclared case never described.</li>
+      <li><b>Police systems read for what they return</b> <span class="pill new">v6 · started</span>. TRUST done: tenant, landlord, witness, family. The other systems to be checked the same way against their real responses.</li>
+      <li><b>Questions and leads kept fresh</b> <span class="pill new">v6 · done</span>. Four open questions at most; stale ones withdrawn; one lead per pattern.</li>
     </ol>
   </section>
 
@@ -1817,6 +2252,8 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
       <div><h3>Insight threshold <span class="pill new">v5</span></h3><p class="sub">Recommended: critical and major findings. Alternative: critical only, for fewer interruptions.</p></div>
       <div><h3>Golden cases <span class="pill new">v5</span></h3><p class="sub">Who builds them with us, and may closed real cases be used once anonymised?</p></div>
       <div><h3>Cross-case hits <span class="pill new">v5</span></h3><p class="sub">Flag a number or CNIC that appears in another open case, within the officer's access? Recommended later, once access rules for other cases are agreed.</p></div>
+      <div><h3>Report clean-up <span class="pill new">v6</span></h3><p class="sub">Twenty items are proposed for removal from the report, plus three to decide: keep Sherlock's assessment, the evidence register and references, and the list of live calls? Nothing is removed until this is answered.</p></div>
+      <div><h3>Who may read a trace <span class="pill new">v6</span></h3><p class="sub">Recommended: developers and admins only. A trace holds names, records and the officer's own words.</p></div>
     </div>
   </section>
 </div>

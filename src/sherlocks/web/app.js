@@ -6,8 +6,9 @@
  *
  * Embedding in another portal: define window.SHERLOCKS_CONFIG before this script -
  *   { apiBase, token, embedded: true, savedRun, backend ('ems' pins the data source),
+ *     theme ('light' | 'dark': the default until the officer picks one with the header toggle),
  *     onRunStarted(runId), onRunComplete(run), onCaseUpdated(run), onTokenExpired() -> Promise<token|null> }
- * and use window.Sherlocks (loadGraph, openRun, setToken, currentRun, openChat, downloadReport). The host owns
+ * and use window.Sherlocks (loadGraph, openRun, setToken, currentRun, openChat, downloadReport, setTheme). The host owns
  * accounts and saved graphs; see docs/INTEGRATION.md.
  */
 (() => {
@@ -60,6 +61,9 @@
     ["sherlockStatus", ["sherlockFab", "sherlockPanel"], "<button id=\"sherlockFab\" class=\"fab\" type=\"button\" title=\"Chat with Sherlock about this case\">\n      <svg viewBox=\"0 0 32 32\" aria-hidden=\"true\"><path d=\"M6 14c0-5 4.5-8 10-8s10 3 10 8H6z\" fill=\"#fbbf24\"/><rect x=\"4\" y=\"13\" width=\"24\" height=\"3\" rx=\"1.5\" fill=\"#d97706\"/><circle cx=\"16\" cy=\"21\" r=\"5.5\" fill=\"none\" stroke=\"#e6ebf5\" stroke-width=\"2.2\"/><path d=\"M20 25l5 5\" stroke=\"#e6ebf5\" stroke-width=\"2.6\" stroke-linecap=\"round\"/></svg>\n      <span id=\"fabBadge\" class=\"fabbadge\" hidden></span>\n    </button>\n    <section id=\"sherlockPanel\" class=\"sherlock\" hidden aria-label=\"Sherlock case chat\">\n      <header class=\"shhead\">\n        <span class=\"shavatar big\" aria-hidden=\"true\"><svg viewBox=\"0 0 32 32\"><path d=\"M6 14c0-5 4.5-8 10-8s10 3 10 8H6z\" fill=\"#fbbf24\"/><rect x=\"4\" y=\"13\" width=\"24\" height=\"3\" rx=\"1.5\" fill=\"#d97706\"/><circle cx=\"16\" cy=\"21\" r=\"5.5\" fill=\"none\" stroke=\"#e6ebf5\" stroke-width=\"2.2\"/><path d=\"M20 25l5 5\" stroke=\"#e6ebf5\" stroke-width=\"2.6\" stroke-linecap=\"round\"/></svg></span>\n        <div class=\"shwho\">\n          <b>Sherlock</b>\n          <span class=\"shstatus\"><i class=\"dot\"></i><span id=\"sherlockStatus\">online</span> · <span id=\"sherlockCtx\"></span></span>\n        </div>\n        <button id=\"sherlockClose\" class=\"shclose\" type=\"button\" title=\"Close\" aria-label=\"Close\">×</button>\n      </header>\n      <div id=\"sherlockLog\" class=\"shlog\"></div>\n      <div id=\"sherlockQuick\" class=\"shquick\">\n        <button type=\"button\" data-q=\"Summarise this case: who are the targets, what connects them, and what do the documents establish?\">Summarise the case</button>\n        <button type=\"button\" data-q=\"How are the targets connected? Give every route with its source.\">How are they connected?</button>\n        <button type=\"button\" data-q=\"Who keeps reappearing across records and documents (witness, guarantor, co-accused, hotel, SIM owner)?\">Who keeps reappearing?</button>\n        <button type=\"button\" data-q=\"What do the FIR files, case diaries and lab reports say about the targets?\">What do the documents say?</button>\n      </div>\n      <form id=\"sherlockForm\" class=\"shform\">\n        <button type=\"button\" id=\"sherlockAttach\" class=\"shattach\" title=\"Upload a file for the agents to read: image (JPG, PNG), PDF, Word (.docx) or Excel (.xlsx) - CDRs, tower dumps, documents, photos\">📎</button>\n        <button type=\"button\" id=\"sherlockPin\" class=\"shattach\" title=\"Pin the incident location on the map\">📍</button>\n        <input type=\"file\" id=\"sherlockFile\" accept=\".jpg,.jpeg,.png,.pdf,.docx,.xlsx\" multiple hidden>\n        <div class=\"shinput\">\n          <textarea id=\"sherlockInput\" rows=\"1\" placeholder=\"Message Sherlock - English, اردو or Roman Urdu\" dir=\"auto\" autocomplete=\"off\"></textarea>\n        </div>\n        <button class=\"shsend\" type=\"submit\" id=\"sherlockSend\" title=\"Send\" aria-label=\"Send\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M3.4 20.4 21 12 3.4 3.6 3.4 10l12.6 2-12.6 2z\" fill=\"currentColor\"/></svg></button>\n      </form>\n    </section>", "details"],
     ["docDlg", ["docDlg"], "<dialog id=\"docDlg\" class=\"docdlg\">\n    <form method=\"dialog\" class=\"dlghead\"><b id=\"docTitle\">Document</b><button class=\"ghost\">Close</button></form>\n    <div id=\"docBody\" class=\"docbody\"></div>\n  </dialog>", "keyDlg"],
     ["mapDlg", ["mapDlg"], "<dialog id=\"mapDlg\" class=\"mapdlg\">\n    <form method=\"dialog\" class=\"dlghead\"><b>Pin the incident location</b><button class=\"ghost\" value=\"cancel\">Close</button></form>\n    <p class=\"muted small\">Click the map where the incident happened (or type the coordinates), add the date and time, and save. The agents then check whose phones were near the point and find the nearest police station.</p>\n    <div id=\"incidentMap\" class=\"incidentmap\"></div>\n    <div class=\"maprow\">\n      <label>Latitude <input id=\"incLat\" inputmode=\"decimal\" placeholder=\"24.8607\"></label>\n      <label>Longitude <input id=\"incLon\" inputmode=\"decimal\" placeholder=\"67.0011\"></label>\n      <label class=\"wide\">Place <input id=\"incPlace\" placeholder=\"e.g. University Road, Block 5, Gulshan-e-Iqbal\"></label>\n      <label>Date <input id=\"incDate\" type=\"date\"></label>\n      <label>Time <input id=\"incTime\" type=\"time\"></label>\n      <label>FIR <input id=\"incFir\" placeholder=\"604/2025\"></label>\n    </div>\n    <div class=\"dlgbtns\"><span id=\"mapMsg\" class=\"muted small\"></span><button type=\"button\" id=\"incSave\" class=\"primary\">Save incident</button></div>\n  </dialog>", "keyDlg"],
+    ["themeBtn", [], "<button id=\"themeBtn\" class=\"themebtn\" type=\"button\" title=\"Switch to dark theme\" aria-label=\"Switch colour theme\"><svg class=\"moon\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z\"/></svg><svg class=\"sun\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"4.5\"/><path d=\"M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4\"/></svg></button>", "historyBtn"],
+    ["groupBtn", [], "<button id=\"groupBtn\" type=\"button\" title=\"Select a person with everyone attached to them, then drag any of them to move the whole group (also: double-click a person, or Shift + drag a box)\">Select group</button>", "boardBtn"],
+    ["findHead", [], "<div id=\"findHead\" class=\"findhead\"><span class=\"findicon\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.4\" stroke-linecap=\"round\"><circle cx=\"11\" cy=\"11\" r=\"7\"/><path d=\"m20 20-3.5-3.5\"/></svg></span><div><b>Find a person</b><span>Search every connected system at once</span></div></div>", "modeTabs"],
   ]) {
     if ($(sentinel)) continue;
     for (const id of ids) $(id)?.remove();
@@ -67,6 +71,43 @@
     if (at) at.insertAdjacentHTML('beforebegin', html);
     else document.body.insertAdjacentHTML('beforeend', html);
   }
+  // Light or dark: the officer's own choice (kept in this browser) wins, then the host
+  // portal's default (SHERLOCKS_CONFIG.theme), then light.
+  const THEME_KEY = 'sherlocks_theme';
+  function setTheme(theme, remember) {
+    const t = theme === 'dark' ? 'dark' : 'light';
+    document.documentElement.dataset.theme = t;
+    if (remember) { try { localStorage.setItem(THEME_KEY, t); } catch (_) { /* storage blocked */ } }
+    const b = $('themeBtn');
+    if (b) b.title = t === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
+  }
+  let savedTheme = null;
+  try { savedTheme = localStorage.getItem(THEME_KEY); } catch (_) { /* storage blocked */ }
+  setTheme(savedTheme || HOST.theme || 'light');
+  $('themeBtn')?.addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark', true));
+
+  // "Max people searched" as − value +.
+  (() => {
+    const input = $('maxPersons');
+    if (!input || input.parentElement.classList.contains('stepper')) return;
+    const box = document.createElement('div');
+    box.className = 'stepper';
+    input.replaceWith(box);
+    const button = (text, label, delta) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = text;
+      b.setAttribute('aria-label', label);
+      b.onclick = () => {
+        const min = Number(input.min) || 1;
+        const max = Number(input.max) || 100;
+        input.value = Math.min(max, Math.max(min, (Number(input.value) || 0) + delta));
+      };
+      return b;
+    };
+    box.append(button('−', 'Fewer people', -1), input, button('+', 'More people', 1));
+  })();
+
   const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const dashCnic = (c) => (c && c.length === 13 ? `${c.slice(0, 5)}-${c.slice(5, 12)}-${c.slice(12)}` : c || '');
   const dashPhone = (p) => (p && p.length === 11 ? `${p.slice(0, 4)}-${p.slice(4)}` : p || '');
@@ -254,13 +295,15 @@
 
   // ------------------------------------------------------------------ form
 
+  const DEPTH_NAMES = { 1: 'Direct', 2: 'Contacts', 3: 'Network', 4: 'Deep' };
+
   function renderForm(config) {
     const depthBox = $('depth');
     depthBox.innerHTML = '';
     for (let d = 1; d <= config.depth.max; d += 1) {
       const b = document.createElement('button');
       b.type = 'button';
-      b.textContent = d;
+      b.innerHTML = `<b>${d}</b><small>${DEPTH_NAMES[d] || ''}</small>`;
       b.className = d === state.depth ? 'on' : '';
       b.onclick = () => { state.depth = d; renderForm(config); };
       depthBox.appendChild(b);
@@ -284,7 +327,13 @@
     const count = () => {
       const all = $('systemsList').querySelectorAll('input');
       const on = [...all].filter((i) => i.checked).length;
-      $('systemsCount').textContent = `${on} of ${all.length}`;
+      $('systemsCount').textContent = `${on} of ${all.length} active`;
+      let bar = $('systemsBar');
+      if (!bar) {
+        $('systemsBox').insertAdjacentHTML('afterend', '<div class="sysbar"><i id="systemsBar"></i></div>');
+        bar = $('systemsBar');
+      }
+      bar.style.width = `${all.length ? Math.round((100 * on) / all.length) : 0}%`;
     };
     $('systemsList').onchange = count;
     $('sysAll').onclick = (e) => { e.preventDefault(); $('systemsList').querySelectorAll('input').forEach((i) => { i.checked = true; }); count(); };
@@ -309,7 +358,7 @@
 
   function updateBadge(kind) {
     const badge = $('backendBadge');
-    const labels = { demo: 'Demo data', ems: 'All systems · LIVE', live: 'Shield · LIVE' };
+    const labels = { demo: 'Demo data', ems: 'All systems live', live: 'Shield live' };
     badge.textContent = labels[kind] || kind;
     badge.className = `badge ${kind === 'demo' ? 'demo' : 'live'}`;
     // Caller ID only exists on the Shield backend; EMS/demo have no such API, so the
@@ -1695,6 +1744,7 @@
 
   const cy = cytoscape({
     container: $('cy'),
+    boxSelectionEnabled: true,   // Shift + drag on empty space draws a box: a group to move together
     wheelSensitivity: 0.25,
     minZoom: 0.08,
     maxZoom: 3,
@@ -1748,8 +1798,19 @@
       { selector: 'edge[sym = 1]', style: { 'target-arrow-shape': 'none', 'source-arrow-shape': 'none' } },
       { selector: 'edge.cmppath', style: { 'line-color': '#22d3ee', 'target-arrow-color': '#22d3ee', width: 5, opacity: 1, 'z-index': 19 } },
       { selector: ':selected', style: { 'overlay-color': '#fbbf24', 'overlay-opacity': 0.18, 'overlay-padding': 6 } },
+      { selector: 'node[kind="person"]:selected', style: { 'overlay-shape': 'ellipse', 'overlay-opacity': 0.28, 'overlay-padding': 9 } },
     ],
   });
+
+  // The toolbar is a bar across the top of the stage: the graph starts below it, so
+  // "Fit" never puts a person under the buttons. Its height changes as it wraps.
+  const toolbarEl = document.querySelector('.stage .toolbar');
+  if (toolbarEl && window.ResizeObserver) {
+    new ResizeObserver(() => {
+      $('cy').style.top = `${toolbarEl.offsetTop + toolbarEl.offsetHeight}px`;
+      cy.resize();
+    }).observe(toolbarEl);
+  }
 
   function initials(name) {
     const parts = String(name || '?').replace(/[^A-Za-z؀-ۿ ]/g, ' ').trim().split(/\s+/);
@@ -2719,6 +2780,7 @@
     const id = evt.target.id();
     const isPerson = state.nodes.get(id)?.kind === 'person';
     const oe = evt.originalEvent || {};
+    if (state.groupMode && !state.pickFor) { selectGroup(evt.target); return; }
     // "Compare with…" is waiting for its second person.
     if (state.pickFor && isPerson && state.pickFor !== id) {
       const first = state.pickFor;
@@ -2736,7 +2798,62 @@
     select(id);
   });
   cy.on('tap', 'edge', (evt) => select(evt.target.data('ref') || evt.target.id()));
-  cy.on('tap', (evt) => { if (evt.target === cy) closeDetails(); });
+  cy.on('tap', (evt) => { if (evt.target === cy) { closeDetails(); clearGroup(); } });
+
+  // ---- Groups: a person with everyone attached to them, moved as one -------------------
+  // Selected nodes move together when any one of them is dragged (cytoscape does that by
+  // itself); these only choose what is selected. "Select group" mode: click a person to
+  // take them with everything linked to them, drag on empty space to draw a box. Outside
+  // the mode: double-click a person, or Shift + drag a box.
+  function groupBanner() {
+    let el = $('groupBanner');
+    if (!el) {
+      $('cy').insertAdjacentHTML('afterend', '<div id="groupBanner" class="pickbanner groupbanner" hidden></div>');
+      el = $('groupBanner');
+    }
+    return el;
+  }
+
+  function showGroup() {
+    const nodes = cy.nodes(':selected');
+    const el = groupBanner();
+    if (nodes.length < 2) { el.hidden = true; return; }
+    const people = nodes.filter('[kind="person"]').length;
+    const records = nodes.length - people;
+    el.innerHTML = `<b>${people} ${people === 1 ? 'person' : 'people'}</b>${records ? ` + ${records} record${records === 1 ? '' : 's'}` : ''} selected - drag any of them to move the group
+      <button type="button" class="ghost small" data-g="grow" title="Add everyone linked to the group">+ next ring</button>
+      <button type="button" class="ghost small" data-g="clear" title="Esc">Clear</button>`;
+    el.querySelector('[data-g="grow"]').onclick = () => {
+      cy.nodes(':selected').closedNeighborhood().nodes(':visible').select();
+      showGroup();
+    };
+    el.querySelector('[data-g="clear"]').onclick = clearGroup;
+    el.hidden = false;
+  }
+
+  function selectGroup(node) {
+    const group = node.closedNeighborhood().nodes(':visible');
+    cy.batch(() => { cy.elements().unselect(); group.select(); });
+    showGroup();
+  }
+
+  function clearGroup() {
+    if (cy.nodes(':selected').length > 1) cy.elements().unselect();
+    if ($('groupBanner')) $('groupBanner').hidden = true;
+  }
+
+  function setGroupMode(on) {
+    state.groupMode = on;
+    $('groupBtn')?.classList.toggle('on', on);
+    // In the mode a plain drag on empty space draws the selection box instead of panning
+    // (the mouse wheel still zooms).
+    cy.userPanningEnabled(!on);
+    if (on) { closeDetails(); stopPick(); } else clearGroup();
+  }
+
+  $('groupBtn')?.addEventListener('click', () => setGroupMode(!state.groupMode));
+  cy.on('dbltap', 'node[kind="person"]', (evt) => selectGroup(evt.target));
+  cy.on('boxend', () => setTimeout(showGroup, 0));   // the box selects after boxend fires
 
   // ------------------------------------------------------------------ legend, history, misc
 
@@ -2989,6 +3106,7 @@
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
     if (state.pickFor) { stopPick(); return; }
+    if (cy.nodes(':selected').length > 1) { clearGroup(); return; }
     if (state.compare) closeDetails();
   });
 
@@ -3003,6 +3121,7 @@
     setToken: (token) => { state.token = token || ''; },
     currentRun,
     openChat: openSherlock,
+    setTheme: (theme) => setTheme(theme, true),
     downloadReport: () => downloadReport(false),
   };
 

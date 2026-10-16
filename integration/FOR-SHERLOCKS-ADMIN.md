@@ -6,12 +6,15 @@
    email, chat or the repository).
 2. **Keep Sherlocks running** on 192.168.200.239 with docker compose, as now. One API
    process, the default, is required for the live stream.
-3. **When the portal's address is known**, set it in Sherlocks' `.env` and restart:
-   `SHERLOCKS_CORS_ORIGINS=http://portal-address` (comma-separate several). Until then
-   any site may call the API with a valid token. Tokens are still required.
-4. **If the portal runs on https**, Sherlocks must too, or browsers block it (mixed
-   content): put nginx with a certificate in front of port 7401, and give the developer the
-   new https address for `SHERLOCKS_API_BASE`.
+3. **The portal's server calls Sherlocks, not the officers' browsers** (the tab goes
+   through the portal's `/sherlocks/api` route, `SHERLOCKS_PROXY=true`). So Sherlocks
+   only has to be reachable **from the Laravel server**: if that server is outside the
+   police network, ask the network team for a route (VPN or firewall rule) to
+   `192.168.200.239:7401`. Best: allow port 7401 only from the Laravel server's address.
+   `SHERLOCKS_CORS_ORIGINS` is then not needed (same-origin for the browser).
+4. **https**: the officer sees only the portal's https domain, so Sherlocks can stay on
+   http inside the network. Only if the developer turns the proxy off
+   (`SHERLOCKS_PROXY=false`) must Sherlocks be on https and in `SHERLOCKS_CORS_ORIGINS`.
 5. Your own login to the standalone Sherlocks portal keeps working alongside the tab.
 6. **After pulling this version**, on the Sherlocks server: rebuild the image (or
    `pip install -e .`) - the agent teams now need the `langgraph` package; run
@@ -33,3 +36,21 @@
     question was worked, agent by agent. It carries case data: give access to developers
     and admins only. One line per question is also written to the server log
     (`Turn 5 trace: read(…ms) -> brief(…) -> draft(…) | … ms | 5 model call(s)`).
+11. **Tenant register (TRUST) links.** New searches label each person by their part in a
+    tenancy (tenancy witness, landlord, tenant, family member) with the property, the
+    lease dates and the police station. A run searched before the update keeps "Named in
+    property record": a link's label is fixed when the graph is built, so search again.
+    No setting to change.
+12. **What changed, in one place:** `docs/sherlock-agent-plan.html`, section "What changed
+    in v6", with the diagram of one question, one background run and one report. The
+    developer's short version is in `README.md` ("How Sherlock works in this version").
+13. **Before deploying, one line to check:** `src/sherlocks/team/trace.py`, in `AGENT`, the
+    key of "O1 Officer agent" must be `"draft"`. While it reads anything else, the draft
+    step of a trace shows the agent as `draft` instead of `O1 Officer agent` (the `API.md`
+    example shows the right name) and one test fails. Answers are not affected.
+14. **Front-end changes need no Laravel change.** The portal's tab is a short page that
+    loads `portal/embed.js`, which pulls the Sherlocks page (`web/index.html`, `app.css`,
+    `app.js`, `vendor/`) from this server each time the tab opens. Change the design, add
+    a button or panel in `src/sherlocks/web/`, redeploy Sherlocks, and the tab shows it.
+    Keep the element ids `app.js` uses. Tell the developer only when `SHERLOCKS_CONFIG`,
+    a route or the token format changes.

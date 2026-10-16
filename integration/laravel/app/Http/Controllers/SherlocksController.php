@@ -28,9 +28,13 @@ class SherlocksController extends Controller
             abort_if($savedRun === null, 404);
         }
 
+        // Through the portal (relative path, so it follows the page's own https) or straight
+        // to Sherlocks.
+        $apiBase = config('sherlocks.proxy') ? route('sherlocks.api', [], false) : config('sherlocks.api_base');
+
         return view('sherlocks.tab', [
-            'sherlocksApiBase' => config('sherlocks.api_base'),
-            'sherlocksAssets' => config('sherlocks.api_base') . '/portal',
+            'sherlocksApiBase' => $apiBase,
+            'sherlocksAssets' => $apiBase . '/portal',
             'sherlocksToken' => SherlocksToken::issue((string) optional($request->user())->getAuthIdentifier()),
             'tokenUrl' => route('sherlocks.token'),
             'saveUrl' => route('sherlocks.graphs.store'),   // set to null to not save at all
