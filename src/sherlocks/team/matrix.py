@@ -95,6 +95,8 @@ _REPLY_SYSTEM = ("You are Sherlock, the lead detective. The Skeptic challenged y
 def evidence_rows(case: Any) -> list[dict[str, Any]]:
     """What may go in the matrix: facts, recorded statements and open contradictions - the
     entries the hypotheses already cite first, then the most trusted. Never a lead."""
+    from sherlocks.team.case_scope import NOT_EVIDENCE
+
     cited = [i for h in case.hypotheses.values() for i in (h.get("for") or []) + (h.get("against") or [])]
     lead_sources = {k["source"] for k in case.leads.values()}
     rows: dict[str, dict[str, Any]] = {}
@@ -108,13 +110,13 @@ def evidence_rows(case: Any) -> list[dict[str, Any]]:
         add(f["id"], f["statement"], int(f.get("trust") or 5), doc.get("kind") == "cro", f["doc"])
 
     for ref in dict.fromkeys(cited):
-        if ref in case.facts and case.usable(ref):
+        if ref in case.facts and case.usable(ref) and (case.facts[ref].get("kind") or "") not in NOT_EVIDENCE:
             fact(case.facts[ref])
     for x in case.contradictions.values():
         if x["status"] == "open" and x["severity"] != "minor":
             add(x["id"], x["text"], min(x["a"]["trust"], x["b"]["trust"]))
     facts = [f for f in case.live_facts() if f.get("tier") == "fact" and f["id"] not in lead_sources
-             and f.get("kind") not in ("telecom_habit",)]
+             and f.get("kind") not in ("telecom_habit", *NOT_EVIDENCE)]
     for f in sorted(facts, key=lambda f: (int(f.get("trust") or 5), f["id"])):
         fact(f)
     for w in case.statements.values():

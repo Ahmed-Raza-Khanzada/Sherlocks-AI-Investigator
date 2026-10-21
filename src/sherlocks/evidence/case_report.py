@@ -292,7 +292,7 @@ def file_version(report: dict[str, Any]) -> dict[str, Any]:
     if report.get("summary_parts"):
         from sherlocks.team.report_graph import summary_text
 
-        # The summary without leads, and the lines of inquiry in place of Sherlock's ranking and view.
+        # The lines of inquiry in place of Sherlock's ranking and view; no leads.
         out["summary_parts"] = {**report["summary_parts"], "leads": [], "stands": report["summary_parts"].get("stands_file") or ""}
         out["executive_summary"] = summary_text(report["summary_parts"], file=True)
     if report.get("parts"):
@@ -305,6 +305,8 @@ def file_version(report: dict[str, Any]) -> dict[str, Any]:
         points = [pt for pt in (report["parts"].get("F") or {}).get("open_points") or [] if not str(pt.get("ref")).startswith("K")]
         out["parts"] = {**report["parts"], "D": kept, "annex": annex,
                         "F": {**(report["parts"].get("F") or {}), "open_points": points}}
+        if report["parts"].get("in_case"):
+            out["parts"]["in_case"] = {**report["parts"]["in_case"], "leads": []}
     return out
 
 

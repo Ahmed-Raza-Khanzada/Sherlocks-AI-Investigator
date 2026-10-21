@@ -21,13 +21,15 @@ from pydantic import Field
 
 from sherlocks.evidence.guard import DATA_NOT_INSTRUCTIONS
 from sherlocks.linkgraph.relevance import the_new_case
+from sherlocks.team.case_scope import NOT_EVIDENCE
 from sherlocks.team.runtime import NEW_CASE, PLAIN, Typed, ask, dumps
 
 # The kinds of entry code writes when it finds something out of pattern.
 HINTS = ("telecom_silence_incident", "telecom_imei_change", "telecom_spike", "cdr_cross", "custody_gap")
 STATES = ("spotted", "open", "pursuing", "confirmed", "dead end")
-# Patterns the graph notes that are too common to be a lead (a SIM registered in another person's name).
-NOT_A_LEAD = ("graph_sim_front",)
+# Patterns the graph notes that are too common to be a lead: a SIM registered in another person's
+# name (in Pakistan usually a relative's or a friend's), a tenancy witness, a PRVS guarantor.
+NOT_A_LEAD = NOT_EVIDENCE
 PER_CALL = 10
 
 

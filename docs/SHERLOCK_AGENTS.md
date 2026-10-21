@@ -68,7 +68,7 @@ flowchart LR
   S1 --> TB
   B -- "change log wakes" --> S2 --> S1 --> S4
   S1 --> B
-  B --> RT["Report team: P1 editor · P2 evidence · P3 statements, timeline ·<br/>P4 analysis · P5 summary · P6 checker"]:::board
+  B --> RT["Report team: P1 editor · P2 evidence · P3 statements, timeline ·<br/>P4 analysis · P5 summary · P6 checker · P7 story"]:::board
   ING --> B
   CDR --> B
 ```
@@ -491,15 +491,21 @@ case, so it has its own team, a third LangGraph graph. It reads the board and wr
 
 ```mermaid
 flowchart LR
-  freeze["P1 freeze one board version"] --> P2["P2 Evidence: parts A, B"] & P3["P3 Statements, timeline: C, E"] & P4["P4 Analysis: D"]
-  P2 & P3 & P4 --> editor["P1 part F, annex, linked ids"] --> P5["P5 Summary, written last"] --> P6["P6 Report checker"]
+  freeze["P1 freeze one board version"] --> scope["P1 what belongs to this case"]
+  scope --> P2["P2 Evidence: parts A, B"] & P3["P3 Statements, timeline: C, E"] & P4["P4 Analysis: D"]
+  P2 & P3 & P4 --> editor["P1 part F, annex, linked ids"] --> target["P2 Target writer"] --> P8["P8 Record writer"] --> P7["P7 Story writer"]
+  P7 --> P5["P5 Summary, written last"] --> P6["P6 Report checker"]
   P6 -->|failed once| P5
   P6 --> build["P1 build: internal and file"]
 ```
 
 | Part | Holds | Written by |
 |---|---|---|
-| Executive summary | Seven parts in a fixed order: the case in brief · what the evidence establishes · what is disputed · leads being pursued · where the case stands · what is not clear yet · next steps. Every sentence cites its ids. | **P5**, last, from the finished parts (the model; templates without it) |
+| Sherlock's brief | The case in short · what the evidence shows · what does not fit · what is still missing · Sherlock's view · next steps. Every sentence cites its ids. | **P5**, last, from the finished parts of THIS case (the model; templates without it) |
+| Scope | What belongs to the case: this FIR, the FIRs that name it, their reports, the officer's uploads, the people they name (`case_scope.build`) | P1 |
+| Target | The target's profile, part and status in the case, own earlier FIRs, close circle | P2 Target writer |
+| Record | The target's earlier FIRs (date and time, police station, offence, their part, where each stands - convicted, acquitted, under trial - what the complainant said, what was found against them), everyone the records tie to them and how, their hotel stays, the earlier reports of those FIRs (`parts.record`) | **P8 Record writer** (the model reads each FIR file, one call per FIR; records without it) |
+| Story | The case in date order with sources, and its people with their part and status; the case's own statements, contradictions, reports and leads (`in_case`); the case at a glance | **P7 Story writer** (the model; templates without it) |
 | A · Overview | The incident as recorded, the people on the case in one table | P2 |
 | B · Evidence | B1 the FIR's card and every other FIR of the people on the case · B2 medical · B3 forensic and lab, chain of custody, pending reports · B4 recoveries and site plan · B5 police system records per person, "nothing found" kept, hotel stays checked against the incident and each FIR date · B6 CDR analysis and presence · B7 the register by topic | P2 |
 | C · Statements | Each person's statements in date order, what changed, where they disagree with the evidence; the officer's statements; every question with its answer | P3 |
@@ -600,48 +606,79 @@ each did and how long it took. One line per turn also goes to the server log
 
 ## The report: one fixed structure
 
-`report_graph.STRUCTURE` is the report, in the order it is read - and the member of the
-Report team that writes each section. Everything is written under headings, in points.
+The report is a **brief for the investigating officer, about the case and the target only**
+(`report_graph.STRUCTURE`), in the order it is read - and the member of the Report team that
+writes each section.
 
 | # | Section | Written by | Holds |
 |---|---|---|---|
-| 1 | Case summary | P5 Summary writer | the whole case in short points under ten headings |
-| 2 | Person by person | P2 Person writer | the target, then each related person: identity, how tied to the target, FIRs that name them, medical / laboratory / scene reports about them, what they said, what the police systems hold |
-| 3 | Who said what | P3 Statement writer | each person's recorded statements in order, what changed, what does not fit |
-| 4 | People and their relations | P4 Relations writer | two people a row with EVERY tie between them (`parts.relations.pairs`): their roles in the same FIR with its number (co-accused, complainant / accused, co-witnesses), tenancy, verification, phone and other ties, each with its register and stated / inferred; then the network and the patterns across records |
-| 5 | Timeline | P3 Statement writer | the story of each case, the earliest first: the FIR, the people in it and their roles, what each of them said, the medical and laboratory reports and what they found, what the investigation did; then the dated records that belong to no case (`parts.story`); case diaries say only what is new in each, and ones that add nothing are told together |
-| 6 | Contradictions with the evidence | P4 Analysis writer | both sides, how serious, what would settle it |
-| 7 | Hints and leads | P4 Analysis writer | what was noticed, why it could matter, the next step, the status |
-| 8 | Next steps | P1 Report editor | what to do now, the questions waiting, the reports awaited |
-| - | Annex | P1 Report editor | Sherlock's lines of inquiry, police system records, evidence by topic, evidence register, references, checker's notes, audit |
+| 1 | The case at a glance | P1 Report editor | FIR, police station, offence, when it happened and when the FIR was registered (with the delay), place, complainant, victim, accused and their status, investigating officer, case position, linked FIRs, reports awaited (`parts.glance`) |
+| 2 | Sherlock's brief | P5 Summary writer | the case in short, what the evidence shows, what does not fit, what is still missing, Sherlock's view, next steps - short points |
+| 3 | The story of the case | P7 Story writer | the case in the order it happened: incident, FIR, arrests, disclosures and recoveries, statements, reports sent and received and what they found, where it stands - each step with its source (`parts.case_story.events`) |
+| 4 | The target | P2 Target writer | identity (a number registered on another person's CNIC is said once, next to the number - never a lead), part and status in this case, where the records put them in the incident window, their OWN earlier FIRs, their close circle (family, co-accused, the same vehicle, travel, phone contact) (`parts.target`) |
+| 4a | The target's record (only while the case is not described) | P8 Record writer | earlier cases (criminal record), people connected to the target (grouped: family, named together in FIRs, phones, the same address or area, hotel stays, tenancy / PRVS / TRUST / SBVS records, vehicles, work), hotel history with check-in and check-out, what the earlier reports say (FIR, heading, what it says) (`parts.record`) |
+| 5 | People in this case | P7 Story writer | each person this case's records name: part, status, what they did or said (`parts.case_story.people`) |
+| 6 | Statements and what does not fit | P3 Statement writer | what each person of the case said, what changed, contradictions with the evidence (`parts.in_case.said`, `contradictions`) |
+| 7 | Medical, forensic and laboratory reports | P2 Evidence writer | each report of this case, custody gaps, reports awaited (`parts.in_case.reports`) |
+| 8 | Leads worth checking | P4 Analysis writer | only leads about the case's people; left out of the court-file version (`parts.in_case.leads`) |
+| 9 | Next steps for the investigating officer | P1 Report editor | what to do now, the questions waiting (each once) |
+| - | Annex | P1 Report editor | the police systems checked for the target; the records the report rests on |
 
-Order of work: `freeze -> [evidence | statements | analysis] -> editor -> persons ->
-relations -> summary -> check -> (summary once more) -> build`. P6 checks every id.
+Order of work: `freeze -> scope -> [evidence | statements | analysis] -> editor -> target ->
+record -> story -> summary -> check -> (summary once more) -> build`. P6 checks every id.
+
+**No internal ids in the PDF.** The board keeps its ids (D1, W2, X3) and P6 checks them, but
+the PDF never prints one: a record is named by what it is ("FIR 211/24 · PS Saddar",
+"statement of Asif, 06-06-2023"), the analysts' own entries (contradictions, leads, lines of
+inquiry) are not cited, and the annex lists the records the report rests on
+(`report_pdf._Sources`).
+
+**What belongs to the case** is decided by code from the records' structure, never their
+words (`team/case_scope.py`): this case's FIR, any FIR file that gives this FIR's number
+(the recovery FIR of the weapon), the reports that name those FIRs, the officer's uploads
+and notes, and the people those FIRs name. Everything else stays on the board but is not
+in the report: a police officer who is complainant here and a witness in fifty other FIRs
+does not bring those cases, or the statements in them, into this one.
 
 Rules the report keeps, by code:
 
+* a SIM registered on another person's CNIC (in Pakistan usually a relative's or a
+  friend's), a tenancy witness, a landlord and a PRVS guarantor are **not leads, not
+  evidence and not the target's circle** (`case_scope.NOT_EVIDENCE`): the lead spotter,
+  Sherlock's hypotheses and the hypothesis matrix leave them out;
 * a line of inquiry, a summary point or a next step that rests only on an **earlier FIR**
   (by where its entries come from, the FIR number it names, or that FIR's date) is never
   shown as a view on the case under investigation - unless the officer said this case IS
-  that FIR (`report_graph.past_only`, `names_past_fir`);
-* a SIM registered in another person's name is not listed as a pattern;
-* an inferred tie is worded by the reason it rests on ("was a witness in the same tenancy
-  as"), never "has an inferred link";
+  that FIR, or the FIR names it (`report_graph.past_only`, `names_past_fir`);
 * police systems are cited by name ([Hotel Eye], not [HOTEL_EYE]); raw field names are
-  written as words.
+  written as words;
+* a connection between people is said in the records' words - never "inferred" or
+  "corroborated", never with a score; the same address means the same house or the same
+  area, never only the same city (`weak_links.address_score`, `record_writer.plainly`).
 
 ## The report's summary
 
-Short points under fixed headings (`report_graph.SUMMARY`): the case in brief, the target,
-connections, earlier cases on record, what the evidence establishes, what is disputed,
-leads to check, where the case stands, what is not clear yet, next steps.
+Short points under fixed headings (`report_graph.SUMMARY`): the case in short (the story
+writer's, else the FIR's own record), what the evidence shows, what does not fit, what is
+still missing, Sherlock's view (in the court-file version: the lines of inquiry), next
+steps.
 
 While the officer has not said what case is being investigated (`report_graph.declared`),
-**nothing is assumed about it**: "the case in brief" is one fixed sentence saying so, "what
-the evidence establishes" is empty, "where the case stands" says no line of inquiry is
-weighed, the hypotheses are not even shown to the writer - all by code. The summary then
-holds what can always be said: who the target is, how people are connected to them, and
-their earlier cases as earlier cases (each saying whether it names the target).
+**nothing is assumed about it**: "the case in short" is one fixed sentence saying so, "what
+the evidence shows" is empty, "Sherlock's view" says no line of inquiry is weighed, the
+hypotheses are not even shown to the writer - all by code. The report then holds what can
+always be said - the target's record (P8, `team/record_writer.py`): each earlier FIR with
+the date and time of the incident and where it stands (the outcome only from the case
+positions, the investigation result and the systems' status), what the complainant said
+and what was found against the target; every person the records tie to the target and how
+(a tenancy, PRVS, TRUST or SBVS witness, a SIM owner and a shared address are relations
+here - never leads); the hotel history; and what each earlier report says. "The case in
+short" adds the record in a few lines after the fixed sentence.
+Checked on the office model (2026-10-19): it completes a first name in Urdu ("نوید") into
+a full name from any list of names it is given, so P8 gives it single name words to spell
+by (`name_spellings`), never full names; and it answers the outcome's words with a sentence,
+so code keeps the model's words only when they are short English that name the outcome -
+otherwise the record's own status, with an Urdu status given in English.
 
 ## Kept tidy as the graph grows
 

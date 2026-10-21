@@ -165,9 +165,12 @@ _SYSTEM = ("You are Sherlock, the lead detective, working a case from its case b
 def _rule_assessment(case: Any, graph: dict[str, Any], net: Any) -> dict[str, Any]:
     """S1 without the model: hypotheses from the graph's findings and the CDR team."""
     from sherlocks.evidence.trust import conflicts
+    from sherlocks.team.case_scope import NOT_EVIDENCE
 
     hyps = []
     for f in case.live_facts():
+        if f.get("kind") in NOT_EVIDENCE:
+            continue                        # a SIM in another's name, a tenancy witness, a guarantor: common
         if f.get("by") == "graph" and f.get("kind", "").startswith("graph_"):
             status = "supported" if f.get("tier") == "fact" else "open"
             hyps.append({"statement": f["statement"].split(" (", 1)[0] + ": " + ", ".join(f.get("people") or []),
@@ -185,8 +188,11 @@ def assess(case: Any, graph: dict[str, Any], net: Any, llm: Any = None) -> dict[
     """S1: the assessment, written onto the board. Returns it."""
     from sherlocks.evidence.question_desk import known_answers
     from sherlocks.linkgraph.briefer import build
+    from sherlocks.team.case_scope import NOT_EVIDENCE, weak
 
-    known = case.known_ids()
+    # A SIM registered on another person's CNIC (usually a relative's or a friend's), a tenancy
+    # witness, a PRVS guarantor: common patterns, never evidence for or against a line of inquiry.
+    known = {i for i in case.known_ids() if not weak(case, i)}
     out: dict[str, Any] | None = None
     if llm is not None:
         pack = build(case, graph, net, " ".join(h["statement"] for h in case.hypotheses.values())[:400] or "the case",
@@ -195,7 +201,7 @@ def assess(case: Any, graph: dict[str, Any], net: Any, llm: Any = None) -> dict[
 
         payload = {"new_case": the_new_case(case), "summary": (case.summary or {}).get("text"), "timeline": (case.summary or {}).get("timeline", [])[:40],
                    "facts": [{"id": f["id"], "fact": f["statement"][:220], "tier": f.get("tier"), "trust": f.get("trust")}
-                             for f in case.live_facts()][-80:],
+                             for f in case.live_facts() if f.get("kind") not in NOT_EVIDENCE][-80:],
                    "hypotheses": [{k: h.get(k) for k in ("id", "statement", "status", "confidence", "for", "against")}
                                   for h in case.hypotheses.values()],
                    "conflicts": pack.get("conflicts"), "officer_said": pack.get("statements"),

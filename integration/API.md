@@ -230,28 +230,35 @@ Do not match on the old label for new graphs. Graphs searched before this versio
 the court-file version) - `POST /graph/report` with `{graph}` for a saved run.
 
 The PDF always has this structure (`report.structure` in `graph.case.report` lists it with
-the agent that wrote each section):
+the agent that wrote each section). It is a brief for the investigating officer about the
+case and the target only - other people's FIRs, tenancy witnesses, guarantors and SIMs
+registered on another person's CNIC are not in it.
 
 | # | Section | Holds |
 |---|---|---|
-| 1 | Case summary | short points under ten headings: the case in brief, the target, connections, earlier cases on record, what the evidence establishes, what is disputed, leads to check, where the case stands, what is not clear yet, next steps |
-| 2 | Person by person | the target, then each related person: identity, how tied to the target, FIRs that name them, medical / laboratory / scene reports, what they said, police system records |
-| 3 | Who said what | each person's recorded statements, what changed between them, what does not fit a record; what the officer told Sherlock |
-| 4 | People and their relations | two people a row with every tie between them (roles in the same FIR with its number, tenancy, verification, phone...), each with its register; the network picture; patterns across the records |
-| 5 | Timeline | the story of each case, the earliest first: the FIR, the people in it, what each of them said, the medical and laboratory reports and what they found, what the investigation did; then the dated records that belong to no case |
-| 6 | Contradictions with the evidence | both sides, how serious, what would settle it |
-| 7 | Hints and leads | what was noticed, why it could matter, the next step, the status (left out of the court-file version) |
-| 8 | Next steps | what to do now, questions waiting for the officer, reports awaited |
-| - | Annex | Sherlock's lines of inquiry, police system records, evidence by topic, evidence register, references, the checker's notes, the live calls made |
+| 1 | The case at a glance | FIR, police station, offence, occurred, FIR registered (with the delay), place, complainant, victim, accused and status, investigating officer, case position, linked FIRs, reports awaited |
+| 2 | Sherlock's brief | the case in short, what the evidence shows, what does not fit, what is still missing, Sherlock's view, next steps |
+| 3 | The story of the case | each step of the case in date order with its source |
+| 4 | The target | identity, part and status in this case, presence in the incident window, own earlier FIRs, close circle |
+| 5 | People in this case | part, status, what each did or said |
+| 6 | Statements and what does not fit | the case's statements, what changed, contradictions with the evidence |
+| 7 | Medical, forensic and laboratory reports | the case's reports, custody gaps, reports awaited |
+| 8 | Leads worth checking | leads about the case's people (left out of the court-file version) |
+| 9 | Next steps for the investigating officer | what to do now, questions waiting |
+| - | Annex | police systems checked for the target, references, the checker's notes |
 
-The same content as data, in `graph.case.report`: `summary_parts` (the ten headings, each
-a list of points) with `summary_order` and `summary_titles`; `parts.persons.people[]`
-(`name`, `target`, `role`, `tie{to, how, source, stated, steps}`, `identity`, `firs[]`,
-`reports[]`, `said[]`, `stays[]`, `systems[]`, `nothing_in[]`); `parts.relations`
-(`pairs[{a, b, ties[{relation, source, stated}]}]` - two people and every tie between them; `rows[]` the older flat list; `patterns[]`); `parts.story` (`cases[{fir, police_station, offence, occurred, registered, place, this_case, people[{name, role}], statements[{id, speaker, role, kind, date, recorded_by, text}], reports[{id, kind, title, when, found[]}], steps[{when, what}], result}]` in date order, `reports_without_a_case[]`, `other[{when, what, ref}]`) and the flat `parts.E.timeline[{when, what, ref}]`;
-`contradictions_found[]`; `leads[]`; `parts.F` (`next_steps`, `open_points`);
-`case_declared` (false while the officer has not said what case is being investigated -
-the summary then says so in fixed words and assumes nothing about it).
+The same content as data, in `graph.case.report`: `summary_parts` (the headings, each a
+list of points) with `summary_order` and `summary_titles`; `parts.glance.rows[{label,
+value}]` (null while the case is not described); `parts.case_story` (`in_short[]`,
+`events[{when, what, sources[]}]` in date order, `people[{name, part, status, did,
+sources[]}]`, `by`); `parts.target` (`targets[{name, cnic, father, also_recorded_as,
+phones[{number, registered_to}], addresses, vehicles, work, role_in_case, status_in_case,
+presence[], hotel_stays[], firs[{fir, police_station, offence, role, status, source}],
+systems[{system, found}], nothing_in[]}]`, `circle[{name, kind, how, source, stated,
+criminal, in_case}]`); `parts.in_case` (`said[]`, `contradictions[]`, `reports[{id, kind,
+title, found[]}]`, `custody[]`, `pending[]`, `leads[]`); the whole board's parts A-F stay
+for other uses; `case_declared` (false while the officer has not said what case is being
+investigated - the summary then says so in fixed words and assumes nothing about it).
 
 ## Agent trace (how each question was worked)
 
