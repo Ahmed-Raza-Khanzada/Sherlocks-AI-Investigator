@@ -34,7 +34,7 @@ from langgraph.graph import END, START, StateGraph
 
 from sherlocks.evidence.case_file import CaseFile
 from sherlocks.linkgraph.network import PersonNetwork
-from sherlocks.team import insight_desk, officer_agent, recorder, shapes
+from sherlocks.team import case_reader, insight_desk, officer_agent, recorder, shapes
 from sherlocks.team.runtime import emit
 
 logger = logging.getLogger(__name__)
@@ -133,6 +133,12 @@ class TurnState(TypedDict, total=False):
 # -- O0 ------------------------------------------------------------------------------------
 
 
+def _asked(t: Turn) -> str:
+    """The question to answer: the officer's words - or, when they point their last question at
+    someone ("Y, not X!"), that question with their words."""
+    return str((t.ask or {}).get("question_text") or t.message)
+
+
 def _read(state: TurnState) -> dict[str, Any]:
     from sherlocks.linkgraph import question_reader
 
@@ -225,6 +231,8 @@ def _record(state: TurnState) -> dict[str, Any]:
             t.agent("Statement recorder", f"correction confirmed: {waiting['topic']} = {waiting['new']}; "
                                           f"{len(done['stale'])} entr(ies) marked stale")
     answered = next((q for q in case.open_questions() if q["id"] == reading.answers), None)
+    if recorder.no_case(reading):
+        answered = None             # "there is no case" answers no question about one
     if answered is not None and answered["key"] == "case:which":
         # Which case this is, is the recorder's own reading (`this_case`): written below when it
         # could tell, and left open when it could not - never settled by a rule on the wording.
@@ -324,12 +332,12 @@ def _brief(state: TurnState) -> dict[str, Any]:
     # The case board and the graph.
     t.status("board")
     kb = knowledge(t.graph, case, net)
-    t.hits = kb.search(t.message, people=q["people"], k=30)
+    t.hits = kb.search(_asked(t), people=q["people"], k=30)
     t.checked.append(chain.checked_item("board", t.language, f=len(case.facts), d=len(case.documents)))
     t.checked.append(chain.checked_item("graph", t.language, n=len(net.people)))
     t.status("brief")
     started = time.monotonic()
-    t.pack = briefer.build(case, t.graph, net, t.message, people=q["people"], kb=kb, chars=t.cfg.pack_chars,
+    t.pack = briefer.build(case, t.graph, net, _asked(t), people=q["people"], kb=kb, chars=t.cfg.pack_chars,
                            recent=t.cfg.recent_turns)
     t.budget.record("brief", started)
     # The Facts agent: exact counts and lists, computed - never left to the model to count.
@@ -368,7 +376,10 @@ def _brief(state: TurnState) -> dict[str, Any]:
     if q.get("wants_view") or q.get("opinion") or shape in ("person", "what_next"):
         t.status("view")
         t.view_started = time.monotonic()
-        t.view_future = t.budget.submit(lambda: quick_view.ask(t.llm, t.message, t.language, t.pack))
+        read = case_reader.ensure(t.case, t.net)
+        t.view_future = t.budget.submit(lambda: quick_view.ask(t.llm, _asked(t), t.language, t.pack, case=t.case,
+                                                                  people=[*(q.get("people") or []), *t.net.seeds()],
+                                                                  read=read))
     return {}
 
 
@@ -396,7 +407,7 @@ def _draft(state: TurnState) -> dict[str, Any]:
     t.status("think")
     last = t.rounds + 1 >= officer_agent.ROUNDS or t.budget.left() < t.cfg.draft_budget_s + 2.0
     data = officer_agent.payload(
-        message=t.message, ask_=q, net=t.net, case=t.case, pack=t.pack, cards=t.cards, facts=t.facts,
+        message=_asked(t), ask_=q, net=t.net, case=t.case, pack=t.pack, cards=t.cards, facts=t.facts,
         computed_words=render_facts(t.facts, t.language) if t.facts is not None else None, hits=t.hits,
         sources=t.sources, findings=officer_agent.findings_about(t.case, q.get("people") or []),
         tools={name: desc for name, (desc, _) in t.registry.items()}, looked=t.looked, last_round=last,
@@ -487,7 +498,7 @@ def _lookup(state: TurnState) -> dict[str, Any]:
         t.checked.append(chain.checked_item("no_call", t.language))
     if done:                                           # the board changed: the knowledge is read again
         kb = knowledge(t.graph, t.case, t.net)
-        t.hits = kb.search(t.message, people=(t.query or {}).get("people"), k=30)
+        t.hits = kb.search(_asked(t), people=(t.query or {}).get("people"), k=30)
     t.route = "draft"
     return {}
 
@@ -731,6 +742,22 @@ def _present(state: TurnState) -> dict[str, Any]:
                 t.budget.timing, f", late: {final['late']}" if final["late"] else "")
     case.add_turn(t.message, final["answer"], check)
     emit(final)
+    if t.intent == "question" and t.llm is not None:
+        # What the reply noticed, kept on the case board - only what rests on the case's records. In the
+        # background: the officer has the reply already.
+        import threading
+
+        from sherlocks.team import hint_keeper
+
+        def keep() -> None:
+            try:
+                if hint_keeper.keep(case, t.message, final["answer"], (t.view or {}).get("view") or "", t.raw_llm or t.llm,
+                                    turn=t.turn_no) and t.on_late is not None:
+                    t.on_late()
+            except Exception:                  # a hint is never worth a failed turn
+                logger.exception("Hint keeper failed")
+
+        threading.Thread(target=keep, name="hint-keeper", daemon=True).start()
     return {}
 
 

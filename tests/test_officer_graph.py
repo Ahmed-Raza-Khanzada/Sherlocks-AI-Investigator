@@ -15,7 +15,7 @@ from sherlocks.team.officer_graph import officer_graph
 
 def _graph():
     return {"nodes": [
-        {"id": "p1", "kind": "person", "label": "Muhammad Danish Rafiq",
+        {"id": "p1", "kind": "person", "label": "Muhammad Danish Saleem",
          "data": {"seed": True, "cnic": "9999900000777", "phones": ["03990000777"],
                   "firs": [{"label": "45/2023", "role": "Accused", "offence": "392 PPC", "system": "psrms"}]}},
         {"id": "p2", "kind": "person", "label": "Kamran Aslam", "data": {"cnic": "9999900000011"}},
@@ -41,7 +41,7 @@ class Model:
 
 
 def _reading(**over):
-    return {"act": "question", "asks_something": True, "type": "open", "people": ["Muhammad Danish Rafiq"],
+    return {"act": "question", "asks_something": True, "type": "open", "people": ["Muhammad Danish Saleem"],
             "depth": "detailed", "scope": "person", "shape": "person", **over}
 
 
@@ -63,17 +63,17 @@ def test_the_turn_is_one_graph_with_a_rules_node_only_as_the_fallback():
     nodes = set(officer_graph().get_graph().nodes)
     assert {"read", "rules", "record", "brief", "draft", "lookup", "desk", "check", "present"} <= nodes
     # No model: the rules node answers. One start, one final - as the chat expects.
-    events = list(run_turn(_graph(), "who is Muhammad Danish Rafiq?", case=CaseFile()))
+    events = list(run_turn(_graph(), "who is Muhammad Danish Saleem?", case=CaseFile()))
     kinds = [e["type"] for e in events]
     assert kinds[0] == "start" and kinds[-1] == "final" and kinds.count("start") == 1 and kinds.count("final") == 1
     # A model that cannot read the message: the same fallback, and no second attempt.
     llm = Model()
-    final = list(run_turn(_graph(), "who is Muhammad Danish Rafiq?", case=CaseFile(), llm=llm))[-1]
+    final = list(run_turn(_graph(), "who is Muhammad Danish Saleem?", case=CaseFile(), llm=llm))[-1]
     assert final["answer"] and llm.asked == ["_Reading"]
 
 
 def test_o1_names_the_lookups_he_needs_and_the_api_agent_fetches_them_at_run_time():
-    backend, case = _Backend({"evs": {"name": "Muhammad Danish Rafiq", "cnic": "9999900000777",
+    backend, case = _Backend({"evs": {"name": "Muhammad Danish Saleem", "cnic": "9999900000777",
                                       "organisation": "Karachi Port Trust", "designation": "Clerk"}}), CaseFile()
 
     def draft(prompt):
@@ -82,7 +82,7 @@ def test_o1_names_the_lookups_he_needs_and_the_api_agent_fetches_them_at_run_tim
         if not looked:
             assert "api_router" in data["tools"] and "LIVE" in data["tools"]["api_router"]
             return {"first_line": "Records mein Danish ka kaam nahi hai.", "answered": False,
-                    "lookups": [{"tool": "api_router", "args": {"who": "Muhammad Danish Rafiq", "topic": "work"},
+                    "lookups": [{"tool": "api_router", "args": {"who": "Muhammad Danish Saleem", "topic": "work"},
                                  "why": "his employer"},
                                 {"tool": "no_such_tool", "args": {}}]}
         assert "Karachi Port Trust" in json.dumps(looked) and data["tools"] == {}      # the last draft: no more tools
@@ -103,12 +103,12 @@ def test_o1_names_the_lookups_he_needs_and_the_api_agent_fetches_them_at_run_tim
 def test_every_section_of_the_shape_is_filled_or_marked_never_dropped():
     case = CaseFile()
     llm = Model(_Reading=_reading(), _Check=OK,
-                _Draft={"first_line": "Muhammad Danish Rafiq is the accused in FIR 45/2023.", "answered": True, "sections": [
+                _Draft={"first_line": "Muhammad Danish Saleem is the accused in FIR 45/2023.", "answered": True, "sections": [
                     {"name": "FIRs", "body": "• FIR 45/2023: robbery (392 PPC), accused [PSRMS]"},
                     {"name": "Hotel stays", "status": "not on record"}]})
     final = list(run_turn(_graph(), "who is Danish?", case=case, llm=llm))[-1]
     answer = final["answer"]
-    assert answer.startswith("**Muhammad Danish Rafiq is the accused in FIR 45/2023.**")
+    assert answer.startswith("**Muhammad Danish Saleem is the accused in FIR 45/2023.**")
     for name in shapes.sections("person"):
         assert f"## {name}" in answer                                        # every heading, in the shape's order
     assert answer.index("## FIRs") < answer.index("## Hotel stays") < answer.index("## Not on record")
@@ -119,7 +119,7 @@ def test_every_section_of_the_shape_is_filled_or_marked_never_dropped():
     # The draft was given every source the shape needs, and the dossier of the person asked about.
     given = json.loads(llm.prompts["_Draft"][0])["given"]
     assert {"statements", "presence", "contradictions", "evidence_register"} <= set(given["sources"])
-    assert given["dossiers"][0]["name"] == "Muhammad Danish Rafiq"
+    assert given["dossiers"][0]["name"] == "Muhammad Danish Saleem"
     # Asked for short: the first line and the points only - no headings.
     short = Model(_Reading=_reading(depth="brief"), _Check=OK, _Draft=llm.answers["_Draft"])
     brief = list(run_turn(_graph(), "Danish kaun hai, short mein", case=CaseFile(), llm=short))[-1]["answer"]
@@ -184,7 +184,7 @@ def test_one_finding_reaches_the_officer_after_the_answer_once_and_can_be_held()
     case.set_contradiction("C1|C2", {"topic": "weapon / injury", "person": None, "person_name": None, "severity": "critical",
                                      "text": "The FIR says pistol fire; the MLO finds an incised wound.",
                                      "settle": "Ask the doctor.", "a": {"trust": 2}, "b": {"trust": 2}})
-    draft = {"first_line": "Muhammad Danish Rafiq is the accused in FIR 45/2023.", "answered": True,
+    draft = {"first_line": "Muhammad Danish Saleem is the accused in FIR 45/2023.", "answered": True,
              "sections": [{"name": "FIRs", "body": "• FIR 45/2023: robbery, accused [PSRMS]"}]}
     llm = Model(_Reading=_reading(), _Draft=draft, _Check=OK)
     first = list(run_turn(_graph(), "who is Danish?", case=case, llm=llm))[-1]
@@ -219,7 +219,7 @@ def test_the_gatekeeper_reads_the_chat_and_never_asks_what_was_already_said():
     case = CaseFile()
     q = case.ask("incident:what", "What happened?")
     case.add_turn("Kamran ne Naveed ko chaku mara tha, yeh bata do uski FIRs", "noted")
-    draft = {"first_line": "Muhammad Danish Rafiq is the accused in FIR 45/2023.", "answered": True,
+    draft = {"first_line": "Muhammad Danish Saleem is the accused in FIR 45/2023.", "answered": True,
              "sections": [{"name": "FIRs", "body": "• FIR 45/2023: robbery, accused [PSRMS]"}]}
     llm = Model(_Reading=_reading(), _Draft=draft, _Check=OK,
                 _Sweep={"answered": [{"id": q["id"], "turn": 1, "answer": "Kamran ne Naveed ko chaku mara tha"},
@@ -238,9 +238,9 @@ def test_the_gatekeeper_reads_the_chat_and_never_asks_what_was_already_said():
 
 def test_an_fir_question_returns_every_section_of_the_fir_shape():
     llm = Model(_Reading=_reading(type="fir_details", shape="fir", scope="case"), _Check=OK,
-                _Draft={"first_line": "FIR 45/2023: robbery (392 PPC); Muhammad Danish Rafiq is the accused.", "answered": True,
+                _Draft={"first_line": "FIR 45/2023: robbery (392 PPC); Muhammad Danish Saleem is the accused.", "answered": True,
                         "sections": [{"name": "What happened", "body": "• Robbery, as the record has it [PSRMS]"},
-                                     {"name": "Who", "body": "• Accused: Muhammad Danish Rafiq [PSRMS]"}]})
+                                     {"name": "Who", "body": "• Accused: Muhammad Danish Saleem [PSRMS]"}]})
     final = list(run_turn(_graph(), "FIR 45/2023 ke baare mein batao", case=CaseFile(), llm=llm))[-1]
     assert final["shape"] == "fir" and final["language"] == "roman"
     assert [s["name"] for s in final["sections"]] == shapes.sections("fir")
@@ -256,7 +256,7 @@ def test_a_finding_that_cites_nothing_real_is_held_back_and_new_tools_have_a_wai
     case = CaseFile()
     case.set_contradiction("C1|C2", {"topic": "weapon", "person": None, "severity": "critical", "a": {"trust": 2},
                                      "b": {"trust": 2}, "text": "The pistol in the FIR does not fit the wound [D77]."})
-    draft = {"first_line": "Muhammad Danish Rafiq is the accused in FIR 45/2023.", "answered": True,
+    draft = {"first_line": "Muhammad Danish Saleem is the accused in FIR 45/2023.", "answered": True,
              "sections": [{"name": "FIRs", "body": "• FIR 45/2023: robbery, accused [PSRMS]"}]}
     events = list(run_turn(_graph(), "who is Danish?", case=case, llm=Model(_Reading=_reading(), _Draft=draft, _Check=OK)))
     assert "FINDING:" not in events[-1]["answer"] and events[-1]["finding"] is None
@@ -272,10 +272,10 @@ def test_three_or_more_firs_are_laid_out_as_a_table():
         {"label": f"{n}/2023", "role": "Accused", "offence": "392 PPC", "system": "psrms", "police_station": "Saddar"}
         for n in (45, 46, 47)]
     llm = Model(_Reading=_reading(type="cases", shape="count"), _Check=OK,
-                _Draft={"first_line": "3 FIRs name Muhammad Danish Rafiq.", "answered": True, "sections": [
+                _Draft={"first_line": "3 FIRs name Muhammad Danish Saleem.", "answered": True, "sections": [
                     {"name": "The items", "body": "• FIR 45/2023 [PSRMS]\n• FIR 46/2023 [PSRMS]\n• FIR 47/2023 [PSRMS]"}]})
     answer = list(run_turn(graph, "Danish ki FIRs?", case=CaseFile(), llm=llm))[-1]["answer"]
-    assert answer.startswith("**3 FIRs name Muhammad Danish Rafiq.**")
+    assert answer.startswith("**3 FIRs name Muhammad Danish Saleem.**")
     assert all(f"{n}/2023" in answer for n in (45, 46, 47))
 
 
@@ -494,6 +494,98 @@ def test_sherlock_asks_which_case_this_is_and_takes_the_officers_word():
     assert "case:which" not in [g["key"] for g in gaps(CaseFile(), clean)]
 
 
+def test_an_officer_only_checking_a_record_is_not_asked_about_an_incident():
+    """"He is not involved in any case, I am only checking his past record": there is no case,
+    so no incident is asked about - until the officer describes one - and the report is his record."""
+    from sherlocks.evidence.questioner import NO_CASE_QUESTIONS, gaps
+    from sherlocks.linkgraph.relevance import the_new_case
+    from sherlocks.team.report_graph import NO_CASE, declared
+
+    graph, case = _graph(), CaseFile()
+    llm = Model(_Reading=_reading(states_something=True, people=["Muhammad Danish Saleem"]), _Record={
+        "entries": [{"what": "Danish is not involved in any case", "quote": "he is not involved in any case",
+                     "topic": "incident_offence", "value": "not involved in any case", "role": "suspect"}],
+        "suspected": ["Muhammad Danish Saleem"], "purpose": "says there is no case",
+        "read_back": "Noted: Muhammad Danish Saleem is not involved in any case; you are checking his past record."},
+        _Draft={"first_line": "Noted.", "answered": True, "sections": []}, _Check=OK)
+    final = list(run_turn(graph, "just checking Danish's past record, he is not involved in any case", case=case,
+                          llm=llm))[-1]
+    assert case.dialog["case_basis"] == "record_check" and not declared(case)
+    # What the model files with it - "not involved in any case" as an offence, the person as a suspect - is dropped.
+    assert not (case.incident or {}).get("offence") and "suspect" not in case.roles.values()
+    assert (final.get("asking") or {}).get("key") not in NO_CASE_QUESTIONS
+    assert not {q["key"] for q in case.open_questions()} & set(NO_CASE_QUESTIONS)
+    assert not {g["key"] for g in gaps(case, graph)} & set(NO_CASE_QUESTIONS)
+    assert "NO case" in the_new_case(case)["which_case"]
+    assert NO_CASE.startswith("The investigating officer said there is no case")
+    # What a message does is weighed in plain words: a request the JSON reading calls news is a question, and
+    # the role filter it gave without seeing a question is not taken.
+    from sherlocks.linkgraph import question_reader
+    from sherlocks.linkgraph.network import PersonNetwork
+
+    class Words:
+        def __init__(self, does):
+            self.does, self.prompts = does, []
+
+        def generate_text(self, *, prompt, **_):
+            self.prompts.append(json.loads(prompt))
+            return f"Thinking it over.\nANSWER: {self.does}\nROLE: any\nJUDGMENT: no"
+
+    seen = {"act": "statement", "asks_something": False, "states_something": True, "role": "complainant",
+            "type": "hotels", "people": ["Muhammad Danish Saleem"]}
+    real = question_reader.model_reading
+    question_reader.model_reading = lambda *a, **k: seen
+    try:
+        ask = question_reader.read_message("Danish ki hotel stays dikhao", PersonNetwork(graph), case, [], llm=Words("ask"))
+        assert ask["act"] == "question" and ask["tells"] is False and ask["role"] is None
+        # "Not X - Y!", a bare name: the last question, pointed at that person, is answered.
+        case.dialog["last_question"] = "kn c fir krwai ha Danish ne?"
+        ask = question_reader.read_message("Danish Saleem!", PersonNetwork(graph), case, [], llm=Words("point"))
+        assert ask["act"] == "question" and ask["pointed"] and ask["question_text"] == "kn c fir krwai ha Danish ne? (Danish Saleem!)"
+        assert ask["tells"] is False
+    finally:
+        question_reader.model_reading = real
+
+    # Once the officer describes an incident, it is a case again and its questions come back.
+    case.set_incident({"offence": "robbery"})
+    keys = {g["key"] for g in gaps(case, graph)}
+    assert "incident:when" in keys and "incident:place" in keys
+
+
+def test_which_case_a_message_is_about_is_weighed_in_plain_words():
+    """The Case matcher reasons in words and code reads its last line; a named FIR must be on file,
+    and its answer replaces the recorder's own guess."""
+    from sherlocks.linkgraph.network import PersonNetwork
+    from sherlocks.team import case_matcher, recorder
+
+    firs = [{"fir": "45/2023"}, {"fir": "12/21"}]
+    read = case_matcher.read_answer
+    assert read("Same victim, same shop.\nANSWER: same 45/2023", firs)["fir"] == "45/2023"
+    assert read("ANSWER: same FIR 45/23", firs)["fir"] == "45/2023"              # as the officer may write it
+    assert read("ANSWER: same 99/24", firs) is None                              # not on file: no answer
+    assert read("ANSWER: new\nOn second thought...\nANSWER: no event", firs)["says"] == "no event"   # the last line
+    assert read("He only asks who Danish is.", firs) is None
+    said = recorder._Record(read_back="Noted.", purpose="says there is no case", this_case="an FIR already on record",
+                            this_case_fir="45/2023")
+    assert recorder.with_match(said, {"says": "no event", "fir": ""}).purpose == "not said"
+    assert recorder.with_match(said, {"says": "no case", "fir": ""}).this_case == "not said"
+    assert recorder.with_match(said, {"says": "new", "fir": ""}).this_case == "a new matter"
+    assert recorder.with_match(said, None) is said
+
+    class Plain:
+        def generate_text(self, *, prompt, system, **_):
+            given = json.loads(prompt)
+            assert given["message"] == "Asif ki dukaan wali firing ka case hai" and given["firs_on_file"][0]["fir"]
+            return "The same shooting at Asif's shop.\nANSWER: same 45/2023"
+
+    graph = _graph()
+    case = CaseFile()
+    case.add_document(kind="fir", key="fir:45", title="FIR 45/2023", source="PSRMS", text="Firing at Asif's shop.",
+                      ref={"fir_no": "45", "fir_year": "2023"}, data={"narrative": "Firing at Asif's shop."})
+    assert case_matcher.match(case, PersonNetwork(graph), "Asif ki dukaan wali firing ka case hai", Plain())["fir"] == "45/2023"
+    assert case_matcher.match(case, PersonNetwork(graph), "anything", object()) is None     # no plain-text model
+
+
 def test_a_message_that_tells_and_asks_is_recorded_and_answered():
     from sherlocks.linkgraph.question_reader import _shape
 
@@ -505,9 +597,9 @@ def test_a_message_that_tells_and_asks_is_recorded_and_answered():
         return {"first_line": "Naye mamle (fraud) ki tareekh abhi record mein nahi; FIR 45/2023 us ka purana case hai.",
                 "answered": True, "sections": []}
 
-    llm = Model(_Reading=_reading(states_something=True, people=["Muhammad Danish Rafiq"], shape="other", scope="case"),
+    llm = Model(_Reading=_reading(states_something=True, people=["Muhammad Danish Saleem"], shape="other", scope="case"),
                 _Record={"entries": [{"what": "Danish cheated the complainant of 5 lakh", "quote": "fraud kiya, 5 lakh liye",
-                                      "topic": "incident_offence", "value": "fraud (5 lakh)", "about": "Muhammad Danish Rafiq"}],
+                                      "topic": "incident_offence", "value": "fraud (5 lakh)", "about": "Muhammad Danish Saleem"}],
                          "this_case": "a new matter", "read_back": "Note kar liya: naya mamla - fraud, 5 lakh."},
                 _Draft=draft, _Check=OK)
     events = list(run_turn(_graph(), "naya mamla hai: Danish ne mere saath fraud kiya, 5 lakh liye - is case ki tareekh kya hai?",
@@ -530,13 +622,13 @@ def test_a_message_that_tells_and_asks_is_recorded_and_answered():
 def test_every_question_leaves_a_trace_of_which_agent_did_what_and_who_handed_what_to_whom():
     from sherlocks.team.trace import overview
 
-    backend, case = _Backend({"evs": {"name": "Muhammad Danish Rafiq", "cnic": "9999900000777",
+    backend, case = _Backend({"evs": {"name": "Muhammad Danish Saleem", "cnic": "9999900000777",
                                       "organisation": "Karachi Port Trust", "designation": "Clerk"}}), CaseFile()
 
     def draft(prompt):
         if not json.loads(prompt)["given"]["looked_up_now"]:
             return {"first_line": "Records mein Danish ka kaam nahi hai.", "answered": False,
-                    "lookups": [{"tool": "api_router", "args": {"who": "Muhammad Danish Rafiq", "topic": "work"},
+                    "lookups": [{"tool": "api_router", "args": {"who": "Muhammad Danish Saleem", "topic": "work"},
                                  "why": "his employer"}]}
         return {"first_line": "Danish Karachi Port Trust mein Clerk hai.", "answered": True,
                 "sections": [{"name": "Identity", "body": "• Karachi Port Trust, Clerk [EVS]"}]}
@@ -684,3 +776,29 @@ def test_a_new_suspicion_about_a_crime_already_on_file_is_that_case_not_a_new_ma
                   _Record={"entries": [], "answers": "Q1", "this_case": "not said", "read_back": "Noted."})
     list(run_turn(graph, "he is involved", case=case, llm=vague))
     assert not case.dialog.get("case_basis") and "case:which" in {q["key"] for q in case.open_questions()}
+
+
+def test_the_hint_keeper_keeps_only_hints_that_rest_on_the_cases_records():
+    """A hint from the chat is kept as a lead only when it rests on a record of the case: not on the officer's own
+    words, not twice, and never more than three from one reply. Made-up case."""
+    from sherlocks.team import hint_keeper
+
+    case = CaseFile()
+    lab = case.add_document(kind="lab", key="lab:1", title="Chemical report (FIR 9/26)", source="Lab", text="GSR heavier at the back")
+    fact = case.add_fact(lab, "Residue is heavier on the back of the shirt.", "GSR", by="ai", check_quote=False)
+    said = case.officer_note("I think the uncle did it")[0]
+    mine = case.add_fact(said, "The officer thinks the uncle did it.", "uncle", by="officer", check_quote=False)
+
+    class Plain:
+        def generate_text(self, **_):
+            return (f"HINT: Residue heavier on the back of the shirt | the shot may have come from behind | ask the "
+                    f"MLO about the wound | {fact}\nHINT: The uncle did it | the officer said so | arrest him | {mine}\n"
+                    f"HINT: Residue heavier on the back of the shirt | again | again | {fact}")
+
+    kept = hint_keeper.keep(case, "which way was he shot?", f"Residue on the back [{fact}]; officer view [{mine}]", "", Plain(), turn=3)
+    assert len(kept) == 1
+    lead = case.leads[kept[0]]
+    assert lead["rests_on"] == [fact] and lead["found_in"] == "chat" and lead["turn"] == 3 and lead["next_step"].startswith("ask")
+    assert hint_keeper.keep(case, "q", f"[{fact}]", "", Plain()) == []                  # already on the board
+    assert hint_keeper.keep(case, "q", f"only the officer [{mine}]", "", Plain()) == []  # rests on no record
+    assert hint_keeper.keep(case, "q", f"[{fact}]", "", object()) == []                  # no plain-text model

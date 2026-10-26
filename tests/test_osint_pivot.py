@@ -11,7 +11,7 @@ from sherlocks.linkgraph.models import PersonRef, SystemRecord
 from sherlocks.osint.match import KnownFacts, emails_in, match_pipl, score_pipl_person
 from sherlocks.settings import Settings
 
-KNOWN = KnownFacts(name="Qurban Sarfraz Mirbahar", father_name="Allah Dino Mirbahar", phones=["03001234567"],
+KNOWN = KnownFacts(name="Qadir Saleem Somro", father_name="Ilahi Bux Somro", phones=["03001234567"],
                    addresses=["House 4, Street 9, Latifabad, Hyderabad"], organisations=["Sindh Bank"])
 
 
@@ -20,23 +20,23 @@ def person(name: str, **extra) -> dict:
 
 
 def test_emails_are_found_anywhere_in_a_structure():
-    assert emails_in({"a": ["x", {"email": "Q.Mirbahar@Gmail.com."}], "b": "logo@site.png"}) == ["q.mirbahar@gmail.com"]
+    assert emails_in({"a": ["x", {"email": "Q.Somro@Gmail.com."}], "b": "logo@site.png"}) == ["q.somro@gmail.com"]
 
 
 def test_the_same_phone_settles_it():
-    m = score_pipl_person(KNOWN, person("Qurban Mirbahar", phones=[{"display_international": "+92 300 1234567"}],
-                                        emails=[{"address": "qurban@example.pk"}]))
-    assert m.status == "corroborated" and m.emails == ["qurban@example.pk"] and "same phone" in m.reasons[0]
+    m = score_pipl_person(KNOWN, person("Qadir Somro", phones=[{"display_international": "+92 300 1234567"}],
+                                        emails=[{"address": "qadir@example.pk"}]))
+    assert m.status == "corroborated" and m.emails == ["qadir@example.pk"] and "same phone" in m.reasons[0]
 
 
 def test_city_and_father_together_corroborate():
-    m = score_pipl_person(KNOWN, person("Qurban Sarfraz", addresses=[{"display": "Latifabad, Hyderabad, Sindh"}],
-                                        relationships=[{"names": [{"display": "Allah Dino Mirbahar"}]}]))
+    m = score_pipl_person(KNOWN, person("Qadir Saleem", addresses=[{"display": "Latifabad, Hyderabad, Sindh"}],
+                                        relationships=[{"names": [{"display": "Ilahi Bux Somro"}]}]))
     assert m.status == "corroborated" and any("relative named" in r for r in m.reasons)
 
 
 def test_one_supporting_fact_is_only_possible_and_a_different_name_is_rejected():
-    assert score_pipl_person(KNOWN, person("Qurban Sarfraz", addresses=[{"display": "Hyderabad"}])).status == "possible"
+    assert score_pipl_person(KNOWN, person("Qadir Saleem", addresses=[{"display": "Hyderabad"}])).status == "possible"
     assert score_pipl_person(KNOWN, person("Bilal Khan", phones=[{"display": "03001234567"}])).status == "rejected"
 
 
@@ -49,7 +49,7 @@ def test_a_common_name_needs_more_than_a_city():
 
 def test_candidates_are_ranked_corroborated_first():
     body = {"possible_persons": [person("Someone Else"),
-                                 person("Qurban Mirbahar", phones=[{"display": "0300-1234567"}])]}
+                                 person("Qadir Somro", phones=[{"display": "0300-1234567"}])]}
     assert [m.status for m in match_pipl(KNOWN, body)] == ["corroborated", "rejected"]
 
 
@@ -92,7 +92,7 @@ def _expansion(**osint) -> SimpleNamespace:
     for k, v in osint.items():
         setattr(s.osint, k, v)
     b = GraphBuilder()
-    b.upsert_person(PersonRef(cnic="9999900000011", name="Qurban Sarfraz Mirbahar", phones=["03001234567"],
+    b.upsert_person(PersonRef(cnic="9999900000011", name="Qadir Saleem Somro", phones=["03001234567"],
                               addresses=["House 4, Street 9, Latifabad, Hyderabad"]), depth=0)
     log: list[str] = []
     return SimpleNamespace(settings=s, builder=b, _emit=lambda level, msg: log.append(msg), _check=lambda: None, log=log)
@@ -125,26 +125,26 @@ def test_with_no_email_the_name_is_matched_against_the_records(monkeypatch):
     def fake_search(name, key, city=None, country="PK", timeout=60):
         asked.update(name=name, city=city, country=country)
         return {"possible_persons": [
-            person("Qurban Sarfraz Mirbahar", phones=[{"display": "+923001234567"}], emails=[{"address": "qurban@x.pk"}]),
-            person("Qurban Sarfraz Mirbahar", emails=[{"address": "stranger@x.pk"}]),
+            person("Qadir Saleem Somro", phones=[{"display": "+923001234567"}], emails=[{"address": "qadir@x.pk"}]),
+            person("Qadir Saleem Somro", emails=[{"address": "stranger@x.pk"}]),
         ]}
 
     monkeypatch.setattr(ct, "pipl_name_search", fake_search)
     x = _expansion(pipl_api_key="k")
     matches, emails = _Pivot(x, "p1").name_match("hyderabad")
-    assert asked == {"name": "Qurban Sarfraz Mirbahar", "city": "hyderabad", "country": "PK"}
-    assert list(emails) == ["qurban@x.pk"]                      # the stranger's email is not taken
+    assert asked == {"name": "Qadir Saleem Somro", "city": "hyderabad", "country": "PK"}
+    assert list(emails) == ["qadir@x.pk"]                      # the stranger's email is not taken
     assert [m.status for m in matches] == ["corroborated", "rejected"]
 
 
 def test_hunter_finds_a_work_email_from_name_and_employer(monkeypatch):
     import sherlocks.osint.custom_tools as ct
 
-    monkeypatch.setattr(ct, "hunter_find_email", lambda name, org, key, timeout=30: {"email": "qurban@sindhbank.pk", "score": 88})
+    monkeypatch.setattr(ct, "hunter_find_email", lambda name, org, key, timeout=30: {"email": "qadir@sindhbank.pk", "score": 88})
     x = _expansion(hunter_api_key="k")
     x.builder.person("p1")["organisations"].append("Sindh Bank")
     _, emails = _Pivot(x, "p1").name_match(None)
-    assert "qurban@sindhbank.pk" in emails and "confidence 88" in emails["qurban@sindhbank.pk"]
+    assert "qadir@sindhbank.pk" in emails and "confidence 88" in emails["qadir@sindhbank.pk"]
 
 
 def test_without_keys_name_matching_says_what_it_needs():

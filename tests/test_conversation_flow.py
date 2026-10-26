@@ -188,10 +188,10 @@ def test_the_second_failing_session():
     def person(pid, label):
         return {"id": pid, "kind": "person", "label": label, "data": {}}
 
-    net = PersonNetwork({"nodes": [person("n", "SUB INSPECTOR-Fahim Baig"), person("m", "Muhammad Yasir SUB INSPECTOR"),
-                                   person("k", "Qaiser Zaman Sub Inspector"), person("z", "ریحانہ خاتون"),
-                                   person("a", "Muhammad Danish Rafiq"), person("t", "افضل خان"),
-                                   person("l", "فضل آفریدی")], "edges": []})
+    net = PersonNetwork({"nodes": [person("n", "SUB INSPECTOR-Fahim Akram"), person("m", "Muhammad Shoaib SUB INSPECTOR"),
+                                   person("k", "Asad Jamal Sub Inspector"), person("z", "فرضی خاتون"),
+                                   person("a", "Muhammad Danish Saleem"), person("t", "افضل خان"),
+                                   person("l", "فضل محمود")], "edges": []})
     assert _mentioned(net, "fir k statuses batou sub inspector fahim ki ?") == ["n"]
     assert understand("fir k statuses batou sub inspector fahim ki ?", net, ["a"])["type"] == "fir_status"
     q = understand("kit ni fir in k uper ha", net, ["n"])
@@ -220,23 +220,23 @@ def test_firs_are_told_in_words_with_the_persons_role():
     assert rule_type("har fir ma kya ilzaam ha ?", 1) == "fir_details"
     assert rule_type("kya us par qatl ka case hai?", 1) == "serious_cases"
 
-    net = PersonNetwork({"nodes": [{"id": "a", "kind": "person", "label": "Muhammad Danish Rafiq", "data": {"firs": [
-        {"label": "391/26", "ps": "Bin Qasim", "role": "Accused / suspect", "offence": "376, 511, 337A", "system": "psrms"},
-        {"label": "345/26", "ps": "Preedy", "role": "AFFP", "offence": "324, 365, 375", "system": "psrms"},
-        {"label": "884/26", "ps": "Ferozabad", "role": "Accused / suspect", "offence": "489F", "system": "psrms"},
-        {"label": "1124/25", "ps": "Ferozabad", "role": "Accused", "offence": "406", "system": "psrms"},
-        {"label": "1124/2025", "ps": "Ferozabad", "role": "Accused (ARMS)", "offence": "406", "system": "arms"}]}}],
+    net = PersonNetwork({"nodes": [{"id": "a", "kind": "person", "label": "Muhammad Danish Saleem", "data": {"firs": [
+        {"label": "301/26", "ps": "Bin Qasim", "role": "Accused / suspect", "offence": "376, 511, 337A", "system": "psrms"},
+        {"label": "245/26", "ps": "Preedy", "role": "AFFP", "offence": "324, 365, 375", "system": "psrms"},
+        {"label": "784/26", "ps": "Ferozabad", "role": "Accused / suspect", "offence": "489F", "system": "psrms"},
+        {"label": "1024/25", "ps": "Ferozabad", "role": "Accused", "offence": "406", "system": "psrms"},
+        {"label": "1024/2025", "ps": "Ferozabad", "role": "Accused (ARMS)", "offence": "406", "system": "arms"}]}}],
         "edges": []})
     facts = case_queries.serious_cases(net, "a")
-    assert [it["fir"] for it in facts["items"]] == ["391/26", "345/26"]
+    assert [it["fir"] for it in facts["items"]] == ["301/26", "245/26"]
     reply = narrate(facts, "roman")
-    assert reply.startswith("Haan - Muhammad Danish Rafiq 1 sangeen FIR(s) mein mulzim hai: FIR 391/26 (zina bil jabr ki koshish")
-    assert "FIR 345/26" in reply and "muddai" not in reply.split("FIR 345/26")[0]   # victim there, said apart
+    assert reply.startswith("Haan - Muhammad Danish Saleem 1 sangeen FIR(s) mein mulzim hai: FIR 301/26 (zina bil jabr ki koshish")
+    assert "FIR 245/26" in reply and "muddai" not in reply.split("FIR 245/26")[0]   # victim there, said apart
     assert "mutasira fareeq hai, mulzim nahi" in reply
-    assert case_queries.cases(net, "a")["count"] == 4                             # 1124/25 = 1124/2025
+    assert case_queries.cases(net, "a")["count"] == 4                             # 1024/25 = 1024/2025
     qatl = narrate(case_queries.serious_cases(net, "a", asked_crimes("kya us par qatl ka case hai?")), "en")
-    assert qatl.startswith("No - Muhammad Danish Rafiq is not accused of")
-    assert "FIR 345/26" in qatl and "not the accused" in qatl
+    assert qatl.startswith("No - Muhammad Danish Saleem is not accused of")
+    assert "FIR 245/26" in qatl and "not the accused" in qatl
 
 
 def test_the_io_report_is_read_from_the_fir_file():
@@ -264,14 +264,14 @@ def test_the_io_report_is_read_from_the_fir_file():
              "چالان")
     fir_file(11, "فریقین کا لین دین کا تنازعہ ہے۔ مقدمہ بالا کا ڈسپوزل فائنل رپورٹ(C) کلاس قطع کرنے کی استدعا کی جاتی ہے۔",
              "اخراج رپورٹ")
-    net = PersonNetwork({"nodes": [{"id": "d", "kind": "person", "label": "Muhammad Danish Rafiq", "data": {
+    net = PersonNetwork({"nodes": [{"id": "d", "kind": "person", "label": "Muhammad Danish Saleem", "data": {
         "cnic": "9999900000777", "firs": [{"label": "10/22", "ps": "PS One", "role": "Accused", "offence": "392"},
                                           {"label": "11/22", "ps": "PS Two", "role": "Accused", "offence": "406"}]}}],
         "edges": []})
     facts = case_queries.io_report(net, "d", case)
     assert [i["detail"]["verdict"] for i in facts["items"]] == ["challan", "c_class"]
     reply = narrate(facts, "en")
-    assert reply.startswith("According to the IO reports on Muhammad Danish Rafiq: in 1 FIR(s) (10/22) the IO found him liable")
+    assert reply.startswith("According to the IO reports on Muhammad Danish Saleem: in 1 FIR(s) (10/22) the IO found him liable")
     assert "in 1 (11/22) the IO did not hold him guilty" in reply
     assert "SUB INSPECTOR Test Officer".title().split()[0] in reply and "قابل چالان شہادتیں" in reply
     assert case_queries.outcome("اخراج رپورٹ") == "disposed / closed"

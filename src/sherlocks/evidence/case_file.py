@@ -47,6 +47,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 _MAX_TEXT = 60_000
+UPLOAD_TEXT = 400_000          # a document the officer uploads is kept whole (an inquiry report runs to 60+ pages)
 _SPACE = re.compile(r"\s+")
 CITATION = re.compile(r"\b([DFLHQWXK]\d{1,4})\b")
 TIERS = ("fact", "inference", "speculation")
@@ -235,6 +236,14 @@ class CaseFile:
             self.pending.add(key)
             return True
 
+    def upload_status(self, name: str, state: str, **info: Any) -> None:
+        """Where the reading of an attached file has got - received, extracting, reading, analysing, done, failed -
+        for the officer's chat (one line a file, updated in place)."""
+        with self._lock:
+            uploads = self.dialog.setdefault("uploads", {})
+            uploads[name] = {**(uploads.get(name) or {}), **info, "state": state, "at": _now()}
+            self._bump("upload", name)
+
     def release(self, key: str) -> None:
         with self._lock:
             self.pending.discard(key)
@@ -250,7 +259,7 @@ class CaseFile:
                      summary: str = "", ref: dict[str, Any] | None = None, owners: list[str] | None = None,
                      images: list[dict[str, Any]] | None = None, people: list[dict[str, Any]] | None = None,
                      data: dict[str, Any] | None = None, urls: list[str] | None = None,
-                     unread_pages: list[int] | None = None) -> str:
+                     unread_pages: list[int] | None = None, max_text: int = _MAX_TEXT) -> str:
         with self._lock:
             if key in self.keys:
                 doc = self.documents[self.keys[key]]
@@ -263,7 +272,7 @@ class CaseFile:
             doc_id = f"D{len(self.documents) + 1}"
             self.documents[doc_id] = {
                 "id": doc_id, "kind": kind, "key": key, "title": title, "source": source,
-                "summary": summary, "text": (text or "")[:_MAX_TEXT], "ref": ref or {}, "owners": list(owners or []),
+                "summary": summary, "text": (text or "")[:max_text], "ref": ref or {}, "owners": list(owners or []),
                 "images": images or [], "people": people or [], "data": data or {}, "urls": urls or [],
                 "unread_pages": unread_pages or [], "fetched_at": _now(), "facts": [], "read_by": [],
                 "agent": self.current_agent(), "event": self.current_event(),
@@ -315,7 +324,8 @@ class CaseFile:
             for link in self.links.values():
                 if link["doc"] == doc_id and link["pid"] == pid:
                     return link["id"]
-            link_id = f"L{len(self.links) + 1}"
+            # The next free number - links can be dropped (a stale phone link), so a count would reuse an id.
+            link_id = f"L{max((int(k[1:]) for k in self.links if k[1:].isdigit()), default=0) + 1}"
             self.links[link_id] = {"id": link_id, "doc": doc_id, "pid": pid, "name": name, "how": how,
                                    "quote": squash(quote)[:400], "strength": strength, "agent": self.current_agent(),
                                    "event": self.current_event()}
@@ -793,7 +803,9 @@ class CaseFile:
         with self._lock:
             return {
                 "version": self.version, "counts": self.counts(),
-                "documents": [{k: v for k, v in d.items() if k not in ("text", "data")} for d in self.documents.values()],
+                # A document's full reading (an inquiry's 160 steps) is fetched with the document; the index
+                # carries only how far its reading has got.
+                "documents": [{k: v for k, v in d.items() if k not in ("text", "data", "reading")} for d in self.documents.values()],
                 "facts": list(self.facts.values()), "links": list(self.links.values()),
                 "attempts": self.attempts[-60:], "report_status": self.report_status,
                 "incident": self.incident, "roles": dict(self.roles), "questions": list(self.questions),
@@ -808,6 +820,7 @@ class CaseFile:
                              "pending": self.register.get("pending") or []},
                 "claims": len(self.claims), "critical_waiting": list(self.dialog.get("critical_waiting") or []),
                 "analysis": list(self.analysis.values()), "team_run": (self.dialog.get("team_runs") or [None])[-1],
+                "uploads": dict(self.dialog.get("uploads") or {}),
             }
 
     def document(self, doc_id: str) -> dict[str, Any] | None:

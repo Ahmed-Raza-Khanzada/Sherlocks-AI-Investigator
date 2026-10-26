@@ -26,7 +26,7 @@ from sherlocks.team.runtime import NEW_CASE, PLAIN, Typed, ask, dumps
 
 # The kinds of entry code writes when it finds something out of pattern.
 HINTS = ("telecom_silence_incident", "telecom_imei_change", "telecom_spike", "cdr_cross", "custody_gap")
-STATES = ("spotted", "open", "pursuing", "confirmed", "dead end")
+STATES = ("spotted", "open", "pursuing", "confirmed", "answered", "dead end")      # answered: a record now gives it
 # Patterns the graph notes that are too common to be a lead: a SIM registered in another person's
 # name (in Pakistan usually a relative's or a friend's), a tenancy witness, a PRVS guarantor.
 NOT_A_LEAD = NOT_EVIDENCE
@@ -57,7 +57,8 @@ _SYSTEM = ("You are the lead spotter of a police investigation team. Code found 
            "pattern in the call records, the records or the graph. For each, write one line on why it could matter, "
            "the hypothesis it bears on (only an id given), and the single next step that would test it. A lead is a "
            "possibility to check, never evidence and never an accusation. The next step must be something the "
-           "police can do with records: get a CDR, look up an owner, record a statement, ask the officer. " + NEW_CASE + PLAIN
+           "police can do with records: get a CDR, look up an owner, record a statement, ask the officer. Say only what "
+           "the records show: no forensic or medical claim the records do not make. " + NEW_CASE + PLAIN
            + DATA_NOT_INSTRUCTIONS)
 _OUTCOME_SYSTEM = ("A lead of an investigation was put to the investigating officer as a question. Read the answer "
                    "and say where the lead stands now. " + DATA_NOT_INSTRUCTIONS)
@@ -118,7 +119,7 @@ def run(case: Any, net: Any, llm: Any) -> dict[str, int]:
                 "hints": [{"id": f["id"], "text": f["statement"], "tier": f.get("tier"), "rows": f.get("rows")} for f in batch],
                 "hypotheses": [{"id": h["id"], "statement": h["statement"], "status": h["status"]}
                                for h in case.hypotheses.values() if not h.get("stale")],
-                "the_new_case": the_new_case(case)}), system=_SYSTEM, kind="leads", version="v2", max_tokens=2000)
+                "the_new_case": the_new_case(case)}), system=_SYSTEM, kind="leads", version="v3", max_tokens=2000)
             written = {lead.hint: lead for lead in out.leads} if out is not None else {}
             for f in batch:
                 lead = written.get(f["id"])
@@ -156,7 +157,7 @@ def redescribe(case: Any, llm: Any) -> int:
         "hints": [{"id": k["source"], "text": k["hint"]} for k in waiting],
         "hypotheses": [{"id": h["id"], "statement": h["statement"], "status": h["status"]}
                        for h in case.hypotheses.values() if not h.get("stale")],
-        "the_new_case": the_new_case(case)}), system=_SYSTEM, kind="leads", version="v2", max_tokens=2000)
+        "the_new_case": the_new_case(case)}), system=_SYSTEM, kind="leads", version="v3", max_tokens=2000)
     if out is None:
         return 0
     by = {lead.hint: lead for lead in out.leads}
@@ -167,8 +168,10 @@ def redescribe(case: Any, llm: Any) -> int:
         if lead is None:
             continue
         with case._lock:
-            k.update({"why": lead.why[:300], "next_step": lead.next_step[:300], "question": lead.question[:300],
-                      "hypothesis": lead.hypothesis if lead.hypothesis in case.hypotheses else None, "bears": lead.bears})
+            if k.get("found_in") not in ("chat", "document"):
+                # A lead noted from the chat or raised by a document keeps its own words; it only gets its hypothesis.
+                k.update({"why": lead.why[:300], "next_step": lead.next_step[:300], "question": lead.question[:300]})
+            k.update({"hypothesis": lead.hypothesis if lead.hypothesis in case.hypotheses else None, "bears": lead.bears})
             case._bump("lead", k["id"])
         if k["status"] == "spotted":
             case.move(k["id"], "open", "described")

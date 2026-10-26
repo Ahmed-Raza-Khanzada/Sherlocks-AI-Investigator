@@ -90,7 +90,11 @@ def build(case: Any, graph: dict[str, Any], net: Any, message: str, *, people: l
                  "status": q["status"]} for q in case.questions if q["status"] in ("answered", "dont_know")]
     missing = []
     if message:
-        holders = " ".join(m["text"].lower() for m in matched)
+        # A topic is missing only if neither what matched nor the documents on these people hold it - a search
+        # that missed the lab reports once made "no lab on record" a fact Sherlock repeated.
+        mine = [case.documents.get(d["id"]) or {} for p in (people or net.seeds()) for d in case.for_person(p)["documents"]]
+        holders = " ".join([*(m["text"].lower() for m in matched),
+                            *(f"{d.get('kind', '')} {d.get('title', '')} {d.get('ai_summary') or ''}".lower() for d in mine)])
         for topic in kb.topics(message):
             if topic not in holders and not any(topic in c for e in hits for c in e.concepts):
                 who = ", ".join(net.name(p) for p in people) or "the case"

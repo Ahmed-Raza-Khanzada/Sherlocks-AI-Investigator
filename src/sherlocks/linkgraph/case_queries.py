@@ -110,6 +110,19 @@ def _firs(net: PersonNetwork, pid: str, case: Any = None) -> list[dict[str, Any]
         row["offence"] = row["offence"] or f.get("offence")
         if not row["ps"] and f.get("ps"):
             row["ps"] = f["ps"]
+    for link in (case.links.values() if case is not None else []):
+        # An FIR file that names him by CNIC or phone though no system lists him as a party (a victim named in a
+        # relative's FIR) is one of his FIRs too - "his FIRs" never leaves it out.
+        doc = case.documents.get(link["doc"]) or {}
+        ref = doc.get("ref") or {}
+        if link["pid"] != pid or link.get("strength") != "identifier" or doc.get("kind") != "fir" or not ref.get("fir_no"):
+            continue
+        label = f"{ref['fir_no']}/{str(ref.get('fir_year') or '')[-2:]}"
+        if fir_key(label) not in out:
+            data = doc.get("data") or {}
+            out[fir_key(label)] = {"label": label, "ps": data.get("police_station") or "", "offence": data.get("sections"),
+                                   "roles": [f"named in the FIR file ({link['how'].split(' appears')[0]})"],
+                                   "sources": ["FIR file"]}
     cnic = re.sub(r"\D", "", str(net.data(pid).get("cnic") or ""))
     for row in out.values():
         doc = fir_document(case, row["label"])

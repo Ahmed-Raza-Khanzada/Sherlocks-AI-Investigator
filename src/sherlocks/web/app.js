@@ -29,7 +29,7 @@
   const FLAG_INFO = {
     criminal_record: ['Criminal record', 'red'], watchlist: ['Watchlist', 'red'],
     arms_record: ['Arms record', 'red'], fir_record: ['In FIR', 'grey'],
-    stolen_vehicle: ['Stolen vehicle', 'orange'], police_officer: ['Police officer', 'blue'],
+    stolen_vehicle: ['Vehicle reported stolen (owner)', 'grey'], police_officer: ['Police officer', 'blue'],
     spam_reported: ['Spam reported', 'grey'], shared_contact: ['Shared/office number', 'grey'],
   };
   const STATUS_TEXT = {
@@ -925,6 +925,64 @@
     state.followTimer = setTimeout(tick, 1500);
   }
 
+  function readingBadge(st) {
+    // How far Sherlock has read an uploaded document: a long report is read part by part.
+    if (!st) return '';
+    if (st.state === 'reading') {
+      const pct = st.parts ? Math.round(100 * (st.done || 0) / st.parts) : 0;
+      return ` <span class="flag orange" title="Sherlock is reading this document">📖 Reading… ${st.parts > 1 ? `${st.done || 0}/${st.parts} parts (${pct}%)` : ''}</span>`;
+    }
+    if (st.state === 'failed') return ' <span class="flag red">Could not be read</span>';
+    return ' <span class="flag grey" title="Read in full">✓ Read</span>';
+  }
+
+  const UPLOAD_FINAL = ['done', 'failed'];
+
+  function uploadText(name, u, doc) {
+    // One line a file, in the chat, updated as the reading goes: received, text taken out, read part by part, done.
+    const st = doc?.reading_status || {};
+    const file = `<b>${esc(name)}</b>`;
+    if (u.state === 'received') return `📎 Received ${file} - starting to read it…`;
+    if (u.state === 'extracting') return `📄 Taking the text out of ${file}${u.kind === 'image' ? ' (reading the picture)' : ' (every page)'}…`;
+    if (u.state === 'analysing') return `📶 Analysing ${file} - call records or tower data…`;
+    if (u.state === 'reading') {
+      const parts = st.parts || 0;
+      const done = st.done || 0;
+      const pct = parts ? Math.round(100 * done / parts) : 0;
+      return `📖 Reading ${file} in full${u.pages ? ` (${u.pages} pages)` : ''}${parts > 1 ? ` - part ${done} of ${parts} (${pct}%)` : '…'}`
+        + (parts > 1 ? `<div class="upbar"><i style="width:${pct}%"></i></div>` : '');
+    }
+    if (u.state === 'failed') return `⚠ Could not read ${file}${u.reason ? `: ${esc(u.reason)}` : ''}. Try uploading it again.`;
+    const what = u.what ? ` (${esc(u.what)})` : '';
+    const found = u.events != null
+      ? `${u.events} dated step(s), ${u.findings || 0} finding(s), ${u.leads || 0} lead(s) put on the case board, ${u.people || 0} people named`
+      : `${u.findings || 0} fact(s) taken from it`;
+    return `✅ Done: ${u.note ? `${file} is ${esc(u.note)}` : `read ${file}${what}`}${u.doc ? ` [${esc(u.doc)}]` : ''} - ${found}. Ask me about it; the case board and the case report now use it.`;
+  }
+
+  function renderUploads(c) {
+    state.uploadRows = state.uploadRows || {};
+    const docs = new Map((c?.documents || []).map((d) => [d.id, d]));
+    for (const [name, u] of Object.entries(c?.uploads || {})) {
+      let row = state.uploadRows[name];
+      const mine = (state.uploading || {})[name];
+      if (!row) {
+        // A file read long ago (before this page was opened) is not announced again.
+        if (UPLOAD_FINAL.includes(u.state) && !mine) continue;
+        row = state.uploadRows[name] = { el: sherlockSay('bot', '<b>Document agent</b>', 'upstatus'), last: '' };
+      }
+      const html = uploadText(name, u, docs.get(u.doc));
+      if (html !== row.last) {
+        row.el.innerHTML = html;
+        row.last = html;
+        row.el.classList.toggle('updone', u.state === 'done');
+        row.el.classList.toggle('unsure', u.state === 'failed');
+        $('sherlockLog').scrollTop = $('sherlockLog').scrollHeight;
+      }
+      if (UPLOAD_FINAL.includes(u.state) && state.uploading) delete state.uploading[name];
+    }
+  }
+
   function renderEvidence() {
     const c = state.caseIndex;
     showFollowups();
@@ -941,9 +999,10 @@
     const titles = docs.map((d) => d.title).join(' ');
     const missing = (c?.attempts || []).filter((a) => a.status !== 'hit'
       && !(a.status === 'accepted' && titles.includes(a.key.replace(/^upload:/, '')))).slice(-5);
+    renderUploads(c);
     $('evidenceList').innerHTML = docs.map((d) => `<li data-doc="${esc(d.id)}" title="Open the document">
         <span class="evicon">${KIND_ICON[d.kind] || '📎'}</span>
-        <span class="evmain"><b>${esc(d.id)}</b> ${esc(d.title)}<span class="muted small">${esc(d.ai_summary || d.summary || '')}</span></span>
+        <span class="evmain"><b>${esc(d.id)}</b> ${esc(d.title)}${readingBadge(d.reading_status)}<span class="muted small">${esc(d.ai_summary || d.summary || '')}</span></span>
         <span class="evfacts">${(d.facts || []).length}</span></li>`).join('')
       + missing.map((a) => `<li class="evmiss"><span class="evicon">${a.status === 'accepted' ? '⏳' : '∅'}</span><span class="evmain small muted">${esc(KIND_TEXT[a.kind] || a.kind)} ${esc(a.key.split(':').slice(1).join(':'))}: ${esc(a.message || a.status)}</span></li>`).join('')
       || '<li class="muted small">FIR files, lab reports and CRO dossiers appear here as the search reaches them.</li>';
@@ -980,7 +1039,7 @@
     // hypotheses ranked by the evidence against each, and the leads being followed.
     const xs = (c.contradictions || []).filter((x) => x.status === 'open' && x.severity !== 'minor');
     const crit = (c.critical_waiting || []).length;
-    const leads = (c.leads || []).filter((k) => !['confirmed', 'dead end'].includes(k.status));
+    const leads = (c.leads || []).filter((k) => !['confirmed', 'answered', 'dead end'].includes(k.status));
     const m = c.matrix || {};
     const ranked = (m.ranking || []).slice(0, 5).map((id) => {
       const h = (m.hypotheses || []).find((x) => x.id === id) || {};
@@ -1058,6 +1117,11 @@
     const patterns = live.filter((f) => f.by === 'graph').slice(0, 6);
     const qs = (c.questions || []).filter((q) => q.status === 'open');
     const line = (c.summary?.timeline || []).slice(-14);
+    // Leads that rest on a record: the chat's notes first, then the documents', then the rest - open ones only.
+    const order = { chat: 0, document: 1 };
+    const leads = (c.leads || []).filter((k) => !['confirmed', 'answered', 'dead end'].includes(k.status))
+      .sort((a, b) => (order[a.found_in] ?? 2) - (order[b.found_in] ?? 2));
+    const reading = Object.entries(c.uploads || {}).filter(([, u]) => !UPLOAD_FINAL.includes(u.state));
     const personCard = ([pid, n], i) => {
       const img = (n.data?.images || [])[0];
       const role = c.roles?.[pid];
@@ -1080,17 +1144,28 @@
             <span class="muted small">${esc(h.confidence)} confidence · for ${(h.for || []).length}, against ${(h.against || []).length}</span></div>`).join('')
             || '<p class="muted small">Sherlock\'s hypotheses are pinned here as he forms them.</p>'}</div>
       </div>
-      <div class="bzone bfacts"><h3>What the records say</h3>
+      <div class="bzone bfacts"><h3>What the records say</h3>${reading.map(([name, u]) => `<div class="bcard bindex breading"><span class="bpin orange"></span>${uploadText(name, u, (c.documents || []).find((d) => d.id === u.doc))}</div>`).join('')}
         ${docs.map((d, i) => { const fs = live.filter((f) => f.doc === d.id).slice(0, 3); return `<div class="bcard bindex" data-doc="${esc(d.id)}" data-pids="${esc([...new Set(fs.flatMap((f) => f.pids || []))].join(' '))}" style="${tilt(i + 1)}">
-          <span class="bpin blue"></span><b>${KIND_ICON[d.kind] || '📄'} ${esc(d.title)}</b>
+          <span class="bpin blue"></span><b>${KIND_ICON[d.kind] || '📄'} ${esc(d.title)}</b>${readingBadge(d.reading_status)}
           ${fs.map((f) => `<p class="bfact"><span class="btier ${esc(f.tier || 'fact')}">${esc(f.tier || 'fact')}</span>${esc(f.statement.slice(0, 140))}</p>`).join('') || `<p class="muted small">${esc((d.summary || '').slice(0, 120))}</p>`}</div>`; }).join('')}
         ${patterns.length ? `<div class="bcard bindex bpattern" data-pids="${esc([...new Set(patterns.flatMap((f) => f.pids || []))].join(' '))}" style="${tilt(9)}"><span class="bpin"></span><b>🔗 Patterns in the graph</b>
           ${patterns.map((f) => `<p class="bfact">${esc(f.statement.slice(0, 120))}</p>`).join('')}</div>` : ''}</div>
       <div class="bzone bnotes"><h3>Officer's notes</h3>${notes.map((f, i) => `<div class="bcard bnote" data-fact="${esc(f.id)}" style="${tilt(i + 5)}"><span class="bpin"></span>${esc(f.statement.replace(/^Stated by the officer(?: \(correction\))?: /, ''))}</div>`).join('') || '<p class="muted small">What you tell Sherlock is pinned here.</p>'}</div>
+      <div class="bzone bleads"><h3>Leads to check${leads.length ? ` (${leads.length})` : ''}</h3>${leads.slice(0, 12).map((k, i) => `<div class="bcard blead" data-lead="${esc(k.id)}" data-pids="${esc((k.people || []).join(' '))}" style="${tilt(i + 2)}">
+          <span class="bpin ${k.found_in === 'chat' ? 'green' : 'orange'}"></span><span class="hstat open">${esc(k.id)} · ${esc(k.status)}</span>
+          <p>${esc(k.hint)}</p>${k.next_step && k.next_step !== k.hint ? `<p class="muted small">→ ${esc(k.next_step)}</p>` : ''}
+          <span class="muted small">${k.found_in === 'chat' ? 'Noted from the chat' : k.found_in === 'document' ? esc(k.why || 'From a document') : 'From the records'}</span></div>`).join('')
+          || '<p class="muted small">Leads from the records, the documents and the chat are pinned here.</p>'}${leads.length > 12 ? `<p class="muted small">+${leads.length - 12} more in the case report.</p>` : ''}</div>
       <div class="bzone bquestions"><h3>Open questions</h3>${qs.map((q, i) => `<div class="bcard bq ${esc(q.priority || 'orange')}" style="${tilt(i + 7)}"><span class="bpin ${esc(q.priority || 'orange')}"></span>${esc(q.text)}</div>`).join('') || '<p class="muted small">Nothing open.</p>'}</div>
       <div class="bzone btimeline"><h3>Timeline</h3><div class="btrack">${line.map((r) => `<div class="btick" title="${esc(r.what)}"><b>${esc(String(r.when).slice(0, 16))}</b><span>${esc(r.what.slice(0, 80))}</span></div>`).join('') || '<p class="muted small">Dates appear as documents are read.</p>'}</div></div>`;
-    $('boardMeta').textContent = `${people.size} people · ${docs.length} documents · ${live.length} facts · ${(c.hypotheses || []).length} hypotheses`;
+    $('boardMeta').textContent = `${people.size} people · ${docs.length} documents · ${live.length} facts · ${leads.length} leads · ${(c.hypotheses || []).length} hypotheses`
+      + (reading.length ? ` · reading ${reading.length} file(s)…` : '');
     body.querySelectorAll('[data-doc]').forEach((el) => { el.onclick = () => openDocument(el.dataset.doc); });
+    body.querySelectorAll('[data-lead]').forEach((el) => {
+      const k = (c.leads || []).find((x) => x.id === el.dataset.lead);
+      const d = k && docOfRef(k.source || (k.rests_on || [])[0] || '');
+      if (d) el.onclick = () => openDocument(d, k.source);
+    });
     body.querySelectorAll('[data-fact]').forEach((el) => { el.onclick = () => { const d = docOfRef(el.dataset.fact); if (d) openDocument(d, el.dataset.fact); }; });
     body.querySelectorAll('[data-node]').forEach((el) => { el.onclick = () => { $('boardDlg').close(); if (state.nodes.has(el.dataset.node)) focusNode(el.dataset.node); }; });
     wireCites(body);
@@ -1523,6 +1598,8 @@
       await refreshCase();
       const c = state.caseIndex;
       const busy = (c?.counts?.pending || 0) > 0
+        || (c?.documents || []).some((d) => d.reading_status?.state === 'reading')
+        || Object.values(c?.uploads || {}).some((u) => !UPLOAD_FINAL.includes(u.state))
         || (c?.attempts || []).some((a) => a.status === 'accepted' && !(c.documents || []).some((d) => d.title.includes(a.key.replace(/^upload:/, ''))));
       if ((busy || polls < 4) && polls < 400) state.caseTimer = setTimeout(tick, 2500);
     };
@@ -1544,6 +1621,8 @@
         continue;
       }
       sherlockSay('you', `<b>You</b>📎 ${esc(f.name)}${note ? ` - ${esc(note)}` : ''}`);
+      state.uploading = state.uploading || {};
+      state.uploading[f.name] = true;
       const fd = new FormData();
       fd.append('file', f);
       if (note) fd.append('note', note);
@@ -1553,7 +1632,10 @@
         const r = await fetch(`${API}/graph/runs/${encodeURIComponent(id)}/uploads`, { method: 'POST', headers, body: fd });
         const body = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(body.detail || r.statusText);
-        sherlockSay('bot', `<b>Document agent</b>Received <b>${esc(f.name)}</b>. Reading it${ext === '.xlsx' ? ' - a CDR or tower dump goes to the CDR agent' : ''}; it appears under Case evidence when done.`);
+        if (!(state.uploadRows || {})[f.name]) {
+          state.uploadRows = state.uploadRows || {};
+          state.uploadRows[f.name] = { el: sherlockSay('bot', `<b>Document agent</b>📎 Received <b>${esc(f.name)}</b> - starting to read it${ext === '.xlsx' ? ' (a CDR or tower dump goes to the CDR agent)' : ' (a long report takes a few minutes)'}…`, 'upstatus'), last: '' };
+        }
       } catch (err) {
         sherlockSay('bot', `<b>Document agent</b>Could not take ${esc(f.name)}: ${esc(err.message)}`, 'unsure');
       }
@@ -1874,7 +1956,7 @@
     none: ['#64748b', 'No criminal-justice role'],
   };
   const ROLE_ORDER = ['accused', 'officer', 'complainant', 'victim', 'witness', 'fir'];
-  const CRIMINAL_FLAGS = ['criminal_record', 'watchlist', 'arms_record', 'stolen_vehicle'];
+  const CRIMINAL_FLAGS = ['criminal_record', 'watchlist', 'arms_record'];   // stolen_vehicle: the owner, a victim
 
   function roleFromText(text) {
     const t = String(text || '').toLowerCase();

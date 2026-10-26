@@ -461,10 +461,11 @@ def test_the_report_team_writes_the_parts_and_the_summary_last_from_them():
     assert order[:2] == ["P1 Report editor", "P1 Report editor"] and set(order[2:5]) == {
         "P2 Evidence writer", "P3 Statements and timeline writer", "P4 Analysis writer"}
     # P6 sent the summary back to P5 once (it cited D99, which is not on the board); the second passed.
-    assert order[5:] == ["P1 Report editor", "P2 Target writer", "P8 Record writer", "P7 Story writer", "P5 Summary writer",
+    assert order[5:] == ["P1 Report editor", "P2 Target writer", "P8 Record writer", "P7 Story writer", "P10 Case analyst",
+                         "P5 Summary writer",
                          "P6 Report checker", "P5 Summary writer", "P6 Report checker", "P1 Report editor"] and Writer.calls == 2
     # The report has one fixed structure, each section written by a named member of the team.
-    assert [s["key"] for s in report["structure"]] == ["glance", "summary", "story", "target", "record", "people", "statements",
+    assert [s["key"] for s in report["structure"]] == ["glance", "summary", "story", "target", "network", "record", "people", "statements",
                                                        "reports", "leads", "next_steps"]
     target = report["parts"]["target"]["targets"][0]
     assert target["name"] == "Kamran Aslam" and target["cnic"] == "9999900000011"
@@ -476,7 +477,8 @@ def test_the_report_team_writes_the_parts_and_the_summary_last_from_them():
     assert not any("no source" in s for s in summary["established"])           # a sentence that cites nothing is left out
     assert any("cites no id" in p for p in report["checked"])
     parts = report["parts"]
-    assert set(parts) == {"A", "B", "C", "D", "E", "F", "annex", "target", "record", "in_case", "case_story", "glance"}
+    assert set(parts) == {"A", "B", "C", "D", "E", "F", "annex", "target", "network", "record", "in_case", "case_story", "glance",
+                          "case_analysis"}
     assert next(p["name"] for p in parts["A"]["people"]) == "Kamran Aslam"
     assert parts["B"]["B1"]["cards"][0]["record"] == "fir" and parts["B"]["B2"]["cards"][0]["record"] == "mlo"
     assert parts["B"]["B3"]["custody"][0]["gaps"] and parts["B"]["B3"]["pending"] and "weapon" in parts["B"]["B7"]["by_topic"]
@@ -636,7 +638,7 @@ def test_work_planned_for_sherlock_runs_and_his_conclusion_comes_back_through_th
     assert asked["answer"].startswith("The FIR names Kamran")
     told = next(c for c in insight_desk.waiting(case) if c["kind"] == "investigation")
     assert told["ref"] == "ASK4" and "asal mein yeh kis ne kiya?" in told["text"]
-    assert case.report is not None and case.report["team"] == "P1-P8"   # the Report team prebuilt it after the run
+    assert case.report is not None and case.report["team"] == "P1-P11"   # the Report team prebuilt it after the run
 
 
 def test_the_summary_keeps_only_real_ids_in_brackets_and_five_next_steps():
@@ -921,63 +923,63 @@ def _murder_case():
                 "relation": {"sentence": sentence}}
 
     graph = {"nodes": [
-        person("p1", "Yasir Khan", seed=True, cnic="4220100000001", father_name="Murad Ali",
-               phones=["03026826209", "03146570055"],
-               firs=[{"key": "f1", "label": "569/26", "ps": "Bin Qasim", "role": "accused", "system": "psrms",
+        person("p1", "Shahid Noor", seed=True, cnic="4220100000001", father_name="Noor Ahmed",
+               phones=["03990000951", "03990000952"],
+               firs=[{"key": "f1", "label": "123/26", "ps": "Bin Qasim", "role": "accused", "system": "psrms",
                       "offence": "302, 201, 34"},
-                     {"key": "f2", "label": "211/24", "ps": "Saddar", "role": "accused", "system": "psrms",
+                     {"key": "f2", "label": "77/24", "ps": "Saddar", "role": "accused", "system": "psrms",
                       "offence": "324", "status": "challan"}]),
-        person("p2", "Wajid Sial", cnic="4220100000002"),
-        person("p3", "Nasir", cnic="4220100000003"),
-        person("p4", "Tehmoor Khan", cnic="4220100000004"),
-        person("p5", "Furqan Satti", cnic="4220100000005"),
-        person("p6", "Allah Dino ASI", cnic="4510200000006", flags=["police_officer"])],
+        person("p2", "Waqar Sheikh", cnic="4220100000002"),
+        person("p3", "Adnan", cnic="4220100000003"),
+        person("p4", "Rizwan Shah", cnic="4220100000004"),
+        person("p5", "Faheem Abbasi", cnic="4220100000005"),
+        person("p6", "Ghulam Nabi ASI", cnic="4510200000006", flags=["police_officer"])],
         "edges": [
-            tie("e1", "p2", "p1", "Registered owner of SIM 03026826209", "subscriber",
-                "Wajid Sial is registered owner of SIM 03026826209 used by Yasir Khan"),
-            tie("e2", "p3", "p1", "Family member (brother)", "trust", "Nasir is brother of Yasir Khan"),
-            tie("e3", "p4", "p1", "Co-accused in FIR 569/26", "psrms", "Tehmoor Khan is co-accused in FIR 569/26 with Yasir Khan"),
-            tie("e4", "p5", "p1", "Tenancy witness", "trust", "Furqan Satti was witness to the tenancy of Yasir Khan"),
-            tie("e5", "p6", "p1", "Witness in FIR 569/26", "psrms", "Allah Dino ASI is a witness in FIR 569/26 against Yasir Khan")]}
+            tie("e1", "p2", "p1", "Registered owner of SIM 03990000951", "subscriber",
+                "Waqar Sheikh is registered owner of SIM 03990000951 used by Shahid Noor"),
+            tie("e2", "p3", "p1", "Family member (brother)", "trust", "Adnan is brother of Shahid Noor"),
+            tie("e3", "p4", "p1", "Co-accused in FIR 123/26", "psrms", "Rizwan Shah is co-accused in FIR 123/26 with Shahid Noor"),
+            tie("e4", "p5", "p1", "Tenancy witness", "trust", "Faheem Abbasi was witness to the tenancy of Shahid Noor"),
+            tie("e5", "p6", "p1", "Witness in FIR 123/26", "psrms", "Ghulam Nabi ASI is a witness in FIR 123/26 against Shahid Noor")]}
     case = CaseFile()
     murder = case.add_document(
-        kind="fir", key="fir:569", title="FIR 569/26 · PS Bin Qasim", source="PSRMS",
-        text="FIR 569/26. ASI Allah Dino states: the body of an unknown woman was found in the bushes off Steel Mill Road.",
-        ref={"fir_no": "569", "fir_year": "2026"},
+        kind="fir", key="fir:123", title="FIR 123/26 · PS Bin Qasim", source="PSRMS",
+        text="FIR 123/26. ASI Ghulam Nabi states: the body of an unknown woman was found in the bushes off Link Road.",
+        ref={"fir_no": "123", "fir_year": "2026"},
         data={"sections": "302, 201, 34 PPC", "occurred": "30-09-2026 بوقت 0730 تا قبل", "reported": "30-09-2026 18:45",
-              "police_station": "Bin Qasim", "place": "Steel Mill Road, near Jinnah Gate",
-              "complainant": {"name": "Allah Dino ASI"},
-              "nominated_suspects": [{"name": "Yasir Khan"}, {"name": "Tehmoor Khan"}, {"name": "Saba Bibi"}],
-              "investigating_officers": [{"name": "Nizamuddin"}],
+              "police_station": "Bin Qasim", "place": "Link Road, near the old market",
+              "complainant": {"name": "Ghulam Nabi ASI"},
+              "nominated_suspects": [{"name": "Shahid Noor"}, {"name": "Rizwan Shah"}, {"name": "Rukhsana Bibi"}],
+              "investigating_officers": [{"name": "Saleemuddin"}],
               "case_positions": [{"date": "30-09-2026", "position": "under investigation"}]})
     pistol = case.add_document(
-        kind="fir", key="fir:577", title="FIR 577/26 · PS Bin Qasim", source="PSRMS",
-        text="FIR 577/26. In case 569/2026 the accused Tehmoor Khan, under interrogation, disclosed the pistol used, "
-             "hidden in car AADX-969; it was recovered.",
-        ref={"fir_no": "577", "fir_year": "26"},
+        kind="fir", key="fir:131", title="FIR 131/26 · PS Bin Qasim", source="PSRMS",
+        text="FIR 131/26. In case 123/2026 the accused Rizwan Shah, under interrogation, disclosed the pistol used, "
+             "hidden in car ABC-123; it was recovered.",
+        ref={"fir_no": "131", "fir_year": "26"},
         data={"sections": "25 Sindh Arms Act", "occurred": "04-10-2026 06:40 PM", "reported": "04-10-2026 19:30",
-              "police_station": "Bin Qasim", "complainant": {"name": "Nizamuddin SI"},
-              "nominated_suspects": [{"name": "Tehmoor Khan"}]})
+              "police_station": "Bin Qasim", "complainant": {"name": "Saleemuddin SI"},
+              "nominated_suspects": [{"name": "Rizwan Shah"}]})
     bakery = case.add_document(
-        kind="fir", key="fir:589", title="FIR 589/26 · PS Bin Qasim", source="PSRMS",
-        text="FIR 589/26. Abdul Ghaffar states: 25 workers of my bakery were paid and money was stolen.",
-        ref={"fir_no": "589", "fir_year": "26"},
+        kind="fir", key="fir:141", title="FIR 141/26 · PS Bin Qasim", source="PSRMS",
+        text="FIR 141/26. Abdul Sattar states: 25 workers of my bakery were paid and money was stolen.",
+        ref={"fir_no": "141", "fir_year": "26"},
         data={"sections": "381, 34", "occurred": "16-09-2026 07:00", "police_station": "Bin Qasim",
-              "complainant": {"name": "Abdul Ghaffar"}, "witnesses": [{"name": "Allah Dino ASI"}]})
-    said = case.add_statement(pistol, speaker="Nizamuddin SI", role="complainant", kind="fir", date="04-10-2026",
-                              recorded_by="Nizamuddin SI", text="In case 569/2026 the accused Tehmoor Khan, under "
+              "complainant": {"name": "Abdul Sattar"}, "witnesses": [{"name": "Ghulam Nabi ASI"}]})
+    said = case.add_statement(pistol, speaker="Saleemuddin SI", role="complainant", kind="fir", date="04-10-2026",
+                              recorded_by="Saleemuddin SI", text="In case 123/2026 the accused Rizwan Shah, under "
                               "interrogation, disclosed the pistol used")
-    other = case.add_statement(bakery, speaker="Abdul Ghaffar", role="complainant", kind="fir", date="16-09-2026",
+    other = case.add_statement(bakery, speaker="Abdul Sattar", role="complainant", kind="fir", date="16-09-2026",
                                text="25 workers of my bakery were paid and money was stolen.")
-    dna = case.add_document(kind="lab", key="lab:dna", title="DNA Report LAB-897779 (FIR 569/26)", source="Labs",
-                            text="DNA Lab Karachi University. FIR 569/26. Case received 08-10-2026.",
+    dna = case.add_document(kind="lab", key="lab:dna", title="DNA Report LAB-000123 (FIR 123/26)", source="Labs",
+                            text="DNA Lab Karachi University. FIR 123/26. Case received 08-10-2026.",
                             summary="DNA report · case received 08-10-2026 14:58")
-    theft_lab = case.add_document(kind="lab", key="lab:589", title="Chemical report (FIR 589/26)", source="Labs",
-                                  text="FIR 589/26 chemical report.")
-    sim = case.add_fact(murder, "SIMs used by Yasir Khan are registered on Wajid Sial's CNIC", "the body of an unknown woman",
+    theft_lab = case.add_document(kind="lab", key="lab:141", title="Chemical report (FIR 141/26)", source="Labs",
+                                  text="FIR 141/26 chemical report.")
+    sim = case.add_fact(murder, "SIMs used by Shahid Noor are registered on Waqar Sheikh's CNIC", "the body of an unknown woman",
                         kind="graph_sim_front")
     case.dialog["case_basis"] = "fir_on_record"
-    case.set_incident({"fir": "569/26", "offence": "murder", "target_status": "accused"})
+    case.set_incident({"fir": "123/26", "offence": "murder", "target_status": "accused"})
     return case, graph, {"murder": murder, "pistol": pistol, "bakery": bakery, "said": said, "other": other, "dna": dna,
                          "theft_lab": theft_lab, "sim": sim}
 
@@ -994,30 +996,30 @@ def test_the_report_keeps_to_the_case_and_the_target_and_tells_the_case_as_a_sto
     assert scope["main"] == ids["murder"] and scope["linked"] == [ids["pistol"]]
     assert ids["dna"] in scope["documents"] and not {ids["bakery"], ids["theft_lab"]} & set(scope["documents"])
     assert scope["statements"] == [ids["said"]]
-    assert [f["label"] for f in scope["own_firs"]] == ["211/24"]                # the target's own record, not this FIR
+    assert [f["label"] for f in scope["own_firs"]] == ["77/24"]                # the target's own record, not this FIR
 
-    case.set_hypothesis("Wajid Sial took part with Yasir Khan.", support=[ids["sim"]])
+    case.set_hypothesis("Waqar Sheikh took part with Shahid Noor.", support=[ids["sim"]])
     report = build_report(case, graph, llm=None)
     parts = report["parts"]
     shown = json.dumps({k: parts[k] for k in ("glance", "case_story", "in_case", "target")}, ensure_ascii=False)
-    assert "589/26" not in shown and "bakery" not in shown and ids["other"] not in shown
+    assert "141/26" not in shown and "bakery" not in shown and ids["other"] not in shown
     assert report["hypotheses"] == []                # a SIM in another man's name is no basis for a line of inquiry
     # The case at a glance: the FIR, the delay in registering it, the people, the linked FIR.
     rows = {r["label"]: r["value"] for r in parts["glance"]["rows"]}
-    assert rows["FIR"] == f"569/26, PS Bin Qasim [{ids['murder']}]" and "11 hour(s) after" in rows["FIR registered"]
-    assert rows["Complainant"] == "Allah Dino ASI" and rows["Investigating officer"] == "Nizamuddin"
-    assert "Tehmoor Khan" in rows["Accused"] and rows["Linked FIRs"].startswith("FIR 577/26")
+    assert rows["FIR"] == "123/26, PS Bin Qasim" and "11 hour(s) after" in rows["FIR registered"]   # the FIR once
+    assert rows["Complainant"] == "Ghulam Nabi ASI" and rows["Investigating officer"] == "Saleemuddin"
+    assert "Rizwan Shah" in rows["Accused"] and rows["Linked FIRs"].startswith("FIR 131/26")
     # The story, in date order, every step with its source.
     events = parts["case_story"]["events"]
-    assert events[0]["what"].startswith("Incident of FIR 569/26") and all(e["sources"] for e in events)
-    assert any("FIR 577/26 registered" in e["what"] for e in events)
+    assert events[0]["what"].startswith("Incident of FIR 123/26") and all(e["sources"] for e in events)
+    assert any("FIR 131/26 registered" in e["what"] for e in events)
     # The target: the SIM's owner is said once, next to the number - and is not their circle; nor is the
     # tenancy witness or the police officer. Family and the co-accused are.
     target = parts["target"]["targets"][0]
-    assert {"number": "03026826209", "registered_to": "Wajid Sial"} in target["phones"]
-    assert [r["fir"] for r in target["firs"]] == ["211/24"]
+    assert {"number": "03990000951", "registered_to": "Waqar Sheikh"} in target["phones"]
+    assert [r["fir"] for r in target["firs"]] == ["77/24"]
     circle = {c["name"]: c["kind"] for c in parts["target"]["circle"]}
-    assert circle == {"Tehmoor Khan": "crime", "Nasir": "family"}
+    assert circle == {"Rizwan Shah": "crime", "Adnan": "family"}
     assert [r["id"] for r in parts["in_case"]["reports"]] == [ids["dna"]]
     pdf = render(report, case, graph)
     assert pdf[:4] == b"%PDF"
@@ -1026,15 +1028,15 @@ def test_the_report_keeps_to_the_case_and_the_target_and_tells_the_case_as_a_sto
     class Writer(Scripted):
         def _Story(self, prompt):
             given = json.loads(prompt)
-            assert given["fir"]["fir"] == "569/26" and [f["fir"] for f in given["firs_that_name_this_case"]] == ["577/26"]
+            assert given["fir"]["fir"] == "123/26" and [f["fir"] for f in given["firs_that_name_this_case"]] == ["131/26"]
             assert "bakery" not in prompt
-            return {"in_short": [f"An unknown woman was found dead off Steel Mill Road [{ids['murder']}]."],
-                    "events": [{"when": "04-10-2026", "what": "Tehmoor Khan disclosed the pistol; it was recovered.",
+            return {"in_short": [f"An unknown woman was found dead off Link Road [{ids['murder']}]."],
+                    "events": [{"when": "04-10-2026", "what": "Rizwan Shah disclosed the pistol; it was recovered.",
                                 "sources": [ids["said"], ids["pistol"]]},
                                {"when": "30-09-2026 07:30", "what": "The body was found.", "sources": [ids["murder"]]},
                                {"when": "16-09-2026", "what": "Bakery money stolen.", "sources": [ids["bakery"]]},
                                {"when": "", "what": "Made up.", "sources": ["D99"]}],
-                    "people": [{"name": "Tehmoor Khan", "part": "co-accused", "status": "in custody",
+                    "people": [{"name": "Rizwan Shah", "part": "co-accused", "status": "in custody",
                                 "did": "Disclosed the pistol.", "sources": [ids["said"]]}]}
 
         def _Summary(self, prompt):
@@ -1178,13 +1180,30 @@ def test_without_the_case_the_report_sets_out_the_targets_record_in_plain_words(
     # The PDF names records by what they are - never by an internal id - and says nothing is "inferred".
     text = " ".join(page.extract_text() for page in PdfReader(io.BytesIO(render(report, case, graph))).pages)
     flat = " ".join(text.split())
-    for heading in ("About this report", "Earlier cases (criminal record)", "People connected to the target", "Hotel history",
-                    "What the earlier reports say", "Records this report rests on"):
+    for heading in ("About this report", "Earlier cases (criminal record)", "As accused (2)", "People connected to the target",
+                    "Hotel stays Check-in Location Hotel", "Tenancy records", "Reports on the target",
+                    "Statements in the earlier FIRs", "Records this report rests on"):
         assert heading in flat
-    assert "FIR 45/23 (324 PPC, PS Gulberg) - Chemical report LAB-1 (FIR 45/23)" in flat
-    assert "Where it stands convicted (Convicted, 10-01-2024)" in flat and "12/21 Saddar 381-A not on record Accused acquitted" in flat
+    assert ("Chemical report LAB-1 (FIR 45/23) Laboratory Forensic lab Received 12-06-2023 11:00 FIR 45/23 What the report "
+            "found • The 30-bore pistol recovered from Kamran Aslam matches the empties found at the shop.") in flat
+    assert "Where it stands convicted (10-01-2024)" in flat and "Saddar 381-A FIR 12/21 acquitted" in flat
+    # As accused: who filed it and how the records relate them; hotel stays with how long; who said what in each FIR.
+    assert "Asif Rafiq Asif Rafiq filed FIR 45/23 against Kamran Aslam" in flat
+    assert "Hotel Al-Noor (room 12) Zahid Ali 2024-02-12 11:00 1 day(s) 12 h" in flat
+    assert ("FIR 45/23 · PS Gulberg Asif Rafiq - complainant - 06-06-2023 - fir Their own words (as recorded, in full) "
+            "Kamran Aslam fired at me outside my shop at night.") in flat
     assert "What happened Asif Rafiq says Kamran Aslam fired at him outside his shop on 5 June 2023." in flat
     assert not re.search(r"\b[DWFXKH]\d{1,3}\b", text) and "inferred" not in flat.lower()
+
+
+def test_when_the_officer_says_there_is_no_case_the_report_says_so_and_asks_for_none():
+    from sherlocks.team.report_graph import NO_CASE, build_report
+
+    case, graph, _ = _record_board()
+    case.dialog["case_basis"] = "record_check"
+    summary = build_report(case, graph)["summary_parts"]
+    assert summary["brief"][0] == NO_CASE and summary["brief"][1].startswith("Kamran Aslam is named in 2 earlier FIR(s)")
+    assert not any("Tell Sherlock what is being investigated" in s for s in summary["next_steps"])
 
 
 def test_report_lines_name_the_record_instead_of_its_id():
@@ -1202,3 +1221,117 @@ def test_report_lines_name_the_record_instead_of_its_id():
     assert src.text("He lives at House 9, Block F1, Gulshan.") == "He lives at House 9, Block F1, Gulshan."
     src.known.add("X4")
     assert src.text("X4 critical: the FIR says pistol fire [X4].") == "Critical: the FIR says pistol fire."
+
+
+def test_the_report_draws_the_targets_network_two_steps_out():
+    """Everyone tied to the target directly; one step further only the people who matter; the investigating
+    officer of their FIR is in neither. The section has the picture and both tables. Made-up people."""
+    from pypdf import PdfReader
+
+    from sherlocks.evidence.report_pdf import render, two_step_png
+    from sherlocks.team.report_graph import build_report
+
+    case, graph, _ = _record_board()
+    graph["nodes"].append({"id": "p10", "kind": "person", "label": "Rafiq Gul", "data": {"cnic": "9999900000100"}})
+    graph["nodes"].append({"id": "p11", "kind": "person", "label": "Lone Contact", "data": {"cnic": "9999900000111"}})
+    graph["edges"] += [{"id": "e9", "source": "p10", "target": "p4", "kind": "strong", "label": "Father", "system": "nadra",
+                        "relation": {"sentence": "Rafiq Gul is the father of Asif Rafiq"}},
+                       {"id": "e10", "source": "p10", "target": "p3", "kind": "strong", "label": "Father", "system": "nadra",
+                        "relation": {"sentence": "Rafiq Gul is the father of Naveed Rafiq"}},
+                       {"id": "e11", "source": "p11", "target": "p6", "kind": "strong", "label": "Shared phone", "system": "simsdb",
+                        "relation": {"sentence": "Lone Contact shares a phone with Sajid Mehmood"}}]
+    report = build_report(case, graph)
+    network = report["parts"]["network"]
+    assert {r["name"] for r in network["first"]} == {"Imran Rashid", "Naveed Rafiq", "Asif Rafiq", "Bilal Aslam",
+                                                     "Sajid Mehmood", "Tariq Hussain", "Zahid Ali"}
+    # One step further: tied to two direct connections, so shown - with whom through; one tie only, not shown.
+    assert [(r["name"], sorted(r["through"])) for r in network["second"]] == [("Rafiq Gul", ["Asif Rafiq", "Naveed Rafiq"])]
+    assert network["not_shown"]["second"] == 1
+    assert not re.search(r"inferred|\(0\.\d+\)", json.dumps(network))
+    assert two_step_png(network)[:4] == b"\x89PNG"
+    text = " ".join(" ".join(page.extract_text() for page in PdfReader(io.BytesIO(render(report, case, graph))).pages).split())
+    assert "The target's network: step 1 and step 2" in text and "Step 1 - direct connections (7)" in text
+    assert "Step 2 - one step further, the people who matter (1)" in text and "SI Waheed" not in text.split("Step 1 - direct connections")[1][:2000]
+
+
+def test_tenancy_records_are_matched_by_cnic_or_phone_and_laid_out_whole():
+    """Landlord, tenant, witnesses, when and the property - for every tenancy in which the target is the tenant,
+    the landlord or a witness, matched by CNIC or phone, never by name. Made-up records."""
+    from sherlocks.linkgraph.network import PersonNetwork
+    from sherlocks.team.record_writer import tenancies
+
+    _, graph, _ = _record_board()
+    row = {"tenant_id": 900001, "tenant_name": "Some Tenant", "tenant_cnic": "99999-0000999-9", "owner_name": "Kamran Aslam",
+           "owner_cnic": "99999-0000001-1", "property_house_no": "House 5", "property_address": "Block 7, Test Town",
+           "date_of_possession": "06/03/2020", "created_at": 1583481600, "property_area_type": "portion",
+           "tenant_family_members_total": 4, "tenant_witness_name_1": "Witness One", "tenant_witness_cnic_1": "99999-0000777-7"}
+    other = {**row, "tenant_id": 900002, "owner_name": "Kamran Aslam", "owner_cnic": "99999-0000555-5"}   # same name only
+    graph["nodes"].append({"id": "s:old_tenant:p1", "kind": "system", "label": "Old Tenant",
+                           "data": {"system": "old_tenant", "raw": {"by_cnic": {"success": True, "data": [row, other]}}}})
+    rows = tenancies(graph, PersonNetwork(graph), "p1")
+    assert len(rows) == 1 and rows[0]["part"] == "landlord" and rows[0]["record"] == "tenancy #900001"
+    assert rows[0]["tenant"].startswith("Some Tenant") and "Witness One" in rows[0]["witnesses"]
+    assert "possession 06/03/2020" in rows[0]["when"] and "registered" in rows[0]["when"]
+    assert "House 5, Block 7, Test Town" in rows[0]["details"] and "family members: 4" in rows[0]["details"]
+
+
+def test_a_report_kept_from_an_older_report_team_is_written_again():
+    """A stored report is re-drawn only when the same report team wrote it and the board has not changed -
+    one from before a change to the team lacks what the layout now reads, so it is written again."""
+    from sherlocks.linkgraph.runs import RunManager
+    from sherlocks.team.report_graph import REPORT_BUILD
+
+    case = CaseFile()
+    case.report = {"saved_at_version": case.version, "build": REPORT_BUILD}
+    assert RunManager._report_current(case)
+    case.report = {"saved_at_version": case.version}                       # written before builds were stamped
+    assert not RunManager._report_current(case)
+    case.report = {"saved_at_version": case.version, "build": "2000-01-01.1"}
+    assert not RunManager._report_current(case)
+
+
+def test_a_report_kept_without_the_new_fields_still_shows_the_part_summary_and_duration():
+    """Rows from a report written before the case summary, the part and the stay's duration were added are
+    laid out right all the same: the part and the summary from what the row holds, the duration from its times."""
+    from pypdf import PdfReader
+
+    from sherlocks.evidence.report_pdf import render
+    from sherlocks.team.report_graph import build_report
+
+    case, graph, _ = _record_board()
+    report = build_report(case, graph)
+    for t in report["parts"]["record"]["targets"]:
+        for c in t["past_cases"]:
+            c.pop("role_kind"), c.pop("summary")
+        for s in t["hotels"]:
+            s.pop("duration")
+    flat = " ".join(" ".join(p.extract_text() for p in PdfReader(io.BytesIO(render(report, case, graph))).pages).split())
+    assert "As accused (2)" in flat and "Kamran Aslam fired at me outside my shop at night" in flat
+    assert "2024-02-12 11:00 1 day(s) 12 h" in flat
+
+
+def test_the_case_analyst_reads_its_lines_lays_out_reports_and_keeps_statements_whole():
+    """The weighing is read from labelled lines (an explanation on its line, or numbered under an empty label);
+    without a model a report gives its findings and a statement its full words. Made-up case."""
+    from sherlocks.team import case_analyst
+
+    text = ("QUESTION: Was the death a suicide or a murder?\nEXPLANATION:\n1. Suicide.\nFOR: residue on the hands [D9]\n"
+            "AGAINST: the shot entered the back [D11]\n2. Murder.\nFOR: entry wound at the back [D11]\nSETTLE: post-mortem report\n"
+            "VIEW: Murder fits best; the entry from behind rules suicide out [D11].\nGAP: Where was the body found?\n"
+            "ACTION: high | Get the post-mortem report from the hospital | the cause of death\nACTION: low | Check CCTV | the route\n"
+            "PERSON: Some One | named in the FIR [D3] | check his whereabouts\nSECTION: Custody\nPOINT: Samples reached late.\n"
+            "EXPLANATION: Accident\nAGAINST: no weapon found next to him, inferred")
+    w = case_analyst.read_weighing(text, {"D3", "D9", "D11"})
+    assert [e["name"] for e in w["explanations"]] == ["Suicide.", "Murder.", "Accident"]
+    assert w["explanations"][0]["against"] == ["the shot entered the back [D11]"] and w["explanations"][1]["settle"]
+    assert "inferred" not in w["explanations"][2]["against"][0] and w["actions"][0]["priority"] == "high"
+    assert w["persons"][0]["name"] == "Some One" and w["sections"][0]["heading"] == "Custody" and w["gaps"]
+
+    case, _, ids = _record_board()
+    reads = case_analyst.forensics(case, [ids["lab"]], llm=None)
+    assert reads[0]["by"] == "records" and reads[0]["received"] == "12-06-2023 11:00"
+    long_words = "Kamran Aslam fired at me outside my shop at night. " * 30
+    case.documents[ids["fir"]]["data"]["narrative"] = long_words
+    case.statements[ids["said"]]["role"] = "witness"
+    said = case_analyst.statements(case, [ids["fir"]], llm=None)
+    assert said[0]["people"][0]["said"] == long_words.strip() and said[0]["people"][0]["explained"] == ""

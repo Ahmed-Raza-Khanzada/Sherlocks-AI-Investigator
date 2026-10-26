@@ -38,11 +38,11 @@ def candidates(case: Any) -> list[dict[str, Any]]:
     for k in case.leads.values():
         if k.get("silent"):
             continue
-        if k["status"] in ("confirmed", "dead end") or (k["status"] in ("open", "pursuing") and k.get("hypothesis")):
+        if k["status"] in ("confirmed", "answered", "dead end") or (k["status"] in ("open", "pursuing") and k.get("hypothesis")):
             out.append({"ref": k["id"], "state": k["status"], "severity": "major", "people": k.get("people") or [],
                         "at": k.get("updated_at") or k["at"], "kind": "lead",
                         "text": f"{k['hint']} {k.get('why') or ''}".strip()
-                                + (f" ({k['status']}: {k.get('reason')})" if k["status"] in ("confirmed", "dead end") else "")})
+                                + (f" ({k['status']}: {k.get('reason')})" if k["status"] in ("confirmed", "answered", "dead end") else "")})
     for h in case.history[-30:]:
         hyp = case.hypotheses.get(h["id"])
         moved = str(h.get("before") or "").split(" (")[0] != str(h.get("after") or "").split(" (")[0]

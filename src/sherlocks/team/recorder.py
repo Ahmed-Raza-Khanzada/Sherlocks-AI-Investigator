@@ -29,6 +29,7 @@ from pydantic import Field
 
 from sherlocks.evidence.case_file import TRUST_OFFICER, TRUST_RECORDED, TRUST_UNVERIFIED
 from sherlocks.evidence.guard import DATA_NOT_INSTRUCTIONS
+from sherlocks.evidence.questioner import NO_CASE_QUESTIONS, RECORD_CHECK
 from sherlocks.team.runtime import Typed, ask, dumps
 
 TIER = {"saw": "fact", "record": "fact", "heard": "inference", "informant": "inference", "thinks": "speculation",
@@ -84,6 +85,15 @@ class _Said(Typed):
 
 
 class _Record(Typed):
+    # Decided first: written after the entries, it followed the model's own entries instead of the message.
+    purpose: Literal["not said", "investigating a case", "says there is no case"] = Field(
+        default="not said", description="What the message says about why the officer is looking at this person. "
+                                        "'says there is no case': the officer SAYS so - nothing happened, the person "
+                                        "is not involved in any case, they are only exploring his record. "
+                                        "'investigating a case': the officer describes a crime, an incident or a "
+                                        "suspicion. 'not said': everything else - asking to see records ('show me "
+                                        "his FIRs', 'kaun hai?', 'record batao') says nothing about whether there "
+                                        "is a case.")
     entries: list[_Said] = Field(default_factory=list, description="One entry per fact stated. Empty when the "
                                                                    "message states nothing.")
     answers: str = Field(default="", description="The id (Q#) of the open question this message answers, or ''.")
@@ -129,19 +139,51 @@ _SYSTEM = ("You are the statement recorder of a police investigation team. Read 
            "record', its number, and the complainant as the one suspected. An event that no FIR on file describes "
            "('he took 5 lakh from me and never returned it', when the FIRs on file are robberies) is 'a new matter': "
            "the FIRs on file are then the person's history. When the message does not let you tell, 'not said' - "
-           "never guess. Say whether the target has been arrested in this case only if the officer says so. Name in "
+           "never guess. `purpose` is 'says there is no case' only when the officer SAYS there is no case; "
+           "describing any act, crime or suspicion is 'investigating a case'. Say whether the target has been arrested in this case only if the officer says so. Name in "
            "`suspected` everyone the officer says did it or suspects. Never record that the officer asked "
            "something - a question is not a fact. Record only "
            "what the officer states; a question the officer asks is not a statement.\n"
            "`read_back` is ONE short sentence in {lang}, spoken to the officer as 'you', starting with 'Noted:' (in "
-           "their language): what you understood, with the person's full name and the case it belongs to. Nothing "
+           "their language): what you understood, with the person's full name and the case it belongs to - only what "
+           "the officer said, never what the records hold ('he has no record' is not yours to say). Nothing "
            "else - never 'the officer states', nothing about who the source is, how sure they are, or what the "
            "message did not mention. "
            + DATA_NOT_INSTRUCTIONS)
 
 
 def read(case: Any, net: Any, message: str, llm: Any, language: str) -> _Record | None:
-    """The model's reading of what the officer told us, or None (no model, or it failed)."""
+    """The model's reading of what the officer told us, or None (no model, or it failed). Which
+    case the message is about is the Case matcher's answer when it gives one (asked alongside)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from sherlocks.team import case_matcher
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        matching = pool.submit(case_matcher.match, case, net, message, llm)
+        record = _read(case, net, message, llm, language)
+        matched = matching.result()
+    return with_match(record, matched) if record is not None else None
+
+
+def with_match(record: _Record, matched: dict[str, Any] | None) -> _Record:
+    """The recorder's reading, with which case this is as the Case matcher weighed it."""
+    if not matched:
+        return record
+    says = matched["says"]
+    if says == "no case":
+        update = {"purpose": "says there is no case", "this_case": "not said", "this_case_fir": ""}
+    elif says == "no event":
+        update = {"purpose": "not said" if record.purpose == "says there is no case" else record.purpose,
+                  "this_case": "not said", "this_case_fir": ""}
+    elif says == "new":
+        update = {"purpose": "investigating a case", "this_case": "a new matter", "this_case_fir": ""}
+    else:
+        update = {"purpose": "investigating a case", "this_case": "an FIR already on record", "this_case_fir": matched["fir"]}
+    return record.model_copy(update=update)
+
+
+def _read(case: Any, net: Any, message: str, llm: Any, language: str) -> _Record | None:
     pending = case.dialog.get("pending_correction")
     return ask(llm, _Record, dumps({
         "message": message, "message_time": datetime.now(UTC).astimezone().isoformat(timespec="minutes"),
@@ -162,6 +204,7 @@ def firs_on_file(case: Any, net: Any) -> list[dict[str, Any]]:
     the FIR files on the board (the offence, when, where, and what was read in them), and the
     targets' own FIR entries that have no file yet."""
     out, seen = [], set()
+    targets = set(net.seeds())
     for doc in case.documents.values():
         if doc.get("kind") != "fir":
             continue
@@ -172,16 +215,31 @@ def firs_on_file(case: Any, net: Any) -> list[dict[str, Any]]:
         out.append({"fir": number, "police_station": data.get("police_station"), "sections": data.get("sections"),
                     "occurred": data.get("occurred"), "place": str(data.get("place") or "")[:120] or None,
                     "complainant": complainant.get("name") if isinstance(complainant, dict) else complainant,
+                    "first_information": str(data.get("narrative") or doc.get("text") or "")[:400] or None,
+                    # Its medical and laboratory reports: what a case has become can be in them, not in the
+                    # section it was first registered under.
+                    "its_reports": [f"{r['title']}: {(r.get('ai_summary') or r.get('summary') or '')[:260]}"
+                                    for r in _reports_of_fir(case, number)][:4],
                     # What was read in the file, in English: who is named, in what role, what happened.
                     "what_it_says": [case.facts[f]["statement"][:170] for f in doc.get("facts") or []
-                                     if f in case.facts and case.usable(f)][:8]})
+                                     if f in case.facts and case.usable(f)][:6],
+                    "_names_target": any(x["doc"] == doc["id"] and x["pid"] in targets for x in case.links.values())})
     for pid in net.seeds():
         for f in net.data(pid).get("firs") or []:
             if f.get("label") and _fir_number(str(f["label"])) not in seen:
                 seen.add(_fir_number(str(f["label"])))
                 out.append({"fir": f["label"], "police_station": f.get("ps"), "sections": f.get("offence"),
-                            "the_target_is": f.get("role"), "what_it_says": []})
-    return out[:6]
+                            "the_target_is": f.get("role"), "what_it_says": [], "_names_target": True})
+    # The FIRs that name a target first, the newest first - a cut must never drop the one that matters.
+    out.sort(key=lambda f: (not f.pop("_names_target", False), -int(_fir_number(str(f["fir"]))[1] or 0)))
+    return out[:8]
+
+
+def _reports_of_fir(case: Any, number: str) -> list[dict[str, Any]]:
+    """The reports on the board that belong to this FIR (``ref.labs_of`` / ``ref.fir``)."""
+    want = _fir_number(number)
+    return [d for d in case.documents.values() if d.get("kind") != "fir" and want[0]
+            and _fir_number(str((d.get("ref") or {}).get("labs_of") or (d.get("ref") or {}).get("fir") or "")) == want]
 
 
 def _short(text: str, sentences: int = 2, limit: int = 320) -> str:
@@ -254,6 +312,14 @@ def adopt_fir(case: Any, net: Any, fir: str) -> list[str]:
                 found.setdefault("offence", str(f.get("offence") or "").strip()[:160])
                 found.setdefault("police_station", str(f.get("ps") or "").strip()[:80])
     have = case.incident or {}
+    if have.get("fir_doc") and found.get("fir_doc") and have["fir_doc"] != found["fir_doc"]:
+        # The case is now another FIR: what was taken from the earlier one goes first - kept, it mixed the
+        # two (the new FIR's number with the old FIR's date, place and offence).
+        with case._lock:
+            for key in [*(have.get("from_fir") or []), "fir_doc", "from_fir", "offence_said"]:
+                case.incident.pop(key, None)
+            case._bump("incident", "earlier FIR's fields dropped")
+        have = case.incident or {}
     took = {k: v for k, v in found.items() if v and not have.get(k)}
     if not took:
         return []
@@ -263,6 +329,12 @@ def adopt_fir(case: Any, net: Any, fir: str) -> list[str]:
         if took.get(field):
             case.close_question(key, f"{took[field]} (from FIR {fir.strip()[:40]})")
     return [f"{k} from the FIR: {v}" for k, v in took.items() if k != "fir_doc"]
+
+
+def no_case(record: _Record) -> bool:
+    """The officer said there is no case: they are only checking the person's record. (The model then
+    also files "not involved in any case" as an offence and the person as a suspect - see ``write``.)"""
+    return record.purpose == "says there is no case"
 
 
 def _person(case: Any, net: Any, name: str, focus: list[str]) -> str | None:
@@ -282,7 +354,10 @@ def write(case: Any, net: Any, message: str, record: _Record, *, language: str, 
     basis_before = (case.dialog.get("case_basis"), (case.incident or {}).get("fir"))
     with case.batch("O3 Statement recorder", "statement"):
         doc_id, line = case.officer_note(message)
-        # Which case this is: a new matter, or an FIR already on file - only as the officer says.
+        # Which case this is: a new matter, or an FIR already on file - only as the officer says. An officer
+        # who says there is no case is not working one of the FIRs either (the model can tick both).
+        if no_case(record):
+            record = record.model_copy(update={"this_case": "not said", "this_case_fir": ""})
         if record.this_case == "an FIR already on record" and record.this_case_fir.strip():
             case.dialog["case_basis"] = "fir_on_record"
             case.set_incident({"fir": record.this_case_fir.strip()[:40]})
@@ -290,6 +365,12 @@ def write(case: Any, net: Any, message: str, record: _Record, *, language: str, 
             case.close_question("incident:fir", record.this_case_fir.strip()[:40])
             out["recorded"] += adopt_fir(case, net, record.this_case_fir)
             out["recorded"].append(f"this case is FIR {record.this_case_fir.strip()[:40]}, already on record")
+        elif no_case(record):
+            # Nothing happened: the officer is only looking at the person's record. No incident is asked about.
+            case.dialog["case_basis"] = RECORD_CHECK
+            for key in NO_CASE_QUESTIONS:
+                case.close_question(key, "no case: the officer is only checking the record")
+            out["recorded"].append("no case: the officer is only checking the target's record")
         elif record.this_case == "a new matter":
             case.dialog["case_basis"] = "new_matter"
             case.close_question("case:which", "a new matter")
@@ -297,6 +378,9 @@ def write(case: Any, net: Any, message: str, record: _Record, *, language: str, 
         if record.target_in_custody != "not said":
             case.set_incident({"target_status": record.target_in_custody})
             out["recorded"].append(f"target: {record.target_in_custody}")
+        if no_case(record):
+            # "Not involved in any case" is no offence, and the person is no suspect: nothing more is recorded.
+            record = record.model_copy(update={"suspected": [], "entries": []})
         for name in record.suspected[:4]:
             # Who the officer says did it, or suspects: their role in this case - the officer's word, not evidence.
             pid = _person(case, net, name, focus)

@@ -237,7 +237,7 @@ def _sibling_score(father: str) -> float:
 
 
 def test_a_rare_fathers_name_counts_for_more_than_a_common_one():
-    assert _sibling_score("Ghulam Sarwar Jatoi") < _sibling_score("Qurban Sarfraz Jatoi")
+    assert _sibling_score("Ghulam Sarwar Jatoi") < _sibling_score("Qadir Saleem Jatoi")
     assert _sibling_score("Muhammad Ali") <= 0.25
 
 
@@ -475,3 +475,133 @@ def test_two_witnesses_of_the_same_tenancy_are_co_witnesses_not_the_same_address
     b.upsert_person(PersonRef(cnic="4210199999994", name="Bilal Khan", addresses=[form]), depth=1)
     compute_weak_links(b, min_score=0.0)
     assert any("Same address" in e.label for e in b.edges.values() if e.kind == "weak")
+
+
+def test_a_name_written_as_one_word_and_a_common_word_are_not_lost():
+    """"Mir Hamza" is the target میرحمزہ (two words written as one), not his father Mir Shakeel
+    (who shares "Mir"), nor a stranger who shares the common name "Hamza". Made-up people."""
+    from sherlocks.linkgraph.network import PersonNetwork
+
+    def person(pid, label, names, seed=False):
+        return {"id": pid, "kind": "person", "label": label, "data": {"seed": seed, "names": names}}
+
+    net = PersonNetwork({"nodes": [person("p1", "میرحمزہ احمد", ["میرحمزہ احمد", "HAMZA"], seed=True),
+                                   person("p2", "میر شکیل احمد", ["میر شکیل احمد", "Mir Shakeel Ahmed"]),
+                                   person("p3", "Syed Imran Hamza Naqvi", ["SYED IMRAN HAMZA NAQVI"])], "edges": []})
+    for asked in ("Mir Hamza", "mir hamza", "Meer hamza", "Mir Hamza Ahmed", "میرحمزہ احمد"):
+        assert net.resolve(asked) == "p1", asked
+    assert net.resolve("Mir Shakeel") == "p2" and net.resolve("Imran Hamza") == "p3"
+
+
+def test_a_report_and_a_shared_phone_are_tied_to_the_right_person():
+    """The kidnapping FIR names the target only by his phone - a number a stranger's SIM also carries -
+    and by his name written as two words; its lab report names no identifier. Made-up people."""
+    from sherlocks.evidence.case_file import CaseFile
+    from sherlocks.evidence.readers import link_people, prune_phone_links
+    from sherlocks.linkgraph.case_queries import _firs
+    from sherlocks.linkgraph.network import PersonNetwork
+
+    def person(pid, label, seed=False, **data):
+        return {"id": pid, "kind": "person", "label": label, "data": {"seed": seed, **data}}
+
+    graph = {"nodes": [person("p1", "میرحمزہ احمد", seed=True, phones=["03990000001"], cnic="9999900000001"),
+                       person("p2", "Stranger Khan", phones=["03990000001"], cnic="9999900000002"),
+                       person("p3", "میر شکیل احمد", cnic="9999900000003")], "edges": []}
+    case = CaseFile()
+    fir = case.add_document(kind="fir", key="fir:9", title="FIR 9/26 · PS Test", source="PSRMS",
+                            text="Complainant CNIC 9999900000003. میرا بیٹا میر حمزہ احمد، موبائل 03990000001، اغوا ہو گیا",
+                            ref={"fir_no": "9", "fir_year": "26"}, data={"sections": "365"})
+    lab = case.add_document(kind="lab", key="lab:1", title="Chemical report (FIR 9/26)", source="Lab",
+                            text="Deceased Meer Hamza Ahmed. Residue detected.", ref={"labs_of": "labs:9/26/1", "fir": "FIR 9/26"})
+    case.add_link(fir, "p2", "Stranger Khan", "phone 03990000001 appears in the document", "", strength="identifier")
+    assert prune_phone_links(case, graph) == 1                         # the old link to the stranger's SIM goes
+    linked = {x["pid"]: x["how"] for x in link_people(case, fir, graph)}
+    assert set(linked) == {"p1", "p3"} and linked["p1"].startswith("phone")   # the target's number, not the stranger's
+    assert {x["pid"] for x in link_people(case, lab, graph)} == {"p1", "p3"}  # the report is about whom its FIR names
+    rows = {r["label"]: r for r in _firs(PersonNetwork(graph), "p1", case)}
+    assert rows["9/26"]["roles"] == ["named in the FIR file (phone 03990000001)"] and rows["9/26"]["doc"] == fir
+    assert "9/26" not in {r["label"] for r in _firs(PersonNetwork(graph), "p2", case)}
+
+
+def test_names_are_matched_for_anyone_not_one_case():
+    """Common words are never dropped from what the officer asked; a name written as one word or two, and
+    the silent Arabic article ("Abdur Rehman" for عبدالرحمن), still match. Made-up people."""
+    from sherlocks.linkgraph.network import PersonNetwork
+
+    def person(pid, label, names, seed=False):
+        return {"id": pid, "kind": "person", "label": label, "data": {"seed": seed, "names": names}}
+
+    net = PersonNetwork({"nodes": [
+        person("t1", "عبدالرحمن شاہ", ["عبدالرحمن شاہ"], seed=True),
+        person("t2", "عبد الکریم شاہ", ["عبد الکریم شاہ", "Abdul Kareem Shah"]),
+        person("t3", "Syed Rehman Ali", ["SYED REHMAN ALI"]),
+        person("t4", "غلام عباس", ["غلام عباس"], seed=True),
+        person("t5", "Ghulam Hussain Baloch", ["GHULAM HUSSAIN BALOCH"]),
+        person("t6", "Imran Abbas Naqvi", ["IMRAN ABBAS NAQVI"]),
+        person("t7", "شمس الدین قریشی", ["شمس الدین قریشی"]),
+        person("t8", "محمد الطاف", ["محمد الطاف"])], "edges": []})
+    for asked, pid in (("Abdul Rehman", "t1"), ("Abdur Rehman Shah", "t1"), ("Abdul Kareem", "t2"), ("Rehman Ali", "t3"),
+                       ("Ghulam Abbas", "t4"), ("Ghulam Hussain", "t5"), ("Imran Abbas", "t6"),
+                       ("Shamsuddin Qureshi", "t7"), ("Shams ud Din", "t7"), ("Altaf", "t8"), ("Muhammad Altaf", "t8")):
+        assert net.resolve(asked) == pid, asked
+
+
+def test_the_board_is_read_whole_before_an_answer_and_a_new_fir_replaces_the_old():
+    """The case reader gives every FIR of the target with its reports; switching the case to another FIR
+    drops what was taken from the first; a dropped link never has its id reused. Made-up people."""
+    from sherlocks.evidence.case_file import CaseFile
+    from sherlocks.evidence.readers import link_people
+    from sherlocks.linkgraph.network import PersonNetwork
+    from sherlocks.team import case_reader
+    from sherlocks.team.recorder import adopt_fir
+
+    graph = {"nodes": [{"id": "p1", "kind": "person", "label": "Target One",
+                        "data": {"seed": True, "phones": ["03990000001"], "cnic": "9999900000001",
+                                 "firs": [{"label": "12/21", "role": "Complainant", "system": "psrms", "offence": "397"}]}}],
+             "edges": []}
+    case = CaseFile()
+    old = case.add_document(kind="fir", key="fir:12", title="FIR 12/21", source="PSRMS", text="CNIC 9999900000001",
+                            ref={"fir_no": "12", "fir_year": "21"}, data={"occurred": "30-10-2021 03:00", "place": "Old place",
+                                                                         "sections": "397"})
+    new = case.add_document(kind="fir", key="fir:9", title="FIR 9/26", source="PSRMS", text="son's phone 03990000001",
+                            ref={"fir_no": "9", "fir_year": "26"}, data={"occurred": "28/07/2026", "place": "New place",
+                                                                        "sections": "365"})
+    lab = case.add_document(kind="lab", key="lab:1", title="Chemical report (FIR 9/26)", source="Lab", text="GSR",
+                            ref={"labs_of": "labs:9/26/1"})
+    case.documents[lab]["ai_summary"] = "GSR found in the chest and back wounds."
+    case.add_fact(lab, "GSR was detected in the swab from the back wound.", "GSR", by="ai", check_quote=False)
+    for d in (old, new, lab):
+        link_people(case, d, graph)
+    reading = case_reader.ensure(case, PersonNetwork(graph))
+    firs = {f["fir"]: f for f in reading["targets"][0]["firs"]}
+    assert set(firs) == {"FIR 12/21", "FIR 9/26"} and firs["FIR 9/26"]["reports"][0]["found"].startswith("GSR found")
+    assert any("back wound" in x for x in firs["FIR 9/26"]["reports"][0]["findings"])
+    case.set_incident({"fir": "12/21"})
+    adopt_fir(case, PersonNetwork(graph), "12/21")
+    case.set_incident({"fir": "9/26"})
+    adopt_fir(case, PersonNetwork(graph), "9/26")
+    assert (case.incident["place"], case.incident["fir_doc"]) == ("New place", new)
+    first = next(iter(case.links))
+    case.links.pop(first)
+    made = case.add_link(old, "p2", "Someone", "named in the document", "", strength="name")
+    assert made not in set(case.links) - {made} and len(set(case.links)) == len(case.links)
+
+
+def test_a_scanned_reports_letterhead_is_no_fact_and_is_never_quoted():
+    """A lab report keeps only its record header as a rule fact - the laboratory's name and address on the
+    scanned page are not facts, and the checker is given what was read in the whole report. Made-up report."""
+    from sherlocks.evidence.case_file import CaseFile
+    from sherlocks.evidence.readers import report_facts
+    from sherlocks.linkgraph.sherlock_team import _read_of
+
+    case = CaseFile()
+    lab = case.add_document(kind="lab", key="lab:1", title="Chemical report LAB-1 (FIR 9/26)", source="Lab",
+                            text="Chemical report · LAB-1 · case received 01-01-2026 · FIR 9/26\n[page 1] TEST LABORATORY\n"
+                                 "Located at the Campus of\n(Established in 2001)\nSample list: swab 1, swab 2",
+                            ref={"labs_of": "labs:9/26/1"})
+    case.documents[lab]["ai_summary"] = "Residue was found on both swabs."
+    assert report_facts(case, lab) == 1
+    case.add_fact(lab, "Residue was detected on swab 1.", "Residue", by="ai", check_quote=False)
+    read = _read_of(case, lab)
+    assert read["what_was_read_in_the_whole_document"] == "Residue was found on both swabs."
+    assert any("swab 1" in f for f in read["findings_read_in_it"]) and not any("Campus" in f for f in read["findings_read_in_it"])

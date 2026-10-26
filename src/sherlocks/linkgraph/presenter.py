@@ -216,6 +216,8 @@ def _evidence(case: Any, text: str, language: str, llm: Any = None, limit: int =
     order, up to ``limit``), the document and a short quote from it - the words of the
     record where there are some, else what the document establishes. Our own analysis
     (graph patterns, CDR lines) is cited, not quoted."""
+    from sherlocks.team.officer_agent import page_line
+
     if case is None:
         return []
     out: list[str] = []
@@ -228,7 +230,7 @@ def _evidence(case: Any, text: str, language: str, llm: Any = None, limit: int =
             if not fact or fact.get("by") in ("officer", "graph"):
                 continue
             doc = case.documents.get(fact["doc"]) or {}
-            if doc.get("kind") in ("graph", "notes"):
+            if doc.get("kind") in ("graph", "notes") or page_line(fact, doc):
                 continue
             where = doc.get("title", fact["doc"]) + (f", page {fact['page']}" if fact.get("page") else "") + (
                 f", rows {fact['rows']}" if fact.get("rows") else "")
@@ -242,7 +244,8 @@ def _evidence(case: Any, text: str, language: str, llm: Any = None, limit: int =
             # The document's quote that backs the sentence citing it - not just its first fact.
             line = next((ln for ln in text.splitlines() if re.search(rf"\b{ref}\b", ln)), "")
             said = {w for w in re.findall(r"[\w؀-ۿ]{3,}", line.lower())}
-            facts = [case.facts[f] for f in doc.get("facts") or [] if f in case.facts and case.facts[f].get("quote")]
+            facts = [case.facts[f] for f in doc.get("facts") or [] if f in case.facts and case.facts[f].get("quote")
+                     and not page_line(case.facts[f], doc)]          # a scanned page's letterhead backs nothing
             scored = sorted(((len(said & {w for w in re.findall(r"[\w؀-ۿ]{3,}", (f["quote"] + " " + f["statement"]).lower())}), f)
                              for f in facts), key=lambda x: -x[0])
             if not scored or scored[0][0] < 2:

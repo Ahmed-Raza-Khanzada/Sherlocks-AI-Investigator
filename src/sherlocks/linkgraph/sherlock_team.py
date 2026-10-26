@@ -221,7 +221,10 @@ _CHECK_SYSTEM = ("The draft may be in Urdu, Roman Urdu or English. You are the V
                  "a past FIR's date or place is NOT the new case's - never ask the draft to use one for it, and flag "
                  "a draft that does. Also flag any use of a person's sect, caste, ethnicity, "
                  "religion or family name as evidence of anything, and any past record presented as proof about "
-                 "this incident. Do not flag style.")
+                 "this incident. A section named 'General guidance (not from the records)' is investigative "
+                 "knowledge, not a claim about the case - do not flag it for having no record behind it. For a cited "
+                 "document, judge by what was read in the whole of it (its summary and findings), not only by the "
+                 "start of its text. Do not flag style.")
 
 
 _COUNTING = ("count_cases", "criminals_near", "criminals_all", "graph_stats", "fir_status")
@@ -342,16 +345,17 @@ def validate(case: CaseFile, net: PersonNetwork, final: dict[str, Any], llm: Any
             # What the officer wrote earlier - their words only. Our own replies are not evidence.
             "officer_said_earlier": [t["q"][:300] for t in case.conversation[-6:] if t.get("q")],
             "cited_facts": [{"id": c["id"], "text": c["title"], "quote": c.get("quote")} for c in cited][:20],
-            # The text of each document the draft cites: a claim that cites [D1] is checked against D1 itself.
-            "cited_documents": [{"id": c["id"], "title": c["title"], "text": (case.documents.get(c["id"]) or {}).get("text", "")[:2500]}
-                                for c in cited if c.get("type") == "document"][:4],
+            # Each document the draft cites: what was read in the WHOLE of it (its summary and findings), and the
+            # start of its text. The start alone is a lab report's sample list - its results were then "not in
+            # the record" and true findings were sent back.
+            "cited_documents": [_read_of(case, c["id"]) for c in cited if c.get("type") == "document"][:4],
             "records_given": given,
             "the_new_case_as_the_officer_described_it": case.incident or "not described yet",
             "roles": {net.name(p): r for p, r in case.roles.items()},
             "draft_answer": answer}, ensure_ascii=False, default=str)
         try:
             check, _ = llm.generate_structured(prompt=prompt, schema=_Check, system=_CHECK_SYSTEM,
-                                               cache_kind="validator", prompt_version="v4")
+                                               cache_kind="validator", prompt_version="v5")
             found = [i for i in check.issues[:4] if i.strip()]
             issues += found
             if found:
@@ -360,6 +364,17 @@ def validate(case: CaseFile, net: PersonNetwork, final: dict[str, Any], llm: Any
         except Exception as exc:  # noqa: BLE001
             logger.info("Validator model failed: %s", exc)
     return {"ok": not issues, "issues": issues, "checked": checked, "rules": rules}
+
+
+def _read_of(case: Any, doc_id: str) -> dict[str, Any]:
+    from sherlocks.team.officer_agent import page_line
+
+    doc = case.documents.get(doc_id) or {}
+    facts = [f for f in (case.facts.get(i) for i in doc.get("facts") or []) if f and not page_line(f, doc)]
+    return {"id": doc_id, "title": doc.get("title"),
+            "what_was_read_in_the_whole_document": doc.get("ai_summary") or doc.get("summary") or "",
+            "findings_read_in_it": [f"{f['id']}: {f['statement'][:220]}" for f in facts][:20],
+            "start_of_its_text_only": (doc.get("text") or "")[:2000]}
 
 
 def revise(final: dict[str, Any], issues: list[str], llm: Any) -> str | None:
@@ -562,8 +577,19 @@ def _take_answer(case: CaseFile, net: PersonNetwork, message: str, q: dict[str, 
         case.set_incident({"date": day or text[:40], **({"time": tm.group(1)} if tm else {})})
         done.append(f"incident date: {day or text[:40]}")
     elif key == "incident:what":
-        case.set_incident({"offence": text[:200]})
-        done.append(f"offence: {text[:80]}")
+        # The crime the answer names ("qatl", "goli maar di" is murder); the words themselves only when they are a
+        # name for it - a whole message once became the case's "offence".
+        from sherlocks.linkgraph.offences import asked_crimes, labels
+
+        found = sorted(asked_crimes(text))
+        said = [k for k in found if all(w in text.lower() for w in k.split("_"))] or found
+        attempt = "attempt" in text.lower() or "koshish" in text.lower() or "اقدام" in text
+        named = labels([k for k in said if not (attempt and not k.startswith("attempted_") and f"attempted_{k}" in said)
+                        and not (not attempt and k.startswith("attempted_") and k.removeprefix("attempted_") in said)])
+        offence = (named[:1].upper() + named[1:]) if named else (text.strip()[:80] if len(text.split()) <= 8 else "")
+        if offence:
+            case.set_incident({"offence": offence})
+            done.append(f"offence: {offence}")
     elif key == "case:which":
         m = re.search(r"(\d{1,5})\s*/\s*(\d{2,4})", text)
         if m:                           # the officer named the FIR: it is this case

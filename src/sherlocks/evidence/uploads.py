@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from sherlocks.evidence import cdr as cdr_agent
+from sherlocks.evidence.case_file import UPLOAD_TEXT
 from sherlocks.evidence.pdf_reader import read_pdf
 from sherlocks.evidence.readers import ai_read, link_people, report_facts
 
@@ -27,6 +28,8 @@ logger = logging.getLogger(__name__)
 # Extension -> kind. Exactly the four formats allowed: image, PDF, Word, Excel.
 ALLOWED = {".jpg": "image", ".jpeg": "image", ".png": "image", ".pdf": "pdf", ".docx": "docx", ".xlsx": "xlsx"}
 ACCEPT = ",".join(ALLOWED)
+UPLOAD_PAGES = 400                  # an uploaded PDF is read to the end
+UPLOAD_VISION_PAGES = 40            # scanned pages without text, read by the vision model
 _MIME = {"image": "image/jpeg", "pdf": "application/pdf",
          "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
          "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
@@ -118,11 +121,18 @@ def process_upload(agents: Any, *, name: str, content: bytes, note: str = "", ow
     ext = Path(name).suffix.lower()
     key = f"upload:{hashlib.sha256(content).hexdigest()[:16]}"
     existing = case.doc_for(key)
-    if existing is not None:
+    # The same file again: kept once - unless it was read before the whole-document reader (cut at 30 pages, ten
+    # facts); then it is read again, whole, into the same document.
+    again = (existing is not None and kind != "xlsx" and existing.get("kind") == "upload" and not existing.get("reading")
+             and agents.llm() is not None and hasattr(agents.llm(), "generate_text"))
+    if existing is not None and not again:
+        case.upload_status(name, "done", doc=existing["id"], note="already on the case board - read before", **_counts(existing))
         return existing["id"]
-    if not case.claim(key):
+    claimed = f"reread:{key}" if again else key
+    if not case.claim(claimed):
         raise UploadError(f"{name} is already being read.")
     path = store_file(upload_dir, content, ext)
+    case.upload_status(name, "analysing" if kind == "xlsx" else "extracting", kind=kind)
     graph = agents.graph()
     phones = graph_phones(graph)
     head = f"Uploaded file: {name} ({kind}, {len(content) // 1024} KB)" + (f". Officer's note: {note}" if note else "")
@@ -145,7 +155,8 @@ def process_upload(agents: Any, *, name: str, content: bytes, note: str = "", ow
             if not body:
                 unread = [1]
         elif kind == "pdf":
-            read = read_pdf(content, vision=vision)
+            # An upload is read whole: an inquiry report runs to sixty pages and more.
+            read = read_pdf(content, vision=vision, max_pages=UPLOAD_PAGES, max_vision_pages=UPLOAD_VISION_PAGES)
             body, unread = read.text, read.unread_pages
             for img in read.images:
                 image_id = agents.images.put(img.data, img.ext) if agents.images else None
@@ -165,16 +176,42 @@ def process_upload(agents: Any, *, name: str, content: bytes, note: str = "", ow
             if analysis["kind"] in ("cdr", "tower_dump"):
                 doc_kind = "cdr"
     except Exception as exc:
+        case.release(claimed)
         case.attempt("upload", key, "error", f"{name}: {type(exc).__name__}: {exc}")
+        case.upload_status(name, "failed", reason=f"{type(exc).__name__}: {exc}"[:200])
         raise UploadError(f"{name} could not be read: {exc}") from exc
+
+    if again:
+        doc_id = existing["id"]
+        with case._lock:
+            existing.update({"text": f"{head}\n{body}".strip()[:UPLOAD_TEXT], "summary": _summary(kind, analysis, body, unread),
+                             "unread_pages": unread})
+            if pictures:
+                existing["images"] = pictures
+        case.release(claimed)
+        say("info", f"📎 {name} was read before the whole-document reader - reading it again, in full [{doc_id}]")
+        case.upload_status(name, "reading", doc=doc_id, again=True)
+        from sherlocks.team import document_reader
+
+        try:
+            if document_reader.read(case, doc_id, agents.llm(), say=say) is None:
+                document_reader.status(case, doc_id, "failed")
+        except Exception as exc:  # noqa: BLE001
+            logger.info("Reader could not read %s again: %s", name, exc)
+            document_reader.status(case, doc_id, "failed")
+        link_people(case, doc_id, graph)
+        _finished(case, name, doc_id)
+        return doc_id
 
     doc_id = case.add_document(
         kind=doc_kind, key=key, title=f"Upload: {name}", source="Uploaded by the officer",
         text=f"{head}\n{body}".strip(), summary=_summary(kind, analysis, body, unread),
-        owners=[owner] if owner else [], images=pictures, unread_pages=unread,
+        owners=[owner] if owner else [], images=pictures, unread_pages=unread, max_text=UPLOAD_TEXT,
         data={"path": str(path), "name": name, "file_kind": kind, "mime": _MIME[kind], "note": note,
               "analysis": {k: v for k, v in (analysis or {}).items() if k not in ("lines", "findings", "events")}})
     say("hit", f"📎 Read upload {name}: {_summary(kind, analysis, body, unread)} [{doc_id}]")
+    case.upload_status(name, "analysing" if analysis else "reading", doc=doc_id,
+                       pages=len(re.findall(r"\[page \d+\]", body)) or None)
     if note:
         case.officer_note(f"About {name}: {note}", source="upload")
 
@@ -186,10 +223,18 @@ def process_upload(agents: Any, *, name: str, content: bytes, note: str = "", ow
         if sum(1 for d in case.documents.values() if d["kind"] == "cdr" and (d.get("data") or {}).get("path")) >= 2:
             case.plan("cdr:cross", f"a second CDR: {name}")          # R5 links the CDRs
     elif agents.llm() is not None and body.strip():
+        from sherlocks.team import document_reader
+
         try:
-            ai_read(case, doc_id, agents.llm())
+            # R7 reads the whole document, part by part; the short reader when no model writes plain text.
+            if document_reader.read(case, doc_id, agents.llm(), say=say) is None:
+                document_reader.status(case, doc_id, "reading", parts=1, done=0)
+                ai_read(case, doc_id, agents.llm())
+                document_reader.status(case, doc_id, "done", parts=1, done=1,
+                                       findings=len(case.documents[doc_id].get("facts") or []))
         except Exception as exc:  # noqa: BLE001
             logger.info("Reader could not read %s: %s", name, exc)
+            document_reader.status(case, doc_id, "failed")
     else:
         report_facts(case, doc_id)
     link_people(case, doc_id, graph)
@@ -200,7 +245,23 @@ def process_upload(agents: Any, *, name: str, content: bytes, note: str = "", ow
     from sherlocks.evidence.questioner import ask_gaps
 
     ask_gaps(case, graph)
+    _finished(case, name, doc_id)
     return doc_id
+
+
+def _counts(doc: dict[str, Any]) -> dict[str, Any]:
+    st = doc.get("reading_status") or {}
+    return {k: st[k] for k in ("events", "findings", "leads", "people", "what") if st.get(k) is not None} or {
+        "findings": len(doc.get("facts") or [])}
+
+
+def _finished(case: Any, name: str, doc_id: str) -> None:
+    """The file is read: done (with what was found in it) - or failed, when its reading failed."""
+    doc = case.documents.get(doc_id) or {}
+    if (doc.get("reading_status") or {}).get("state") == "failed":
+        case.upload_status(name, "failed", doc=doc_id, reason="the reader could not read it")
+    else:
+        case.upload_status(name, "done", doc=doc_id, **_counts(doc))
 
 
 def _owner_phone(graph: dict[str, Any], owner: str | None) -> str | None:

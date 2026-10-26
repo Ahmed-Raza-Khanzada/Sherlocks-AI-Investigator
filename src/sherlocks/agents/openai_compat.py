@@ -93,14 +93,15 @@ class OpenAICompatClient:
 
     # -- generation ---------------------------------------------------------------
 
-    def _chat(self, messages: list[dict[str, str]], json_schema: dict[str, Any], max_tokens: int | None = None) -> str:
+    def _chat(self, messages: list[dict[str, str]], json_schema: dict[str, Any] | None,
+              max_tokens: int | None = None) -> str:
         payload: dict[str, Any] = {
             "model": self.settings.model,
             "messages": messages,
             "temperature": self.settings.temperature,
             "max_tokens": max_tokens or self.settings.max_tokens,
         }
-        if self._schema_ok:
+        if self._schema_ok and json_schema is not None:
             payload["response_format"] = {"type": "json_schema", "json_schema": {"name": "result", "schema": json_schema}}
         if self._template_kwargs_ok:
             payload["chat_template_kwargs"] = {"enable_thinking": False}
@@ -112,7 +113,7 @@ class OpenAICompatClient:
         except requests.RequestException as exc:
             raise LlmUnavailable(f"LLM request failed: {exc}") from exc
 
-        if response.status_code == 400 and (self._template_kwargs_ok or self._schema_ok):
+        if response.status_code == 400 and (self._template_kwargs_ok or (self._schema_ok and json_schema is not None)):
             # An older or different server: drop the optional fields one at a time.
             if self._template_kwargs_ok:
                 self._template_kwargs_ok = False
@@ -191,6 +192,28 @@ class OpenAICompatClient:
             f"{name} produced no output matching {schema.__name__} in {self.settings.max_attempts} attempts. "
             f"Last error: {errors[-1] if errors else 'unknown'}"
         )
+
+    def generate_text(self, *, prompt: str, system: str | None = None, cache_kind: str | None = None,
+                      prompt_version: str = "v1", max_tokens: int | None = None) -> str:
+        """A plain answer, no form. The office model weighs things in words that it cannot weigh
+        while filling a JSON form (it then guesses); the caller reads the line it asked for."""
+        if not self.settings.ready:
+            raise LlmUnavailable("LLM is disabled or not configured")
+        cache_key = None
+        if self.cache is not None and cache_kind:
+            cache_key = hashlib.sha256("\x00".join(["text", cache_kind, self.model, prompt_version, system or "",
+                                                    prompt]).encode("utf-8")).hexdigest()
+            cached = self.cache.get(cache_key)
+            if cached is not None and isinstance(cached.get("text"), str):
+                return cached["text"]
+        messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
+        text = self._chat(messages, None, max_tokens)
+        if self.cache is not None and cache_key:
+            try:
+                self.cache.set(cache_key, cache_kind or "", self.model, prompt_version, prompt, {"text": text})
+            except Exception:
+                logger.exception("Failed to write LLM cache entry")
+        return text
 
     def read_image(self, image: bytes, prompt: str, *, mime: str = "image/png") -> str:
         """Plain-text answer about one image (a scanned report page). Needs a vision

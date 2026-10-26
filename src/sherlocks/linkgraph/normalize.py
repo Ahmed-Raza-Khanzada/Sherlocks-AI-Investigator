@@ -217,21 +217,36 @@ def sound_keys(name: str) -> list[str]:
     return [k for k in (sound_key(t) for t in re.findall(r"[A-Za-z]+|[\u0600-\u06FF]+", str(name or ""))) if k]
 
 
+def _squeeze(key: str) -> str:
+    """One letter for a doubled one: "Mir" + "Rehan" is MR+RN, the joined میرریحان is MRN."""
+    return re.sub(r"(.)\1+", r"\1", key)
+
+
 def sounds_like(query: str, name: str) -> bool:
     """Does ``query`` (any script, one or more words) sound like ``name`` - each query
-    word, in order, starting at a word of the name? "altaf" ~ "محمد الطاف"."""
-    q = "".join(sound_keys(query))
-    keys = sound_keys(name)
-    if not q or not keys:
+    word, in order, starting at a word of the name? "altaf" ~ "محمد الطاف"; two words
+    written as one also match ("Mir Jawad" ~ "میرجواد علی")."""
+    q = _squeeze("".join(sound_keys(query)))
+    if not q:
         return False
-    if len(q) == 1:
-        return q in keys
-    joined = "".join(keys)
-    starts, pos = [], 0
-    for k in keys:
-        starts.append(pos)
-        pos += len(k)
-    return any(joined.startswith(q, i) for i in starts)
+    for form in dict.fromkeys((name, _article_silent(name))):
+        keys = sound_keys(form)
+        if not keys:
+            continue
+        if len(q) == 1:
+            if q in keys:
+                return True
+        elif any(_squeeze("".join(keys[i:])).startswith(q) for i in range(len(keys))):
+            return True
+    return False
+
+
+def _article_silent(name: str) -> str:
+    """The Urdu name as spoken where the Arabic article "ال" is silent: عبدالرحمن is "Abdur Rehman",
+    شمس الدین "Shamsuddin". Tried as well as the written form - الطاف is still "Altaf"."""
+    text = str(name or "")
+    text = re.sub(r"(?<=[\u0600-\u06FF])ال(?=[\u0600-\u06FF])", "ا", text)        # inside a word: عبدالرحمن
+    return re.sub(r"(?<=[\u0600-\u06FF] )ال(?=[\u0600-\u06FF])", "ا", text)      # a word of its own: شمس الدین
 
 
 def name_key(value: object) -> str:

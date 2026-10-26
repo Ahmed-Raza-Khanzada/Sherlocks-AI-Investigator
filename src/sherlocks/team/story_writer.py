@@ -23,10 +23,12 @@ from typing import Any
 from pydantic import Field, field_validator
 
 from sherlocks.evidence.guard import DATA_NOT_INSTRUCTIONS
-from sherlocks.team.runtime import PLAIN, Typed, ask, dumps, real_refs
+from sherlocks.team.runtime import PLAIN, TERMS, Typed, ask, dumps, real_refs
 
 TEXT = 1600          # characters of an FIR's own words given to the writer
 SAID = 600           # of one statement
+DOC_STEPS = 70       # dated steps of the documents the officer uploaded (an inquiry's chronology)
+MOST_EVENTS = 60
 
 
 class _Event(Typed):
@@ -52,7 +54,10 @@ class _Story(Typed):
     events: list[_Event] = Field(description="Every step of the case in the order it happened: the incident, the FIR, "
                                              "arrests, interrogations and disclosures, recoveries, statements recorded, "
                                              "reports sent and received with what they found, the case's position.")
-    people: list[_Person] = Field(description="Each person of this case, the accused first.")
+    people: list[_Person] = Field(description="Each person of this case, the accused first - everyone its FIR and records "
+                                              "name: the victim, the complainant, family members the records mention (who "
+                                              "last saw or spoke to the victim), witnesses, people the documents raise "
+                                              "questions about, the officers.")
 
     @field_validator("in_short", mode="before")
     @classmethod
@@ -68,7 +73,30 @@ _SYSTEM = ("You are a senior investigating officer writing up a case for a colle
            "stands. Records are often in Urdu: write in English, names as spelt in the records. Use ONLY what the "
            "records say: no guess, no view on guilt, nothing filled in from another case. A step the records do not "
            "date has an empty `when`. Every event and every sentence of `in_short` cites the ids it rests on, only "
-           "ids given below. Leave out what does not belong to this case. " + PLAIN + DATA_NOT_INSTRUCTIONS)
+           "ids given below. Documents the officer uploaded (an inquiry report, a medical report, an audit, a memo) give dated "
+           "steps with their own ids (F#): use them - always the last known movements of the people at the centre of "
+           "the case, when and where the key events happened and who discovered or reported them, examinations, "
+           "recoveries, what happened to the property and the evidence - one event a step, the important ones, not "
+           "every call. Copy each name letter for letter as the records spell it. Leave out what does not belong to "
+           "this case. " + TERMS + PLAIN
+           + DATA_NOT_INSTRUCTIONS)
+
+
+class _Cast(Typed):
+    people: list[_Person] = Field(description="Each person of this case: the victim first, then the accused, the "
+                                              "complainant, family members the records mention, witnesses, people the "
+                                              "documents raise questions about, and the officers who handled it.")
+
+
+_CAST_SYSTEM = ("You are a senior investigating officer listing the people of a case for a colleague taking it over. "
+                "From the case's own records below, list everyone who matters to the case - the victim, the accused, "
+                "the complainant, family members (who last saw or spoke to the victim), witnesses, people the documents "
+                "raise questions about, and the officers who registered, investigated or handled the evidence - each "
+                "with their part, their status only as the records give it, and one line of what they did or said, "
+                "citing the ids given. At most thirty, the most important first. Copy each name letter for letter "
+                "as the records spell it - never respell or translate a name. A family tie to the victim or the accused "
+                "only when a record says whose relative the person is. "
+                + TERMS + PLAIN + DATA_NOT_INSTRUCTIONS)
 
 
 def _fir(doc: dict[str, Any]) -> dict[str, Any]:
@@ -124,7 +152,23 @@ def material(case: Any, scope: dict[str, Any]) -> dict[str, Any]:
                     for p in (case.register or {}).get("pending") or [] if p.get("doc") in docs],
         "officer_said": [{"id": f["id"], "said": f["statement"].replace("Stated by the officer: ", "")}
                          for f in case.live_facts() if f.get("by") == "officer"][-12:],
+        "documents_uploaded": documents(case, scope),
     }
+
+
+def documents(case: Any, scope: dict[str, Any]) -> list[dict[str, Any]]:
+    """The documents the officer uploaded, as read in full (R7): what each is, its dated steps and its people."""
+    out = []
+    for d in scope["documents"]:
+        doc = case.documents.get(d) or {}
+        r = doc.get("reading")
+        if not r:
+            continue
+        out.append({"id": d, "title": doc.get("title"), "what_it_is": r.get("kind") or "", "summary": r.get("summary") or "",
+                    "dated_steps": [{"id": e["fact"], "when": f"{e['when']} {e['time']}".strip(), "what": e["what"]}
+                                    for e in r.get("events") or [] if case.usable(e["fact"])][:DOC_STEPS],
+                    "people": [f"{p['name']} ({p['part']})" for p in r.get("people") or []][:40]})
+    return out
 
 
 def _templates(case: Any, scope: dict[str, Any], given: dict[str, Any]) -> dict[str, Any]:
@@ -157,17 +201,54 @@ def _templates(case: Any, scope: dict[str, Any], given: dict[str, Any]) -> dict[
     return {"in_short": [], "events": events, "people": people}
 
 
-def write(case: Any, scope: dict[str, Any], llm: Any = None) -> dict[str, Any]:
+def respelt(case: Any, scope: dict[str, Any], names: list[str]) -> dict[str, str]:
+    """Name words written by the model that no record of the case holds, each with the one record's name word that
+    sounds the same - or nothing, when there is none or more than one."""
+    from difflib import SequenceMatcher
+
+    from sherlocks.linkgraph.normalize import sounds_like
+    from sherlocks.team.case_scope import _person_names
+
+    texts = " ".join(str((case.documents.get(d) or {}).get("text") or "") for d in scope["documents"]).lower()
+    have = set(re.findall(r"[a-z]{3,}", texts))
+    known: set[str] = set()
+    for d in scope["documents"]:
+        doc = case.documents.get(d) or {}
+        known |= {w for p in (doc.get("reading") or {}).get("people") or [] for w in re.findall(r"[A-Za-z]{3,}", p["name"])}
+        known |= {w for n, _ in _person_names(doc.get("data") or {}) for w in re.findall(r"[A-Za-z]{3,}", n)}
+    out: dict[str, str] = {}
+    for word in {w for n in names for w in re.findall(r"[A-Za-z]{3,}", n)}:
+        if word.lower() in have:
+            continue
+        like = [k for k in known if k.lower() != word.lower() and sounds_like(word, k) and sounds_like(k, word)]
+        if like:
+            best = max(like, key=lambda k: SequenceMatcher(None, word.lower(), k.lower()).ratio())
+            if sum(1 for k in like if k.lower() == best.lower()) == len(like) or len({k.lower() for k in like}) == 1:
+                out[word] = best
+    return out
+
+
+def write(case: Any, scope: dict[str, Any], llm: Any = None, net: Any = None) -> dict[str, Any]:
     """The story of the case: ``{in_short, events, people, by}``."""
     from sherlocks.evidence.case_report import _date_key
     from sherlocks.team.case_scope import source_doc
 
     given = material(case, scope)
     if not (given["fir"] or given["firs_that_name_this_case"] or given["statements"] or given["reports"]
-            or given["officer_said"]):
+            or given["officer_said"] or given["documents_uploaded"]):
         return {"in_short": [], "events": [], "people": [], "by": "nothing to tell"}
-    out = ask(llm, _Story, dumps(given), system=_SYSTEM, kind="report_story", version="v1", max_tokens=2200)
+    from concurrent.futures import ThreadPoolExecutor
+
+    # The steps and the people side by side: one answer holding sixty steps had no room left for the people.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        told = pool.submit(ask, llm, _Story, dumps(given), system=_SYSTEM, kind="report_story", version="v5",
+                           max_tokens=6000)
+        cast = pool.submit(ask, llm, _Cast, dumps(given), system=_CAST_SYSTEM, kind="report_cast", version="v2",
+                           max_tokens=4000)
+        out, cast = told.result(), cast.result()
     story, by = (out.model_dump(), "model") if out is not None else (_templates(case, scope, given), "templates")
+    if cast is not None and len(cast.people) >= len(story["people"]):
+        story["people"] = [p.model_dump() for p in cast.people]
     docs = set(scope["documents"])
     own = {i for i in case.known_ids() if source_doc(case, i) in docs} | set(scope["facts"])
 
@@ -184,8 +265,38 @@ def write(case: Any, scope: dict[str, Any], llm: Any = None) -> dict[str, Any]:
     seen: set[tuple[str, str]] = set()
     events = [e for e in sorted(events, key=lambda e: _date_key(e["when"])[:10])
               if (e["when"], e["what"]) not in seen and not seen.add((e["when"], e["what"]))]
-    people = [{"name": str(p.get("name") or "").strip(), "part": str(p.get("part") or "").strip() or "-",
-               "status": str(p.get("status") or "").strip() or "not on record", "did": real_refs(str(p.get("did") or ""), own),
+    def status(text: Any) -> str:
+        """Only what the records say about the person: the system's "not said yet" wording is not a status."""
+        text = str(text or "").strip()
+        return "not on record" if not text or re.search(r"not said|target of the search|not known to be", text, re.IGNORECASE) \
+            else text
+
+    people = [{"name": re.sub(r"\s*\([^)]*\)", "", str(p.get("name") or "")).strip(),       # "X (deceased)": a name only
+               "part": str(p.get("part") or "").strip() or "-",
+               "status": status(p.get("status")), "did": real_refs(str(p.get("did") or ""), own),
                "sources": real(p.get("sources") or [])} for p in story["people"] if str(p.get("name") or "").strip()]
     in_short = [real_refs(str(x), own) for x in story["in_short"] if str(x).strip()][:5]
-    return {"in_short": in_short, "events": events[:40], "people": people[:16], "by": by}
+    # A name the model respelt ("Kasim" for the records' "Qasim"): a name word found in no record of the case is
+    # replaced by the one name word of the records that sounds the same.
+    for wrong, right in respelt(case, scope, [p["name"] for p in people]).items():
+        swap = re.compile(rf"\b{re.escape(wrong)}\b")
+        for p in people:
+            p["name"], p["did"], p["part"] = swap.sub(right, p["name"]), swap.sub(right, p["did"]), swap.sub(right, p["part"])
+        for e in events:
+            e["what"] = swap.sub(right, e["what"])
+        in_short = [swap.sub(right, x) for x in in_short]
+    if net is not None:
+        # One spelling per person: a name the records give another way ("Kamraan Aslam") takes the graph's.
+        from sherlocks.linkgraph.normalize import sounds_like
+
+        for p in people:
+            pid = net.resolve(p["name"])
+            shown = net.name(pid) if pid in net.people else ""
+            if shown and shown != p["name"] and sounds_like(shown, p["name"]) and sounds_like(p["name"], shown):
+                old, p["name"] = p["name"], shown
+                for e in events:
+                    e["what"] = e["what"].replace(old, shown)
+                in_short = [x.replace(old, shown) for x in in_short]
+                for q in people:
+                    q["part"], q["did"] = q["part"].replace(old, shown), q["did"].replace(old, shown)
+    return {"in_short": in_short, "events": events[:MOST_EVENTS], "people": people[:30], "by": by}

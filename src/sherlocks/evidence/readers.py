@@ -106,10 +106,12 @@ def fir_facts(case: CaseFile, doc_id: str, doc: dict[str, Any]) -> int:
 
 
 def report_facts(case: CaseFile, doc_id: str) -> int:
-    """A lab report / CRO dossier: the facts its own header lines state."""
+    """A lab report / CRO dossier: the facts its own header lines state. A dossier's first lines are
+    its fields; a report's are the record header we write and then the scanned page's letterhead
+    (the laboratory's name and address), which is no fact - only the header is kept for it."""
     doc = case.documents[doc_id]
     added = 0
-    for line in doc["text"].splitlines()[:6]:
+    for line in doc["text"].splitlines()[:6 if doc.get("kind") == "cro" else 1]:
         line = squash(line)
         if len(line) >= 12 and case.add_fact(doc_id, f"{doc['title']}: {line[:240]}", line, kind="report"):
             added += 1
@@ -183,9 +185,9 @@ def ai_read(case: CaseFile, doc_id: str, llm: Any) -> dict[str, Any]:
 # --------------------------------------------------------------------------------------
 
 
-def _people_index(graph: dict[str, Any]) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
+def _people_index(graph: dict[str, Any]) -> tuple[dict[str, str], dict[str, list[str]], dict[str, str], dict[str, str]]:
     cnics: dict[str, str] = {}
-    phones: dict[str, str] = {}
+    phones: dict[str, list[str]] = {}
     plates: dict[str, str] = {}
     names: dict[str, str] = {}
     name_count: dict[str, int] = {}
@@ -196,7 +198,7 @@ def _people_index(graph: dict[str, Any]) -> tuple[dict[str, str], dict[str, str]
         if d.get("cnic"):
             cnics[d["cnic"]] = node["id"]
         for p in d.get("phones") or []:
-            phones[p] = node["id"]
+            phones.setdefault(p, []).append(node["id"])        # one number can be on several people
         for v in d.get("vehicles") or []:
             key = re.sub(r"[\s-]", "", str(v)).upper()
             if len(key) >= 4:
@@ -223,21 +225,79 @@ def link_people(case: CaseFile, doc_id: str, graph: dict[str, Any]) -> list[dict
         pid = cnics.get(cnic13(m.group(0)) or "")
         if pid and pid not in found:
             found[pid] = (f"CNIC {m.group(0)} appears in the document", _line_with(text, m.group(0)), "identifier")
+    seeds = {n["id"] for n in graph.get("nodes") or [] if n.get("kind") == "person" and (n.get("data") or {}).get("seed")}
     for m in _PHONE.finditer(text):
-        pid = phones.get(mobile11(m.group(0)) or "")
-        if pid and pid not in found:
-            found[pid] = (f"phone {m.group(0)} appears in the document", _line_with(text, m.group(0)), "identifier")
+        holders = phones.get(mobile11(m.group(0)) or "") or []
+        # A number on a target is the target's - the others on it (a SIM in a relative's or a stranger's
+        # name) are not tied to the document by it. With no target on it, everyone on it.
+        for pid in [p for p in holders if p in seeds] or holders:
+            if pid not in found:
+                found[pid] = (f"phone {m.group(0)} appears in the document", _line_with(text, m.group(0)), "identifier")
     upper = re.sub(r"[\s-]", "", text.upper())
     for plate, pid in plates.items():
         if plate in upper and pid not in found:
             found[pid] = (f"vehicle {plate} appears in the document", plate, "identifier")
     low = f" {name_key(text)} "
+    joined = {}
+    words = low.split()
+    for size in (2, 3, 4, 5):                      # "میر جواد علی" is "میرجواد علی": the same name
+        for i in range(len(words) - size + 1):
+            joined.setdefault("".join(words[i:i + size]), " ".join(words[i:i + size]))
     for key, pid in names.items():
-        if pid not in found and f" {key} " in low:
+        if pid in found:
+            continue
+        if f" {key} " in low:
             found[pid] = ("named in the document", key, "name")
+        elif key.replace(" ", "") in joined:
+            found[pid] = ("named in the document", joined[key.replace(" ", "")], "name")
+    # A laboratory or medical report belongs to its FIR: whom that FIR's file names by CNIC or phone,
+    # the report is about too (a lab report gives a name, rarely a CNIC or phone).
+    for fir_doc in _family(case, doc):
+        for link in [x for x in case.links.values() if x["doc"] == fir_doc["id"] and x.get("strength") == "identifier"]:
+            if link["pid"] not in found:
+                found[link["pid"]] = (f"report on {fir_doc['title']}, whose file has {link['how'].split(' appears')[0]}",
+                                      link["quote"], "identifier")
 
     out = []
     for pid, (how, quote, strength) in found.items():
         link_id = case.add_link(doc_id, pid, labels.get(pid, pid), how, quote, strength=strength)
         out.append({"id": link_id, "pid": pid, "name": labels.get(pid, pid), "how": how, "strength": strength})
+    if doc.get("kind") == "fir":
+        # Reports of this FIR read before its file: they are about whom the file names too.
+        for child in case.documents.values():
+            if child["id"] != doc_id and doc in _family(case, child):
+                for x in out:
+                    if x["strength"] == "identifier":
+                        case.add_link(child["id"], x["pid"], x["name"], f"report on {doc['title']}, whose file has "
+                                      f"{x['how'].split(' appears')[0]}", "", strength="identifier")
     return out
+
+
+def prune_phone_links(case: CaseFile, graph: dict[str, Any]) -> int:
+    """Drop the links made by a phone number that is a target's, to the others on that number (a SIM
+    in a relative's or a stranger's name) - made before 2026-10-21, when one holder was kept at random.
+    Returns how many were dropped."""
+    _, phones, _, _ = _people_index(graph)
+    seeds = {n["id"] for n in graph.get("nodes") or [] if n.get("kind") == "person" and (n.get("data") or {}).get("seed")}
+    gone = []
+    with case._lock:
+        for link_id, link in list(case.links.items()):
+            m = re.match(r"phone (\S+) appears in the document", str(link.get("how") or ""))
+            holders = phones.get(mobile11(m.group(1)) or "") or [] if m else []
+            if m and link["pid"] not in seeds and any(p in seeds for p in holders):
+                gone.append(case.links.pop(link_id))
+                case._bump("link", link_id)
+    return len(gone)
+
+
+def _family(case: CaseFile, doc: dict[str, Any]) -> list[dict[str, Any]]:
+    """The FIR file a report belongs to (``ref.fir`` / ``ref.labs_of``), when it is on the board."""
+    ref = doc.get("ref") or {}
+    if doc.get("kind") == "fir" or not (ref.get("fir") or ref.get("labs_of")):
+        return []
+    m = re.search(r"(\d{1,5})\s*/\s*(\d{2,4})", str(ref.get("labs_of") or ref.get("fir") or ""))
+    if not m:
+        return []
+    want = (m.group(1).lstrip("0"), m.group(2)[-2:])
+    return [d for d in case.documents.values() if d.get("kind") == "fir"
+            and (str((d.get("ref") or {}).get("fir_no") or "").lstrip("0"), str((d.get("ref") or {}).get("fir_year") or "")[-2:]) == want]

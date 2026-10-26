@@ -59,6 +59,14 @@ SUMMARY_MOST = {"brief": 5, "established": 6, "disputed": 4, "unclear": 5, "stan
 NOT_DECLARED = ("The investigating officer has not yet said what case is being investigated. This summary therefore "
                 "says nothing about that case: it sets out what the records hold about the target, the people "
                 "connected to them and their earlier cases.")
+# ... and when the officer said there is no case: they are only checking the target's record.
+NO_CASE = ("The investigating officer said there is no case: they are checking the target's record. This summary "
+           "sets out what the records hold about the target, the people connected to them and their earlier cases.")
+# What wrote a stored report: a report kept from before a change to the report team is written again, not
+# re-drawn - its parts lack what the new layout reads (a case shown with no summary, under the wrong part).
+# Raise it whenever a part's content changes.
+REPORT_BUILD = "2026-10-23.5"
+MOST_LEADS = 12
 NOT_WEIGHED = "Not assessed: no case has been described yet, so no line of inquiry is weighed."
 MEDICAL, LAB, SCENE = ("mlo", "postmortem"), ("dna", "chemical", "forensic"), ("recovery_memo", "site_plan")
 # The report, in the order it is read - and the member of the Report team that writes each section.
@@ -76,6 +84,10 @@ STRUCTURE = (
     ("target", "The target", "P2 Target writer",
      ("Who the target is, their part and status in this case, where the records put them at the time, their own "
       "earlier cases, and their close circle (family, co-accused, the same vehicle, travel, phone contact).")),
+    ("network", "The target's network: step 1 and step 2", "P9 Network writer",
+     ("A picture of everyone the records tie to the target directly, and the people one step further who matter "
+      "(involved in this case, with a criminal record, or tied to two or more of the direct ones) - with tables "
+      "of who, how and through whom.")),
     ("record", "The target's record", "P8 Record writer",
      ("Before the case is described, the body of the report: each earlier FIR (when, where, the offence, their "
       "part, where it stands - convicted, acquitted, under trial - what the complainant said, what was found "
@@ -406,6 +418,7 @@ def _target(job: ReportRun) -> dict[str, Any]:
     that hold them, and their close circle."""
     from sherlocks.evidence.dossiers import build_card
     from sherlocks.linkgraph.systems import system_label
+    from sherlocks.team import network_view
     from sherlocks.team.case_scope import close_circle
 
     case, net, scope = job.case, job.net, job.scope
@@ -444,8 +457,11 @@ def _target(job: ReportRun) -> dict[str, Any]:
                              for x in lines if not x.get("nothing")}.values())[:12],
             "nothing_in": [system_label(x["system"]) for x in lines if x.get("nothing")][:14]})
     job.parts["target"] = {"targets": targets, "circle": close_circle(net, scope)}
+    # P9: the target's network up to two steps - direct connections, and the people who matter one step on.
+    job.parts["network"] = network_view.build(job.case, net, scope)
     return {"targets": len(targets), "own_firs": sum(len(t["firs"]) for t in targets),
-            "circle": len(job.parts["target"]["circle"])}
+            "circle": len(job.parts["target"]["circle"]), "network_first": len(job.parts["network"]["first"]),
+            "network_second": len(job.parts["network"]["second"])}
 
 
 # -- P8 Record writer ---------------------------------------------------------------------
@@ -491,6 +507,8 @@ def _in_case(job: ReportRun) -> dict[str, Any]:
     reports = []
     for d in scope["documents"]:
         card, doc = cards.get(d) or {}, case.documents.get(d) or {}
+        if doc.get("reading"):
+            continue        # read in full by the Document reader: its own section, not a laboratory's report
         if card.get("record") in (*MEDICAL, *LAB, *SCENE) or (doc.get("kind") == "lab" and card.get("record") != "fir"):
             reports.append({"id": d, "kind": "Medical report" if card.get("record") in MEDICAL else "Scene record"
                             if card.get("record") in SCENE else "Laboratory report",
@@ -505,11 +523,13 @@ def _in_case(job: ReportRun) -> dict[str, Any]:
     for k in base.get("leads") or []:
         entry = case.leads.get(k["id"]) or {}
         source = (case.facts.get(entry.get("source") or "") or {}).get("kind")
-        if k["status"] == "dead end" or source in NOT_EVIDENCE or (entry.get("people") and not pids & set(entry["people"])):
-            continue
+        doc = (case.documents.get((case.facts.get(entry.get("source") or "") or {}).get("doc") or "") or {})
+        if k["status"] in ("dead end", "answered") or source in NOT_EVIDENCE or (entry.get("people") and not pids & set(entry["people"])) \
+                or doc.get("kind") == "graph" or not in_scope(case, scope, entry.get("source") or ""):
+            continue            # a pattern of the link graph (a go-between, contacts in common) is not this case's lead
         leads.append(k)
     return {"said": said, "contradictions": contradictions, "reports": reports, "custody": custody,
-            "pending": pending, "leads": leads[:6]}
+            "pending": pending, "leads": leads[:MOST_LEADS]}
 
 
 def _when(text: Any) -> datetime | None:
@@ -524,6 +544,12 @@ def _when(text: Any) -> datetime | None:
         return datetime(int(m.group(3)), int(m.group(2)), int(m.group(1)), hour, int(t.group(2)))  # noqa: DTZ001
     except ValueError:
         return None
+
+
+def _flat(text: Any) -> str:
+    """A status put in brackets has none of its own: "Dead (body found)" -> "dead, body found"."""
+    text = re.sub(r"\s*\(([^()]*)\)", r", \1", str(text or "")).strip(" ,")
+    return text[:1].lower() + text[1:] if text[:2] != text[:2].upper() else text
 
 
 def _glance(job: ReportRun) -> dict[str, Any] | None:
@@ -541,7 +567,7 @@ def _glance(job: ReportRun) -> dict[str, Any] | None:
 
     def status(name: str) -> str:
         p = next((p for p in people if p["name"] == name or name in p["name"] or p["name"] in name), None)
-        return f" ({p['status']})" if p and p["status"] and p["status"] != "not on record" else ""
+        return f" ({_flat(p['status'])})" if p and p["status"] and p["status"] != "not on record" else ""
 
     occurred, registered = data.get("occurred") or inc.get("date"), data.get("reported")
     delay = ""
@@ -558,18 +584,29 @@ def _glance(job: ReportRun) -> dict[str, Any] | None:
         linked.append(f"FIR {doc['ref']['fir_no']}/{str(doc['ref'].get('fir_year') or '')[-2:]}"
                       + (f" ({(doc.get('data') or {}).get('sections')})" if (doc.get("data") or {}).get("sections") else "")
                       + f" [{d}]")
-    cite = f" [{main['id']}]" if main else ""
+    from sherlocks.linkgraph.offences import classify, labels
+
+    sections = str(data.get("sections") or "").strip()
+    said = str(inc.get("offence") or "").strip()
+    # The offence in words, with its sections; what the officer called it only when it is a name for a crime
+    # (a few words) - a whole message once landed here.
+    offence = "; ".join(x for x in (
+        f"{labels(classify(sections)) or 'offence'} ({sections})" if sections else "",
+        f"as the officer describes it: {said}" if said and len(said.split()) <= 6 and said.lower() not in sections.lower() else "")
+        if x)
     rows = [
         ("FIR", (f"{scope['this_fir'] or inc.get('fir')}" + (f", PS {data.get('police_station') or inc.get('police_station')}"
-                                                            if data.get("police_station") or inc.get("police_station") else "")
-                 + cite) if (scope["this_fir"] or inc.get("fir")) else "No FIR given - a new matter as the officer described it"),
-        ("Offence", " ".join(x for x in (str(data.get("sections") or ""), f"- {inc['offence']}" if inc.get("offence") else "") if x)),
+                                                            if data.get("police_station") or inc.get("police_station") else ""))
+         if (scope["this_fir"] or inc.get("fir")) else "No FIR given - a new matter as the officer described it"),
+        ("Offence", offence),
         ("Occurred", str(occurred or "")),
         ("FIR registered", f"{registered}{delay}" if registered else ""),
         ("Place", str(data.get("place") or inc.get("place") or "")[:220]),
         ("Complainant", "; ".join(n + status(n) for n, r in named if r == "complainant")),
-        ("Victim", "; ".join(f"{p['name']}" + (f" ({p['status']})" if p["status"] != "not on record" else "")
-                             for p in people if re.search(r"victim|deceased", p["part"], re.IGNORECASE))
+        # The victim is the one whose part or status IS victim or deceased - not the father "of the deceased".
+        ("Victim", "; ".join(f"{p['name']}" + (f" ({_flat(p['status'])})" if p["status"] != "not on record" else "")
+                             for p in people if re.match(r"\s*(victim|deceased|the deceased)\b", p["part"], re.IGNORECASE)
+                             or re.match(r"\s*(victim|deceased)\b", p["status"], re.IGNORECASE))
          or "not named in the records yet"),
         ("Accused", "; ".join(n + status(n) for n, r in named if r.startswith("accused"))
          or "; ".join(f"{job.net.name(p)}: {r}" for p, r in case.roles.items() if p in job.net.people)),
@@ -582,18 +619,122 @@ def _glance(job: ReportRun) -> dict[str, Any] | None:
     return {"rows": [{"label": k, "value": v} for k, v in rows if str(v or "").strip()]}
 
 
+_FAMILY = re.compile(r"\b(mother|father|brother|sister|wife|husband|son|daughter|uncle|aunt|cousin|nephew|niece|"
+                     r"grand\w*|\w+-in-law|parents?|spouse|fianc\w*)\b", re.IGNORECASE)
+
+
+def _named(job: ReportRun) -> dict[str, str]:
+    """Everyone the case's records name, with their part: the story's people and the uploaded documents' people."""
+    named = {p["name"]: p["part"] for p in job.parts["case_story"]["people"] if p.get("name")}
+    for d in job.scope["documents"]:
+        for p in ((job.case.documents.get(d) or {}).get("reading") or {}).get("people") or []:
+            named.setdefault(p["name"], p.get("part") or "named in an uploaded document")
+    return named
+
+
+def _family_circle(job: ReportRun) -> None:
+    """Family the case's own records name (the mother who last spoke to him) belong in the close circle, even when
+    no police system ties them to the target."""
+    from sherlocks.linkgraph.normalize import sounds_like
+    from sherlocks.team.network_view import named_in
+
+    net, circle = job.net, job.parts["target"]["circle"]
+    targets = [net.name(t) for t in job.scope["targets"]]
+    have = [r["name"] for r in circle]
+    for p in job.parts["case_story"]["people"]:
+        name, part = p["name"], p.get("part") or ""
+        if not _FAMILY.search(part) or any(sounds_like(name, t) and sounds_like(t, name) for t in targets):
+            continue
+        if any(sounds_like(name, h) and sounds_like(h, name) for h in have):
+            continue
+        pid = next((o for t in job.scope["targets"] if t in net.G for o in net.G.neighbors(t)
+                    if o in net.people and named_in(net, o, {name: part})), "")
+        circle.append({"pid": pid, "name": net.name(pid) if pid else name, "kind": "family", "how": part,
+                       "source": ", ".join(_source_names(job, p.get("sources") or [])) or "case records", "stated": True,
+                       "criminal": bool(pid and net.criminal(pid)), "in_case": True})
+        have.append(name)
+
+
+def _source_names(job: ReportRun, ids: list[str]) -> list[str]:
+    from sherlocks.team.case_scope import source_doc
+
+    docs = dict.fromkeys(source_doc(job.case, i) for i in ids)
+    return [str((job.case.documents.get(d) or {}).get("title") or d).replace("Upload: ", "") for d in docs if d][:2]
+
+
 def _case_story(job: ReportRun) -> dict[str, Any]:
-    from sherlocks.team import story_writer
+    from sherlocks.team import network_view, story_writer
 
     job.parts["in_case"] = _in_case(job)
     if declared(job.case):
-        job.parts["case_story"] = story_writer.write(job.case, job.scope, job.llm)
+        job.parts["case_story"] = story_writer.write(job.case, job.scope, job.llm, net=job.net)
     else:
         job.parts["case_story"] = {"in_short": [], "events": [], "people": [], "by": "the case is not described yet"}
+    if job.parts["case_story"]["people"] or any((job.case.documents.get(d) or {}).get("reading") for d in job.scope["documents"]):
+        # Now that the case's people are known: the network again, with them, and the family they name.
+        job.parts["network"] = network_view.build(job.case, job.net, job.scope, named=_named(job))
+        _family_circle(job)
     job.parts["glance"] = _glance(job)
     story = job.parts["case_story"]
     return {"written_by": story["by"], "events": len(story["events"]), "people": len(story["people"]),
             "leads_kept": len(job.parts["in_case"]["leads"])}
+
+
+# -- P10 Case analyst ---------------------------------------------------------------------
+
+
+def _analyst(job: ReportRun) -> dict[str, Any]:
+    """The reports read in full, the statements explained, and - once the case is described - the evidence
+    weighed (``team/case_analyst``)."""
+    from sherlocks.linkgraph.relevance import the_new_case as described
+    from sherlocks.team import case_analyst, case_papers, case_reader, document_reader
+
+    case, scope, mine, record = job.case, job.scope, job.parts["in_case"], job.parts["record"]
+    read_docs = [case.documents[d] for d in scope["documents"] if (case.documents.get(d) or {}).get("reading")]
+    documents = [_document_part(case, d) for d in read_docs]
+    case_reports = [r["id"] for r in mine["reports"]]
+    reads = case_analyst.forensics(case, [*case_reports, *(r["doc"] for t in record["targets"] for r in t.get("reports_on") or [])],
+                                   job.llm)
+    firs = [d for d in [scope.get("main"), *scope["linked"], *(c["doc"] for t in record["targets"] for c in t["past_cases"])] if d]
+    said = case_analyst.statements(case, firs, job.llm)
+    own = {scope.get("main"), *scope["linked"]}
+    for s in said:
+        s["this_case"] = s["doc"] in own              # this case's own FIRs, or the target's earlier ones
+    weighing = None
+    if declared(case):
+        story = job.parts["case_story"]
+        ours = set(case_reports)
+        weighing = case_analyst.weigh(case, {
+            "the_officer_said": [f["statement"].replace("Stated by the officer: ", "") for f in case.live_facts()
+                                 if f.get("by") == "officer"][-12:],
+            "the_case": described(case), "everything_on_the_target": case_reader.read(case, job.net),
+            "reports_of_this_case": [{"id": r["doc"], "report": r["title"], "findings": r["findings"], "indicates": r["indicates"],
+                                      "not_stated": r["not_stated"]} for r in reads if r["doc"] in ours],
+            "statements": [{"fir": s["fir"], "person": p["person"], "part": p["part"], "date": p["date"],
+                            "says": p["explained"] or p["said"][:1500]} for s in said for p in s["people"]],
+            "other_documents": [document_reader.outline(d) for d in read_docs],
+            "story_of_the_case": story["events"][:60], "people_of_the_case": story["people"][:24]}, job.llm)
+    job.parts["case_analysis"] = {"reports": reads, "statements": said, "weighing": weighing, "documents": documents,
+                                  "papers": case_papers.check(case, job.net, scope, job.parts) if declared(case) else None}
+    return {"reports_read": len(reads), "by_model": sum(r["by"] == "model" for r in reads),
+            "statement_firs": len(said), "weighed": weighing is not None, "documents_read": len(documents),
+            "weighing_lines_taken_out": len((weighing or {}).get("checked") or [])}
+
+
+def _document_part(case: Any, doc: dict[str, Any]) -> dict[str, Any]:
+    """An uploaded document as read in full (R7), for its own section of the report."""
+    r = doc.get("reading") or {}
+
+    def live(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [x for x in rows if not x.get("fact") or case.usable(x["fact"])]
+
+    return {"doc": doc["id"], "title": str(doc.get("title") or doc["id"]).replace("Upload: ", ""),
+            "kind": r.get("kind") or "", "issued_by": r.get("issued_by") or "", "date": r.get("date") or "",
+            "about": r.get("about") or "", "summary": r.get("summary") or "", "top": r.get("top") or [],
+            "findings": live(r.get("findings") or []), "evidence": live(r.get("evidence") or []),
+            "leads": live(r.get("leads") or []), "people": r.get("people") or [], "said": live(r.get("said") or []),
+            "events": len(r.get("events") or []), "pages": r.get("pages"), "parts": r.get("parts"),
+            "parts_read": r.get("parts_read")}
 
 
 # -- P5 Summary writer --------------------------------------------------------------------
@@ -647,7 +788,6 @@ def _digest(job: ReportRun) -> dict[str, Any]:
     mine, story, target = job.parts["in_case"], job.parts["case_story"], job.parts["target"]
     cards = job.case.register.get("cards") or {}
     known = declared(job.case)
-    leads = {k["id"] for k in mine["leads"]}
     out = {
         "case_declared": known, "the_new_case": the_new_case(job.case) if known else "not described by the officer yet",
         "story_of_the_case": {"in_short": story["in_short"], "events": story["events"][:24]},
@@ -672,9 +812,15 @@ def _digest(job: ReportRun) -> dict[str, Any]:
                         "against": ((d["matrix"] or {}).get("score") or {}).get(h["id"], {}).get("against")}
                        for h in ((d["matrix"] or {}).get("hypotheses") or job.base.get("hypotheses") or [])],
         "sherlocks_view_not_confirmed": job.base.get("conclusion"),
-        "open_points": [{"ref": p["ref"], "unclear": p["unclear"], "question": p["question"]} for p in f["open_points"]
-                        if not str(p["ref"]).startswith("K") or p["ref"] in leads][:12],
-        "next_steps": f["next_steps"][:8],
+        "open_points": [{"ref": p["ref"], "unclear": p["unclear"], "question": p["question"]} for p in _ours(job, f["open_points"])][:12],
+        "what_the_reports_found": [{"report": r["title"], "findings": r["findings"][:10], "indicates": r["indicates"][:6]}
+                                   for r in (job.parts.get("case_analysis") or {}).get("reports") or []
+                                   if r["doc"] in {x["id"] for x in mine["reports"]}],
+        "the_analysis": {k: v for k, v in ((job.parts.get("case_analysis") or {}).get("weighing") or {}).items()
+                         if k in ("question", "view", "gaps", "actions")},
+        "documents_uploaded": [{"id": d["doc"], "what_it_is": d["kind"], "summary": d["summary"], "most_important": d["top"],
+                                "findings": [f"{x['fact']}: {x['text']}" for x in d["findings"]][:15]}
+                               for d in (job.parts.get("case_analysis") or {}).get("documents") or []],
     }
     if not known:
         # Nothing that theorises about a case nobody has described is put before the writer.
@@ -687,7 +833,10 @@ def _digest(job: ReportRun) -> dict[str, Any]:
 
 def declared(case: Any) -> bool:
     """Has the officer said what case is being investigated - described it, or said which it is?"""
-    return bool(the_new_case(case)["described_by_the_officer"] or case.dialog.get("case_basis"))
+    from sherlocks.evidence.questioner import RECORD_CHECK
+
+    basis = case.dialog.get("case_basis")
+    return bool(the_new_case(case)["described_by_the_officer"] or (basis and basis != RECORD_CHECK))
 
 
 def _brief_lines(job: ReportRun) -> list[str]:
@@ -732,17 +881,25 @@ def _from_parts(job: ReportRun) -> dict[str, Any]:
                    for x in (cards[doc].get("fields") or [])[:3]][:10]
     hyps = (d["matrix"] or {}).get("hypotheses") or job.base.get("hypotheses") or []
     leader = (d["matrix"] or {}).get("leader")
-    leads = {k["id"] for k in mine["leads"]}
     return {
         "brief": job.parts["case_story"]["in_short"] or _brief_lines(job), "established": established,
         "disputed": [f"{x['id']} {x['severity']}: {x['text']}" for x in mine["contradictions"]
                      if x["severity"] != "minor" and x["status"] == "open"][:8],
         "stands": [f"{h['id']} ({h['statement']}): {h['status']}" + (" - fewest against." if h["id"] == leader else ".")
                    for h in hyps[:5]],
-        "unclear": [f"{p['unclear']} Ask: {p['question']} [{p['ref']}]" for p in f["open_points"]
-                    if not str(p["ref"]).startswith("K") or p["ref"] in leads][:8],
-        "next_steps": f["next_steps"][:5],
+        "unclear": [f"{p['unclear']} Ask: {p['question']} [{p['ref']}]" for p in _ours(job, f["open_points"])][:8],
+        "next_steps": [],
     }
+
+
+def _ours(job: ReportRun, points: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The open points of THIS case: a point about another FIR on the board (its ballistics, its accused's
+    record) is that case's, not this one's."""
+    from sherlocks.team.case_scope import in_scope
+
+    mine = job.parts["in_case"]
+    keep = {k["id"] for k in mine["leads"]} | {x["id"] for x in mine["contradictions"]}
+    return [p for p in points if str(p.get("ref") or "") in keep or in_scope(job.case, job.scope, str(p.get("ref") or ""))]
 
 
 def _is_this_case(job: ReportRun, doc: dict[str, Any]) -> bool:
@@ -881,16 +1038,32 @@ def _summary(job: ReportRun) -> dict[str, Any]:
         job.summary[name] = [line for line in job.summary[name]
                              if not (ID.findall(line) and all(past_only(job, i) for i in ID.findall(line)))
                              and not names_past_fir(job, line)]
+    weighing = (job.parts.get("case_analysis") or {}).get("weighing") or {}
+    if declared(job.case) and weighing:
+        # What is still missing, Sherlock's view and the next steps are the analysis's: this case's, and reasoned.
+        if weighing.get("gaps"):
+            # The three that matter most; all of them are under "Questions still open".
+            job.summary["unclear"] = weighing["gaps"][:3]
+        if weighing.get("view"):
+            job.summary["stands"] = [f"Sherlock's view (not confirmed): {weighing['view']}"]
+        if weighing.get("actions"):
+            job.summary["next_steps"] = [a["action"] + (f" (settles: {a['settles'][:1].lower() + a['settles'][1:]})"
+                                                       if a["settles"] else "")
+                                         for a in weighing["actions"]][:SUMMARY_MOST["next_steps"]]
     if declared(job.case) and not job.summary["stands"]:
         job.summary["stands"] = [job.base.get("assessment_note") or "No line of inquiry about this case is on the board yet."]
     if not declared(job.case):
         # The officer has not said what the case is: nothing is assumed about it. This is said in
         # fixed words, and what would weigh or establish "the case" is left out - by code.
+        from sherlocks.evidence.questioner import only_the_record
+
         which = next((q["text"] for q in job.case.open_questions() if q["key"] == "case:which"), "")
         record = [line for t in job.parts["record"]["targets"] for line in t["overview"]]
-        job.summary.update({"brief": [NOT_DECLARED, *record], "established": [], "stands": [NOT_WEIGHED]})
-        steps = ["Tell Sherlock what is being investigated - which case, what happened, when and where. "
-                 + (which or "Until then nothing in this report is about that case.")]
+        no_case = only_the_record(job.case)
+        job.summary.update({"brief": [NO_CASE if no_case else NOT_DECLARED, *record], "established": [],
+                            "stands": [NOT_WEIGHED]})
+        steps = [] if no_case else ["Tell Sherlock what is being investigated - which case, what happened, when and "
+                                    "where. " + (which or "Until then nothing in this report is about that case.")]
         job.summary["next_steps"] = (steps + [s for s in job.summary["next_steps"] if s not in steps])[:SUMMARY_MOST["next_steps"]]
     return {"written_by": job.summary_by, "again": bool(job.send_back), "case_declared": declared(job.case)}
 
@@ -899,7 +1072,7 @@ def _summary(job: ReportRun) -> dict[str, Any]:
 
 
 def _body_ids(job: ReportRun) -> set[str]:
-    return set(ID.findall(dumps({k: job.parts[k] for k in (*PARTS, "annex", "target", "in_case", "case_story")
+    return set(ID.findall(dumps({k: job.parts[k] for k in (*PARTS, "annex", "target", "in_case", "case_story", "case_analysis")
                                  if k in job.parts}))) | set(
         ID.findall(dumps([job.base.get(k) for k in ("hypotheses", "graph_evidence", "cited", "statements", "qa")])))
 
@@ -977,7 +1150,7 @@ def _build(job: ReportRun) -> dict[str, Any]:
               "executive_summary": summary_text(job.summary), "summary_by": job.summary_by,
               "model": getattr(job.llm, "model", None) if job.summary_by == "model" else None,
               "built_without_model": job.summary_by != "model", "checked": job.problems,
-              "report_board_version": job.version, "team": "P1-P8"}
+              "report_board_version": job.version, "team": "P1-P11", "build": REPORT_BUILD}
     with case.acting("P1 Report editor"):
         case.set_report(report, "ready")
     report["saved_at_version"] = case.version
@@ -996,6 +1169,7 @@ def build() -> Any:
     g.add_node("target", _member("P2 Target writer", _target))
     g.add_node("record", _member("P8 Record writer", _record))
     g.add_node("story", _member("P7 Story writer", _case_story))
+    g.add_node("analyst", _member("P10 Case analyst", _analyst))
     g.add_node("summary", _member("P5 Summary writer", _summary))
     g.add_node("check", _member("P6 Report checker", _check))
     g.add_node("build", _member("P1 Report editor", _build))
@@ -1007,7 +1181,8 @@ def build() -> Any:
     g.add_edge("editor", "target")
     g.add_edge("target", "record")
     g.add_edge("record", "story")
-    g.add_edge("story", "summary")
+    g.add_edge("story", "analyst")
+    g.add_edge("analyst", "summary")
     g.add_edge("summary", "check")
     g.add_conditional_edges("check", _again, {"summary": "summary", "build": "build"})
     g.add_edge("build", END)

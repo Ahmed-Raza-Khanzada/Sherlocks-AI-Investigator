@@ -80,6 +80,14 @@ def build_card(case: Any, net: Any, pid: str) -> dict[str, Any]:
         "role": case.roles.get(pid),
         "firs": [{"label": f.get("label"), "role": f.get("role"), "offence": f.get("offence"),
                   "status": f.get("status"), "system": f.get("system")} for f in (d.get("firs") or [])[:20]],
+        # FIR files that name him by CNIC or phone though no system lists him as a party (a victim named in a
+        # relative's FIR): "his FIRs" include them, in the words of the link.
+        "named_in_fir_files": [{"fir": doc["title"], "doc": doc["id"], "how": link["how"]}
+                               for link in case.links.values() if link["pid"] == pid and link.get("strength") == "identifier"
+                               for doc in [case.documents.get(link["doc"]) or {}] if doc.get("kind") == "fir"
+                               and not any(str(f.get("label") or "").split("/")[0].lstrip("0")
+                                           == str((doc.get("ref") or {}).get("fir_no") or "").lstrip("0")
+                                           for f in d.get("firs") or [])][:10],
         "links": [{"to": c.get("name") or c.get("id"), "relation": c["relation"], "stated": c["stated"], "via": c["via"]}
                   for c in (net.neighbours(pid)[:15] if pid in net.G else [])],
         "documents": [{"id": x["id"], "kind": x["kind"], "title": x["title"]} for x in mine["documents"][:20]],

@@ -186,8 +186,16 @@ class PersonNetwork:
         # 2. A distinctive word of a name ("hasnain" -> Muhammad Hasnain Azam): every word asked
         #    is a whole word of one of the person's names.
         words = [w for w in asked.split() if len(w) >= 3 and w not in COMMON_NAME_TOKENS] or asked.split()
+        rest = [w for w in asked.split() if w not in words]
+
+        def carries(pid: str, word: str) -> bool:
+            return any(word in key.split() for key in known[pid]) or any(sounds_like(word, x) for x in self.all_names(pid))
+
         if words:
-            hit = one([pid for pid, keys in known.items() if any(all(w in key.split() for w in words) for key in keys)])
+            # The common words asked must be in the name too: "Mir Jawad" is not Mir Shakeel just because
+            # "jawad" is a common name - the word that tells two people apart is never dropped.
+            hit = one([pid for pid, keys in known.items() if any(all(w in key.split() for w in words) for key in keys)
+                       and all(carries(pid, w) for w in rest)])
             if hit:
                 return hit
         # 3. The same name in the other script ("afzal" for افضل). Among several who sound

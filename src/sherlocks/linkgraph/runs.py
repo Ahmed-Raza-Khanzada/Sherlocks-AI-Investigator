@@ -436,6 +436,17 @@ class RunManager:
                     data = graph.get("case")
                 case = CaseFile.from_dict(data)
                 case.run_id = run_id
+                if not case.dialog.get("relinked"):
+                    # Boards linked before 2026-10-21 tied a document to one holder of a phone number (not the
+                    # target), missed a name written as one word ("میرجواد") and left lab reports unlinked:
+                    # every document is linked again, once.
+                    from sherlocks.evidence.readers import link_people, prune_phone_links
+
+                    graph = graph if graph is not None else (self.store.load(run_id) or {}).get("graph") or {}
+                    prune_phone_links(case, graph)
+                    for doc_id in list(case.documents):
+                        link_people(case, doc_id, graph)
+                    case.dialog["relinked"] = True
                 self._open_boards[run_id] = case
                 self._opened(case)
             self._open_boards.move_to_end(run_id)
@@ -534,8 +545,12 @@ class RunManager:
     @staticmethod
     def _report_current(case: CaseFile) -> bool:
         """The stored report still matches the board (nothing but the report changed since)."""
+        from sherlocks.team.report_graph import REPORT_BUILD
+
         report = case.report or {}
         at = report.get("saved_at_version")
+        if report.get("build") != REPORT_BUILD:
+            return False                    # written by an older report team: written again, not re-drawn
         return at is not None and not [c for c in case.changes if c["version"] > at and c["entry"] not in (
             "report", "followup", "view", "call", "desk")]
 
@@ -806,10 +821,12 @@ class RunManager:
             except Exception as exc:  # noqa: BLE001 - reported on the case board
                 logger.info("Upload %s failed: %s", name, exc)
                 session["case"].attempt("upload", f"upload-failed:{name}", "error", str(exc))
+                session["case"].upload_status(name, "failed", reason=str(exc)[:200])
             finally:
                 session["save"]()
 
         session["case"].attempt("upload", f"upload:{name}", "accepted", f"{name} received - reading it")
+        session["case"].upload_status(name, "received", kind=kind, kb=len(content) // 1024)
         self._jobs.submit(work)
         return {"accepted": name, "kind": kind}
 

@@ -1,6 +1,6 @@
 """Natural replies without the AI model: each Facts-agent answer opens with what an
 investigator would say first - in English, Roman Urdu or Urdu - and its lines are written
-in words ("FIR 391/26, Bin Qasim: attempted rape, causing hurt - he is the accused"),
+in words ("FIR 301/26, Saddar: attempted rape, causing hurt - he is the accused"),
 not raw section numbers. The cited list follows, so every claim keeps its source.
 
 ``narrate(facts, language)`` -> the reply text, or ``None`` for types it does not cover

@@ -153,7 +153,10 @@ def _timeline(net: PersonNetwork, case: CaseFile) -> list[dict[str, str]]:
 
 
 def _date_key(text: str) -> str:
-    m = re.search(r"(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})", text)
+    iso = re.search(r"(?<!\d)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)", text)
+    if iso:                         # "2026-08-01" first: read as dd-mm-yy it became the year 2001
+        return f"{iso.group(1)}-{int(iso.group(2)):02d}-{int(iso.group(3)):02d}{text}"
+    m = re.search(r"(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})", text)
     if m:
         d, mth, y = m.groups()
         y = y if len(y) == 4 else f"20{y}"

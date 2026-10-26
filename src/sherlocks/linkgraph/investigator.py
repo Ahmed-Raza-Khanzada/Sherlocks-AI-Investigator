@@ -159,12 +159,15 @@ class _Tools:
     # -- the case file ---------------------------------------------------------------
 
     def _digest(self, doc_id: str, text_chars: int = 1500) -> dict:
+        from sherlocks.team.officer_agent import page_line
+
         doc = self.case.document(doc_id) if self.case is not None else None
         if doc is None:
             raise ValueError(f"No document {doc_id!r}; use 'evidence' to list them")
         return {"id": doc["id"], "title": doc["title"], "source": doc["source"],
                 "summary": doc.get("ai_summary") or doc.get("summary"),
-                "facts": [{"id": f["id"], "fact": f["statement"], "quote": f["quote"][:220]} for f in doc["fact_rows"][:20]],
+                "facts": [{"id": f["id"], "fact": f["statement"], "quote": f["quote"][:220]} for f in doc["fact_rows"]
+                          if not page_line(f, doc)][:20],
                 "people_found": [{"id": link["id"], "name": link["name"], "how": link["how"]} for link in doc["link_rows"]],
                 "people_named": doc.get("people", [])[:20], "pictures": len(doc.get("images") or []),
                 "unread_pages": doc.get("unread_pages"), "text": (doc.get("text") or "")[:text_chars]}
@@ -884,7 +887,7 @@ def _mentioned(net: PersonNetwork, question: str, *, sound: bool = True) -> list
         elif key:
             firsts.setdefault(key.split()[0], []).append(pid)
     # A whole name by sound, across scripts and spacing: "gul zaman khan" = گلزمان خان,
-    # "imran ali" = عمران علی. Its words then name nobody else ("zaman" is not Qaiser Zaman).
+    # "imran ali" = عمران علی. Its words then name nobody else ("zaman" is not Asad Zaman).
     covered = _full_names(net, question, hits)
     if covered:
         q = " " + " ".join(t for t in q.split() if t not in covered) + " "

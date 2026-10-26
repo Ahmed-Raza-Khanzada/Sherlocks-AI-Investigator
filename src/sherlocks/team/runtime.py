@@ -29,6 +29,14 @@ PLAIN = ("Write in the plain words an investigating officer uses, and say what t
          "said: never suggest reading the content of calls or messages. ")
 
 
+# Pakistani police terms, read right: a statement's "365 ت پ" is the Penal Code, not the procedure code.
+TERMS = ("Terms: 'ت پ' / PPC is the Pakistan Penal Code (the offence sections, e.g. 302 PPC murder, 420 PPC cheating, "
+         "489-F PPC dishonoured cheque, 379 PPC theft, 365 PPC "
+         "kidnapping); 'ض ف' / Cr.P.C. is the Code of Criminal Procedure (e.g. a 161 Cr.P.C. statement to the police, "
+         "164 before a magistrate, a 174 inquest report, a 176 inquiry or exhumation). 'Madadgar 15' / '15' is the "
+         "police emergency helpline. A mashirnama is a memo of recovery or seizure; a naqsha-e-mauqa is a site plan. ")
+
+
 # The case being worked is the one the officer describes - not the FIRs already on file.
 NEW_CASE = ("THE NEW CASE is what the officer is investigating now, exactly as the officer described it (THE_NEW_CASE). "
             "The FIRs and other records already on file about the people are PAST RECORDS - other cases. Think as an "

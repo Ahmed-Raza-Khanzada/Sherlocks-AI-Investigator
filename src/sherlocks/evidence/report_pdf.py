@@ -104,6 +104,10 @@ class _Pdf(FPDF):
         """Text as the PDF should receive it."""
         text = str(value if value is not None else "")
         text = text.replace("\u200f", "").replace("\u200e", "")
+        # Never "inferred" or "corroborated": the officer is told what the records show.
+        text = re.sub(r"\s*\((?:inferred|corroborated)\)", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\binferred\b", "found by comparing records", text, flags=re.IGNORECASE)
+        text = re.sub(r"\bcorroborat\w*", "confirmed by more than one record", text, flags=re.IGNORECASE)
         if self.sans == "Helvetica":
             return text.encode("latin-1", "replace").decode("latin-1")
         if not self.shaped and _ARABIC.search(text):
@@ -125,7 +129,9 @@ class _Pdf(FPDF):
             return
         text = str(text or "")
         urdu = len(_ARABIC.findall(text))
-        latin = sum(1 for ch in text if ch.isascii() and ch.isalpha())
+        # Digits read left to right too: a cell with an Urdu name over its CNIC and phone laid out right to left
+        # turned the numbers round ("7-9897377-42201").
+        latin = sum(1 for ch in text if ch.isascii() and ch.isalnum())
         self.text_shaping["direction"] = TextDirection.LTR if urdu and latin >= urdu else None
 
     def multi_cell(self, *args: Any, **kwargs: Any) -> Any:
@@ -299,6 +305,134 @@ def network_png(graph: dict[str, Any]) -> bytes | None:
     nx.draw_networkx_labels(G, pos, labels=labels, ax=ax, font_size=7.5,
                             font_family=["DejaVu Sans", "Noto Naskh Arabic"],
                             bbox={"boxstyle": "round,pad=0.2", "fc": "white", "ec": "none", "alpha": 0.8})
+    ax.set_axis_off()
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", facecolor="white")
+    plt.close(fig)
+    return buf.getvalue()
+
+
+def two_step_png(network: dict[str, Any]) -> bytes | None:
+    """The target's network up to two steps (report part ``network``): the target in the middle,
+    the people tied to them directly on the first ring, the people who matter one step further on
+    the outer ring - each placed beside those they are reached through. People involved in this
+    case are red, people with a criminal record orange; a link a record states is a solid line,
+    one found by comparing records a dashed line."""
+    import math
+
+    first, second, targets = network.get("first") or [], network.get("second") or [], network.get("targets") or []
+    # A number on many people's records stands as ONE node: those people are not ties of the target by it.
+    numbers = [{"pid": f"number:{x['number']}", "name": f"{x['number']} ({len(x['people'])} people)",
+                "involved": False, "criminal": False, "part": "", "number": True} for x in network.get("shared_numbers") or []]
+    first = [*first, *numbers]
+    network = {**network, "edges": [*(network.get("edges") or []),
+                                    *({"a": targets[0]["pid"], "b": x["pid"], "stated": False} for x in numbers if targets)]}
+    if not targets or not first:
+        return None
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from matplotlib import font_manager
+    except Exception:  # noqa: BLE001
+        return None
+    for file in ("NotoNaskhArabic-Regular.ttf", "DejaVuSans.ttf"):
+        if (FONT_DIR / file).exists():
+            font_manager.fontManager.addfont(str(FONT_DIR / file))
+    own_shaping = tuple(int(x) for x in matplotlib.__version__.split(".")[:2]) >= (3, 11)
+
+    def label(text: str) -> str:
+        if own_shaping or not _ARABIC.search(text):
+            return text
+        try:
+            import arabic_reshaper
+            from bidi.algorithm import get_display
+
+            return get_display(arabic_reshaper.reshape(text))
+        except Exception:  # noqa: BLE001
+            return text
+
+    pos: dict[str, tuple[float, float]] = {}
+    for i, t in enumerate(targets):                      # one target in the middle; two or three side by side
+        pos[t["pid"]] = ((i - (len(targets) - 1) / 2) * 0.35, 0.0)
+    angle: dict[str, float] = {}
+    inner = list(first)
+
+    def place_inner() -> None:
+        for i, r in enumerate(inner):
+            a = 2 * math.pi * i / len(inner) + math.pi / 2
+            angle[r["name"]] = a
+            pos[r["pid"]] = (math.cos(a), math.sin(a))
+
+    place_inner()
+    # Fewer crossings: each direct connection moves beside those they lead to (two passes, by mean direction).
+    for _ in range(2):
+        def pull(r: dict[str, Any]) -> float:
+            mates = [angle[m] for x in second if r["name"] in x["through"] for m in x["through"] if m in angle]
+            xs, ys = [math.cos(angle[r["name"]]) * 2, *map(math.cos, mates)], [math.sin(angle[r["name"]]) * 2, *map(math.sin, mates)]
+            return math.atan2(sum(ys), sum(xs)) % (2 * math.pi)
+
+        inner.sort(key=pull)
+        place_inner()
+    def base(r: dict[str, Any]) -> float:
+        """Where the people a second-step person is reached through stand (their mean direction)."""
+        xs = [math.cos(angle[n]) for n in r["through"] if n in angle]
+        ys = [math.sin(angle[n]) for n in r["through"] if n in angle]
+        return math.atan2(sum(ys), sum(xs)) if xs else 0.0
+
+    # The outer ring in the order of the people they are reached through, spread evenly and turned to sit
+    # beside them - nobody overlaps, and each stands near whom they are reached through.
+    order = sorted(second, key=lambda r: base(r) % (2 * math.pi))
+    if order:
+        step = 2 * math.pi / len(order)
+        bases = [base(r) for r in order]
+        turn = math.atan2(sum(math.sin(b - i * step) for i, b in enumerate(bases)),
+                          sum(math.cos(b - i * step) for i, b in enumerate(bases)))
+        for i, r in enumerate(order):
+            a = bases[i] if len(order) == 1 else turn + i * step
+            pos[r["pid"]] = (2.0 * math.cos(a), 2.0 * math.sin(a))
+    reach = 2.5 if second else 1.45                   # no one at the second step: the first ring fills the picture
+    fig, ax = plt.subplots(figsize=(10, 9.4) if second else (10, 8.2), dpi=150)
+    # The rings by depth, each labelled: step 1 - tied to the target directly; step 2 - one step further.
+    rings = [(1.0, f"STEP 1 · direct connections ({len(first) - len(numbers)})", "#8fa3c0")]
+    if second:
+        rings.append((2.0, f"STEP 2 · one step further ({len(second)})", "#c3cad6"))
+    for radius, text, colour in rings:
+        ax.add_patch(plt.Circle((0, 0), radius, fill=False, ls=(0, (3, 3)), lw=1.1, color=colour, zorder=0))
+        a = math.radians(225)                          # lower left: clear of the first person, placed at the top
+        ax.text(radius * math.cos(a), radius * math.sin(a), text, ha="center", va="center", fontsize=7.5,
+                fontweight="bold", color="#3d4b63", zorder=2, family=["DejaVu Sans"],
+                bbox={"boxstyle": "round,pad=0.3", "fc": "#eef2f8", "ec": colour, "lw": 0.8})
+    for e in network.get("edges") or []:
+        if e["a"] in pos and e["b"] in pos:
+            (x1, y1), (x2, y2) = pos[e["a"]], pos[e["b"]]
+            ax.plot([x1, x2], [y1, y2], color="#5b6b82" if e["stated"] else "#c47814", lw=1.0 if e["stated"] else 0.8,
+                    ls="-" if e["stated"] else (0, (4, 3)), alpha=0.8, zorder=1)
+
+    def dot(pid: str, row: dict[str, Any] | None, size: float, ring: int) -> None:
+        colour = ("#1f3a5f" if row is None else "#ffffff" if row.get("number") else "#c0392b" if row["involved"]
+                  else "#e08a1e" if row["criminal"] else "#9aa6b8")
+        x, y = pos[pid]
+        ax.scatter([x], [y], s=size, c=colour, edgecolors="#c49a28" if row is None else "#5b6b82" if row.get("number") else "white",
+                   linewidths=3 if row is None else 1.2, zorder=3)
+        name = label((row or {}).get("name") or next(t["name"] for t in targets if t["pid"] == pid))[:24]
+        tag = f"\n{row['part']}" if row and row.get("part") else ""
+        ax.text(x, y - (0.13 if ring == 0 else 0.1), name + tag, ha="center", va="top",
+                fontsize=8.5 if ring == 0 else 7, fontweight="bold" if ring < 2 or (row and row["involved"]) else "normal",
+                family=["DejaVu Sans", "Noto Naskh Arabic"], zorder=4,
+                bbox={"boxstyle": "round,pad=0.15", "fc": "white", "ec": "none", "alpha": 0.85})
+
+    for t in targets:
+        dot(t["pid"], None, 900, 0)
+    for r in first:
+        dot(r["pid"], r, 260, 1)
+    for r in second:
+        dot(r["pid"], r, 150, 2)
+    ax.set_xlim(-reach, reach)
+    ax.set_ylim(-reach + 0.05, reach - 0.15)
+    ax.set_aspect("equal")
     ax.set_axis_off()
     fig.tight_layout()
     buf = io.BytesIO()
@@ -482,7 +616,7 @@ _PREMISES = re.compile(r"\b(sector|block|street|st|house|plot|phase|flat|no|room
 
 class _Sources:
     """The report never shows an internal id (D1, W2, X3): a record is named by what it is -
-    "FIR 211/24 · PS Saddar", "statement of Asif, 06-03-2023" - and the analysts' own entries
+    "FIR 77/24 · PS Saddar", "statement of Asif, 06-03-2023" - and the analysts' own entries
     (contradictions, leads, lines of inquiry) are not cited at all."""
 
     def __init__(self, case: CaseFile, extra: set[str] | None = None) -> None:
@@ -493,7 +627,9 @@ class _Sources:
         ref = str(ref or "").strip("[] ")
         case = self.case
         if ref in case.documents:
-            return str(case.documents[ref].get("title") or "a case document")
+            doc = case.documents[ref]
+            # An uploaded document by what it is ("Judicial Commission of Inquiry Report"), not "Upload: file.pdf".
+            return str((doc.get("reading") or {}).get("kind") or str(doc.get("title") or "a case document").replace("Upload: ", ""))
         if ref in case.statements:
             w = case.statements[ref]
             return f"statement of {w['speaker']}" + (f", {w['date']}" if w.get("date") else "")
@@ -528,6 +664,9 @@ class _Sources:
 
             text = _BARE.sub(one, text)
         text = re.sub(r"\(\s*[;,]?\s*\)", "", text)
+        # "(Inquiry report, Inquiry report, Inquiry report)": each record named once.
+        text = re.sub(r"\(([^()]{3,400})\)", lambda m: "(" + "; ".join(dict.fromkeys(
+            x.strip() for x in re.split(r"\s*[;,]\s*(?=[A-Z])", m.group(1)) if x.strip())) + ")", text)
         text = re.sub(r"\s+([,.;:)])", r"\1", re.sub(r"\s{2,}", " ", text)).strip(" :;,")
         return text[:1].upper() + text[1:] if text else text
 
@@ -565,14 +704,21 @@ def _brief_report(pdf: _Pdf, report: dict[str, Any], case: CaseFile) -> None:
     glance = parts.get("glance")
     if not glance:
         pdf.section(n, "About this report")
-        pdf.para("The officer has not yet said what case is being investigated, so nothing in this report is about "
-                 "that case. It sets out what the police records hold about the target: their earlier FIRs and "
-                 "where each stands, the people the records connect them to, their hotel stays and the earlier "
-                 "reports. Tell Sherlock what the case is to get the case report.", size=9.5)
+        from sherlocks.evidence.questioner import only_the_record
+
+        holds = ("It sets out what the police records hold about the target: their earlier FIRs and where each "
+                 "stands, the people the records connect them to, their hotel stays and the earlier reports.")
+        pdf.para(f"The officer said there is no case: they are checking the target's record. {holds}"
+                 if only_the_record(case) else
+                 f"The officer has not yet said what case is being investigated, so nothing in this report is about "
+                 f"that case. {holds} Tell Sherlock what the case is to get the case report.", size=9.5)
     else:
         pdf.section(n, "The case at a glance")
         for row in glance["rows"]:
             pdf.label_value(row["label"], src.text(row["value"], bare=False), 38)
+        question = ((parts.get("case_analysis") or {}).get("weighing") or {}).get("question")
+        if question:
+            pdf.label_value("Under inquiry", src.text(question), 38)
     pdf.ln(2)
     # 2 - Sherlock's brief
     n += 1
@@ -591,25 +737,37 @@ def _brief_report(pdf: _Pdf, report: dict[str, Any], case: CaseFile) -> None:
     elif report.get("model"):
         pdf.para(f"Written by Sherlock ({report['model']}) from the sections below; the record each point rests on "
                  "is named in (brackets).", size=7.5, colour=GREY, style="I")
-    # 3 - the story of the case
-    if glance:
-        n += 1
-        pdf.section(n, "The story of the case")
-        pdf.para("What happened, in the order it happened, as this case's own records tell it.", size=8.5, colour=GREY)
-        if story.get("events"):
-            _table(pdf, ["When", "What happened", "Source"],
-                   [[e["when"], src.text(e["what"]), src.labels(e["sources"])] for e in story["events"]], (30, 108, 40))
-        else:
-            _points(pdf, [("No record of this case is on the board yet: upload the FIR, the case diaries and the "
-                           "statements, or tell Sherlock what happened.")], colour=GREY)
-    # 4 - the target
+    analysis = parts.get("case_analysis") or {}
+    weighing = analysis.get("weighing") or {}
+    said = analysis.get("statements") or []
+    reads = {r["doc"]: r for r in analysis.get("reports") or []}
+    # 3 - the victim, or the target: who they are, where the records put them, their close circle
     n += 1
-    pdf.section(n, "The target")
-    dated = {t["pid"]: {c["fir"]: c for c in t["past_cases"]} for t in record.get("targets") or []}
+    def with_status(p: dict[str, Any]) -> str:
+        """Part and status once each: "Victim / Deceased" and "Deceased (found 29/07/2026)" -> "... - found 29/07/2026"."""
+        part, status = str(p.get("part") or ""), str(p.get("status") or "")
+        if not status or status == "not on record":
+            return part
+        first = status.split()[0].lower().strip("(),")
+        if first in part.lower():
+            status = re.sub(r"^\S+\s*", "", status).strip(" ()")
+        return part + (f" - {status}" if status else "")
+
+    parts_of = {p["name"]: with_status(p) for p in story.get("people") or []}
+
+    def part_of(name: str) -> str:              # "Kamran Aslam" in the records is the target "Kamran Aslam Khan"
+        return parts_of.get(name) or next((v for k, v in parts_of.items() if _same(k, name)), "")
+
+    victim = any(re.search(r"\b(victim|deceased)\b", " ".join((str(t.get("role_in_case") or ""), str(t.get("status_in_case") or ""),
+                                                             part_of(t["name"]))), re.IGNORECASE)
+                 for t in target.get("targets") or [])
+    pdf.section(n, "The victim" if glance and victim else "The target")
     for t in target.get("targets") or []:
         _sub(pdf, t["name"])
+        role = " - ".join(x for x in (t.get("role_in_case"), t.get("status_in_case")) if x) or (
+            _plainly(part_of(t["name"])) if glance else "")
         for label, value in (
-                ("Part in this case", " - ".join(x for x in (t.get("role_in_case"), t.get("status_in_case")) if x) or None),
+                ("Part in this case", role or None),
                 ("CNIC", dashed_cnic(t["cnic"]) if t.get("cnic") else None), ("Father", t.get("father")),
                 ("Also recorded as", ", ".join(t.get("also_recorded_as") or []) or None),
                 ("Phones", "; ".join(p["number"] + (f" (SIM registered to {p['registered_to']})" if p.get("registered_to")
@@ -630,107 +788,128 @@ def _brief_report(pdf: _Pdf, report: dict[str, Any], case: CaseFile) -> None:
         _points(pdf, t.get("presence") or [("Nothing on record places them anywhere in the incident window. A phone "
                                             "on a tower or a hotel record is not the person.")],
                 colour=INK if t.get("presence") else GREY)
-        _sub(pdf, "Their own earlier cases")
-        if t.get("firs"):
-            mine_dated = dated.get(t["pid"]) or {}
-            _table(pdf, ["FIR", "Police station", "Offence", "Incident", "Their role", "Where it stands"],
-                   [[r["fir"], r["police_station"], r["offence"], (mine_dated.get(_fir_no(r["fir"])) or {}).get("occurred") or "-",
-                     r["role"], _stands(mine_dated.get(_fir_no(r["fir"])), r["status"])] for r in t["firs"]],
-                   (18, 28, 40, 28, 28, 36))
-        else:
-            _points(pdf, ["No earlier FIR names them in the systems searched."], colour=GREY)
     circle = target.get("circle") or []
     if glance and circle:
         _sub(pdf, "Close circle")
-        pdf.para("Family, co-accused, the same vehicle, travelling together, phone contact - as the records state. "
+        pdf.para("Family, accused together, the same vehicle, travelling together, phone contact - as the records state. "
                  "Tenancy witnesses, landlords, guarantors and SIM owners are not listed.", size=8, colour=GREY)
-        kinds = {"crime": "crime", "family": "family", "vehicle": "vehicle", "travel": "travel", "contact": "phone contact"}
+        kinds = {"crime": "accused together / complaint", "family": "family", "vehicle": "vehicle", "travel": "travel",
+                 "contact": "phone contact"}
         _table(pdf, ["Person", "Tie", "How the record states it", "Source", "Criminal record"],
                [[c["name"], kinds.get(c["kind"], c["kind"]), _plainly(c["how"]), c["source"], "yes" if c["criminal"] else "-"]
-                for c in circle], (34, 20, 78, 26, 20))
+                for c in circle], (34, 24, 74, 26, 20))
     if not glance:
-        n = _record_sections(pdf, n, record)
-    # 5 - people in this case
-    if glance:
+        n = _network_section(pdf, n, parts.get("network") or {})
+        n = _record_sections(pdf, n, record, said=said, reads=reads)
+    else:
+        # 4 - the story of the case
+        n += 1
+        pdf.section(n, "The story of the case")
+        pdf.para("What happened, in the order it happened, as this case's own records tell it.", size=8.5, colour=GREY)
+        if story.get("events"):
+            # The source column names the record: the same names are not repeated at the end of each step.
+            _table(pdf, ["When", "What happened", "Source"],
+                   [[e["when"], src.text(_uncited(e["what"])), src.labels(e["sources"])]
+                    for e in story["events"]], (30, 108, 40))
+        else:
+            _points(pdf, [("No record of this case is on the board yet: upload the FIR, the case diaries and the "
+                           "statements, or tell Sherlock what happened.")], colour=GREY)
+        # 5 - forensic and medical findings
+        n = _forensic_section(pdf, n, [reads.get(r["id"]) or {"doc": r["id"], "title": r["title"], "findings": r["found"]}
+                                       for r in mine.get("reports") or []], mine, src)
+        # 5b - the documents the officer uploaded (an inquiry report, a post-mortem, a memo), read in full
+        n = _documents_section(pdf, n, analysis.get("documents") or [], src)
+        # 6 - weighing the evidence
+        n = _weighing_section(pdf, n, weighing, src)
+        # 7 - statements, and what does not fit
+        n = _statements_section(pdf, n, [x for x in said if x.get("this_case")], mine, src,
+                                clashes=weighing.get("clashes"))
+        # 8 - people in this case, and the persons of interest
         n += 1
         pdf.section(n, "People in this case")
         people = story.get("people") or []
+        police = [p for p in people if _police(p)]
+        people = [p for p in people if not _police(p)]
         if people:
             _table(pdf, ["Name", "Part", "Status", "What they did or said", "Source"],
-                   [[p["name"], p["part"], p["status"], src.text(p["did"]), src.labels(p["sources"])] for p in people],
-                   (30, 24, 24, 66, 34))
-        else:
+                   [[p["name"], _short_part(src.text(p["part"])), src.text(p["status"]), src.text(_uncited(p["did"])),
+                     src.labels(p["sources"])] for p in people], (30, 34, 20, 60, 34))
+        elif not police:
             _points(pdf, ["No one is named in this case's records yet."], colour=GREY)
-    # 6 - statements and what does not fit
-    if glance:
+        # The officers who handled the case: who registered it, who investigated, who sent the exhibits - in order.
+        for r in analysis.get("reports") or []:
+            # "PI Mr. Imran Saleem, Station Investigation Officer, PS Saddar"; "Bilal Aslam (PI) / Naveed Rafiq (PI)"
+            for who in re.split(r"\s*/\s*(?=[A-Z][a-z])|\s+and\s+|;", str(r.get("submitted_by") or "")):
+                name = re.sub(r"\s*\([^)]*\)", "", who.split(",")[0]).strip()
+                if len(_rankless(name)) < 3:
+                    continue
+                same = next((p for p in police if _same(_rankless(name), _rankless(p["name"]))
+                             or _rankless(name) in _rankless(p["name"]) or _rankless(p["name"]) in _rankless(name)), None)
+                if same is None:
+                    police.append({"name": name, "part": "sent exhibits to the laboratory", "did": f"Sent the exhibits of {r.get('title')}.",
+                                   "sources": []})
+                elif same.get("part") == "sent exhibits to the laboratory" and r.get("title") not in same["did"]:
+                    same["did"] = same["did"].rstrip(".") + f"; {r.get('title')}."
+        if police:
+            _sub(pdf, "Police and officials on the case")
+            pdf.para("Who registered, investigated, examined and handled the evidence of this case, as the records name them - "
+                     "the officer holding the case now should be confirmed.", size=8, colour=GREY)
+            _table(pdf, ["Officer", "Their part", "What they did", "Source"],
+                   [[p["name"], _short_part(src.text(p["part"])), src.text(_uncited(p["did"])), src.labels(p.get("sources") or []) or "-"]
+                    for p in police], (36, 40, 70, 32))
+        if weighing.get("persons"):
+            _sub(pdf, "Persons of interest")
+            pdf.para("People the records tie to this case, and what to check about each - a reason to check, not a "
+                     "finding against anyone.", size=8, colour=GREY)
+            _table(pdf, ["Person", "How the records tie them to this case", "What to check"],
+                   [[x["name"], src.text(x["tie"]), src.text(x["check"])] for x in weighing["persons"]], (34, 80, 64))
+        # 9 - the network
+        n = _network_section(pdf, n, parts.get("network") or {})
+        # 10 - the target's own record: earlier cases, hotel stays, tenancy, other reports and statements on them
         n += 1
-        pdf.section(n, "Statements and what does not fit")
-        pdf.para("A statement shows what the person said, not that it is true. \"Changed\" never means \"lied\": a "
-                 "change can have an innocent cause.", size=8.5, colour=GREY)
-        for person in mine.get("said") or []:
-            _sub(pdf, f"{person['name']}" + (f" ({person['role']})" if person.get("role") else ""))
-            if person.get("summary"):
-                _points(pdf, [src.text(person["summary"])], colour=GREY)
-            _table(pdf, ["Date", "Kind", "Recorded by", "What was said (opening words)"],
-                   [[w["date"], w["kind"], w["recorded_by"], w["text"][:240]] for w in person["statements"]],
-                   (22, 18, 30, 108))
-            _points(pdf, [f"Changed between the {src.label(c['earlier']) or 'earlier statement'} and the "
-                          f"{src.label(c['later']) or 'later statement'}: {src.text(c['what'])}"
-                          for c in person.get("changes") or []]
-                    + [f"The {src.label(c['statement']) or 'statement'} does not fit "
-                       f"{src.label(c['against']) or 'the record'}: {src.text(c['what'])}" for c in person.get("clashes") or []])
-        if not mine.get("said"):
-            _points(pdf, ["No statement of this case is on the board yet."], colour=GREY)
-        found = mine.get("contradictions") or []
-        if found:
-            _sub(pdf, "Contradictions with the evidence")
-            _table(pdf, ["How serious", "One source says", "Another says", "What would settle it", "Status"],
-                   [[x["severity"], src.text(x["first"]), src.text(x["second"]), src.text(x["settle"]), x["status"]]
-                    for x in found], (18, 54, 54, 34, 18))
-    # 7 - reports
-    if glance:
+        pdf.section(n, "Earlier cases of the " + ("victim" if victim else "target"))
+        for t in record.get("targets") or []:
+            if len(record.get("targets") or []) > 1:
+                _sub(pdf, t["name"])
+            _earlier_cases(pdf, t)
+        copies = {c for r in analysis.get("reports") or [] for c in r.get("copies") or []}      # a report filed twice
+        n = _more_record(pdf, n, record, skip_reports=(set(reads) & {r["id"] for r in mine.get("reports") or []}) | copies,
+                         said=[x for x in said if not x.get("this_case")], reads=reads)
+        # 11 - leads that rest on this case's records
+        if not file and mine.get("leads"):
+            n += 1
+            pdf.section(n, "Leads worth checking")
+            pdf.para("A lead is a possibility to check - not evidence and not a finding against anyone.", size=8.5, colour=GREY)
+            _table(pdf, ["What was noticed", "Why it could matter", "Next step", "Status"],
+                   [[src.text(k["hint"])[:220], src.text(k["why"]), src.text(k["next_step"]), k["status"]]
+                    for k in mine["leads"]], (66, 48, 46, 18))
+    # 12 - the case papers: which a case of this kind needs, which are on the board
+    if glance and (analysis.get("papers") or {}).get("papers"):
+        n = _papers_section(pdf, n, analysis["papers"])
+    # 13 - questions still open, 14 - the action plan, then Sherlock's own sections
+    if glance and weighing.get("gaps"):
         n += 1
-        pdf.section(n, "Medical, forensic and laboratory reports")
-        reports = mine.get("reports") or []
-        if reports:
-            _table(pdf, ["Report", "What it records"],
-                   [[f"{r['kind']}: {r['title']}", "\n".join(r["found"]) or "-"] for r in reports], (70, 108))
-        else:
-            _points(pdf, ["No medical, forensic or laboratory report of this case is on the board."], colour=GREY)
-        gaps = [f"{c['exhibit']}: reached {g['to']} {g['days']} day(s) after {g['from']} ({src.labels(g['refs'])})"
-                for c in mine.get("custody") or [] for g in c.get("gaps") or []]
-        if gaps:
-            _sub(pdf, "Gaps in custody")
-            _points(pdf, gaps)
-        if mine.get("pending"):
-            _sub(pdf, "Reports awaited")
-            _points(pdf, [f"{x['what']} ({x['record']})" + (f", requested {x['requested_on']}" if x.get("requested_on") else "")
-                          + (f" - {src.label(x['doc'])}" if src.label(x["doc"]) else "") for x in mine["pending"]])
-    # 8 - leads
-    if glance and not file and mine.get("leads"):
-        n += 1
-        pdf.section(n, "Leads worth checking")
-        pdf.para("A lead is a possibility to check - not evidence and not a finding against anyone.", size=8.5, colour=GREY)
-        _table(pdf, ["What was noticed", "Why it could matter", "Next step", "Status"],
-               [[src.text(k["hint"])[:220], src.text(k["why"]), src.text(k["next_step"]), k["status"]] for k in mine["leads"]],
-               (66, 48, 46, 18))
-    # 9 - next steps
+        pdf.section(n, "Questions still open")
+        _numbered(pdf, [src.text(g) for g in weighing["gaps"]])
     n += 1
-    pdf.section(n, "Next steps for the investigating officer")
-    steps = summary.get("next_steps") or (parts.get("F") or {}).get("next_steps") or []
-    if steps:
-        _numbered(pdf, [src.text(s) for s in steps[:8]])
+    pdf.section(n, "Action plan for the investigating officer" if glance and weighing.get("actions")
+                else "Next steps for the investigating officer")
+    if glance and weighing.get("actions"):
+        _table(pdf, ["Priority", "What to do", "What it would settle"],
+               [[a["priority"], src.text(a["action"]), src.text(a["settles"]) or "-"] for a in weighing["actions"]],
+               (18, 92, 68))
     else:
-        _points(pdf, ["None recorded."], colour=GREY)
-    waiting, seen = [], set()
-    for q in report.get("open_questions") or []:
-        key = re.sub(r"\W+", " ", str(q)).strip().lower()
-        if key not in seen:
-            seen.add(key)
-            waiting.append(src.text(q))
-    if waiting:
-        _sub(pdf, "Questions waiting for the officer")
-        _points(pdf, waiting[:6])
+        steps = summary.get("next_steps") or []
+        if steps:
+            _numbered(pdf, [src.text(s) for s in steps[:8]])
+        else:
+            _points(pdf, ["None recorded."], colour=GREY)
+    for extra in weighing.get("sections") or []:
+        n += 1
+        pdf.section(n, extra["heading"][:80])
+        pdf.para("Added by Sherlock: something the officer should see that the sections above do not cover.", size=8,
+                 colour=GREY, style="I")
+        _points(pdf, [src.text(x) for x in extra["points"]])
     # Annex: the police systems checked for the target, and the records the report rests on.
     pdf.add_page()
     pdf.para("ANNEX", size=14, style="B", colour=NAVY)
@@ -740,7 +919,12 @@ def _brief_report(pdf: _Pdf, report: dict[str, Any], case: CaseFile) -> None:
         if len(target.get("targets") or []) > 1:
             _sub(pdf, t["name"])
         if t.get("systems"):
-            _table(pdf, ["System", "What it holds"], [[x["system"], x["found"]] for x in t["systems"]], (40, 138))
+            held: dict[str, list[str]] = {}
+            for x in t["systems"]:                  # one row a system: Hotel Eye checked against each date says so once
+                found = re.sub(r"^the new case:", "the date of this case:", str(x["found"]))
+                if found not in held.setdefault(x["system"], []):
+                    held[x["system"]].append(found)
+            _table(pdf, ["System", "What it holds"], [[k, "\n".join(v)] for k, v in held.items()], (40, 138))
         if t.get("nothing_in"):
             _points(pdf, [f"Checked, nothing found: {', '.join(t['nothing_in'])}."], colour=GREY)
     n += 1
@@ -759,6 +943,67 @@ def _brief_report(pdf: _Pdf, report: dict[str, Any], case: CaseFile) -> None:
         pdf.para("No case document was read.", colour=GREY)
 
 
+def _network_section(pdf: _Pdf, n: int, network: dict[str, Any]) -> int:
+    """The target's network up to two steps: the picture, then who is connected, how and through whom."""
+    first, second = network.get("first") or [], network.get("second") or []
+    if not first:
+        return n
+    n += 1
+    pdf.add_page()
+    pdf.section(n, "The target's network: step 1 and step 2" if second else "The target's network: step 1")
+    pdf.para(f"Ring 1 - step 1 ({len(first)}): everyone the records tie to the target directly. " + (
+        f"Ring 2 - step 2 ({len(second)}): one step further, only the people who matter - involved in this case, with a "
+        "criminal record, or tied to two or more of the direct connections. " if second else
+        "Step 2: no one one step further is involved in this case, has a criminal record or ties to two of them. ")
+        + "A connection is how the records link two people, not a finding against anyone.", size=8.5, colour=GREY)
+    png = two_step_png(network)
+    if png:
+        y = pdf.get_y() + 1
+        high = 158 if second else 120
+        pdf.image_bytes(png, 16, y, pdf.w - 32, high)
+        pdf.set_y(y + high + 2)
+        x = 18
+        for name, colour in (("Target", NAVY), ("Involved in this case", (192, 57, 43)),
+                             ("Criminal record", (224, 138, 30)), ("Other", (154, 166, 184))):
+            pdf.set_fill_color(*colour)
+            pdf.ellipse(x, pdf.get_y() + 1, 3, 3, style="F")
+            pdf.set_xy(x + 4, pdf.get_y())
+            pdf.font(7.5, "", GREY)
+            pdf.cell(38, 5, name)
+            x += 42
+        pdf.ln(6)
+        pdf.para("Solid line: a record states the link. Dashed line: found by comparing records (the same address, "
+                 "phone, hotel stay or father's name) - check it before acting on it.", size=7.5, colour=GREY, style="I")
+    def how(row: dict[str, Any]) -> str:
+        return (row.get("how") or "-") + ("" if row.get("stated") else " (found by comparing records)")
+
+    for x in network.get("shared_numbers") or []:
+        _sub(pdf, f"A number on many people's records: {x['number']}")
+        others = x.get("elsewhere") or 0
+        pdf.para(f"The target's number {x['number']} is also on the records of {x['holders'] - 1} other people "
+                 "(licences, hotel check-ins, FIR files). A number written on many people's forms is usually a family, "
+                 "shop or agent's number - it does not tie them to the target by itself. The "
+                 f"{len(x['people'])} tied to the target by nothing else are listed here once, and no one is followed "
+                 f"through them: {', '.join(x['people'])}."
+                 + (f" The other {others} are tied to the target in other ways too, or are named in this case, and "
+                    "are shown below." if others > 0 else ""), size=8.5)
+    _sub(pdf, f"Step 1 - direct connections ({len(first)})")
+    _table(pdf, ["Person", "Connected to", "How the records connect them", "In this case", "Criminal record"],
+           [[r["name"], ", ".join(r["to"]), how(r), r.get("part") or "-", r.get("record") or ("yes" if r["criminal"] else "-")]
+            for r in first], (32, 26, 62, 20, 38))
+    if second:
+        _sub(pdf, f"Step 2 - one step further, the people who matter ({len(second)})")
+        _table(pdf, ["Person", "Reached through", "How the records connect them", "In this case", "Criminal record"],
+               [[r["name"], ", ".join(r["through"]), how(r), r.get("part") or "-",
+                 r.get("record") or ("yes" if r["criminal"] else "-")] for r in second], (32, 30, 58, 20, 38))
+    left = network.get("not_shown") or {}
+    if left.get("first") or left.get("second"):
+        pdf.para(f"Not shown: {left.get('first', 0)} more direct connection(s) and {left.get('second', 0)} more people "
+                 "one step further, with no part in this case, no criminal record and only one tie.", size=7.5,
+                 colour=GREY, style="I")
+    return n
+
+
 def _fir_no(label: Any) -> str:
     m = re.search(r"(\d{1,5})\s*/\s*(\d{2,4})", str(label or ""))
     return f"{m.group(1).lstrip('0')}/{m.group(2)[-2:]}" if m else ""
@@ -769,6 +1014,8 @@ def _stands(row: dict[str, Any] | None, status: Any = None) -> str:
     if not row:
         return str(status or "not on record")
     detail = row.get("outcome_detail") or ""
+    if detail.lower().startswith(row["outcome"]):
+        detail = detail[len(row["outcome"]):].strip(" ,;")       # "untraced (Untraced, 30-11-2021)" says it twice
     return row["outcome"] + (f" ({detail})" if detail and detail.lower() != row["outcome"] else "")
 
 
@@ -778,7 +1025,372 @@ def _plainly(text: Any) -> str:
     return plainly(text)
 
 
-def _record_sections(pdf: _Pdf, n: int, record: dict[str, Any]) -> int:
+def _same(a: Any, b: Any) -> bool:
+    """The same person's name in two spellings ("Kamran Aslam Khan", "Kamraan Aslam Khan"), or the first words of it
+    ("Kamran Aslam" for "Kamran Aslam Khan")."""
+    from sherlocks.linkgraph.normalize import sounds_like
+
+    if not (a and b):
+        return False
+    a, b = (re.sub(r"\s*\([^)]*\)", "", str(x)).strip() for x in (a, b))
+    short, long_ = sorted((a.lower().split(), b.lower().split()), key=len)
+    return (sounds_like(a, b) and sounds_like(b, a)) or (len(short) >= 2 and long_[:len(short)] == short)
+
+
+_POLICE = re.compile(r"\b(?:police|officer|inspector|constable|\bS\.?I\.?P?\b|\bA\.?S\.?I\b|\bP\.?I\b|\bI\.?O\.?\b|SHO|DSP|SSP|"
+                     r"\bSP\b|\bASP\b|DIG|IGP?|head moharr?ar|investigating)", re.IGNORECASE)
+
+
+def _uncited(text: Any) -> str:
+    """A line without the record ids it cites ("[F404, F407]", "(F404, F407)") - for a table whose Source column
+    names them."""
+    text = re.sub(r"\s*\[[^\[\]]*\]", "", str(text or ""))
+    return re.sub(r"\s*\((?:\s*[DFWXKHGLQ]\d{1,4}\s*[,;]?)+\)", "", text).strip()
+
+
+def _police(p: dict[str, Any]) -> bool:
+    """A police officer of the case - by their part or status, or a rank before the name."""
+    from sherlocks.team.case_scope import _RANK
+
+    return bool(_POLICE.search(f"{p.get('part') or ''} {p.get('status') or ''}") or _RANK.match(str(p.get("name") or "")))
+
+
+def _rankless(name: Any) -> str:
+    from sherlocks.team.case_scope import _RANK
+
+    text = str(name or "").strip()
+    while True:                                  # "PI/IO Mr. Shabbir Ahmed Laghari": every rank, then the title
+        m = _RANK.match(text) or re.match(r"^\W*(?:mr|ms|mrs)\.?(?=\s)", text, re.IGNORECASE)
+        if not m or not m.end():
+            return text.strip(" ./:-")
+        text = text[m.end():].strip(" ./:-")
+
+
+def _short_part(text: str) -> str:
+    """A person's part in a few words: the first clause of what the writer gave ("Complainant and father of ..."),
+    without the record it cites, cut at a whole word."""
+    first = re.split(r"(?<=[.;])\s|\s-\s|, who\b", str(text or "").strip())[0].strip(" .;")
+    first = re.sub(r"\s*\([^()]*\)\s*$", "", first).strip(" ,;")       # "(FIR 12/26 · PS ...)": the source column says it
+    if len(first) > 90:
+        first = first[:90].rsplit(" ", 1)[0].rstrip(" ,;") + "…"
+    return first or "-"
+
+
+def _label(pdf: _Pdf, text: str, indent: float = 20) -> None:
+    pdf.set_x(indent)
+    pdf.font(8.5, "B", NAVY)
+    pdf.cell(0, 5, pdf.t(text), new_x="LMARGIN", new_y="NEXT")
+
+
+def _report_block(pdf: _Pdf, r: dict[str, Any], src: Any) -> None:
+    """One report read in full: who and when, each exhibit with its result, the findings, what they indicate."""
+    _sub(pdf, r.get("title") or r.get("doc") or "Report")
+    for label, value in (("Laboratory", r.get("lab")), ("Report no.", r.get("report_no")), ("Submitted by", r.get("submitted_by")),
+                         ("Received", r.get("received")), ("Issued", r.get("issued")), ("FIR", r.get("fir")),
+                         ("Filed twice", ("the same report is also on file as " + "; ".join(r["also_filed_as"])
+                                          + " - read once here") if r.get("also_filed_as") else None)):
+        if value:
+            pdf.set_x(20)
+            pdf.label_value(label, value, 30)
+    if r.get("exhibits"):
+        _table(pdf, ["Article", "What it is", "Test", "Result"],
+               [[e.get("article") or "-", e.get("item") or "-", e.get("test") or "-", e.get("result") or "-"]
+                for e in r["exhibits"]], (16, 50, 38, 74))
+    if r.get("findings"):
+        _label(pdf, "What the report found")
+        _points(pdf, [src.text(x) for x in r["findings"]], indent=22)
+    if r.get("indicates"):
+        _label(pdf, "What it indicates - Sherlock's reading, to be confirmed with the expert")
+        _points(pdf, [src.text(x) for x in r["indicates"]], indent=22)
+    if r.get("not_stated"):
+        _label(pdf, "Not stated in the report")
+        _points(pdf, [src.text(x) for x in r["not_stated"]], indent=22, colour=GREY)
+    if not any(r.get(k) for k in ("exhibits", "findings", "indicates")):
+        _points(pdf, ["The report is on file but what it found has not been read yet."], indent=22, colour=GREY)
+
+
+def _forensic_section(pdf: _Pdf, n: int, reports: list[dict[str, Any]], mine: dict[str, Any], src: Any) -> int:
+    n += 1
+    pdf.section(n, "Forensic and medical findings")
+    pdf.para("Each report of this case: what it examined, the result for each exhibit, what it found and what that "
+             "indicates. The findings are the report's own; what they indicate is Sherlock's reading.", size=8.5, colour=GREY)
+    for r in reports:
+        _report_block(pdf, r, src)
+    if not reports:
+        _points(pdf, ["No medical, forensic or laboratory report of this case is on the board."], colour=GREY)
+    gaps = [f"{c['exhibit']}: reached {g['to']} {g['days']} day(s) after {g['from']} ({src.labels(g['refs'])})"
+            for c in mine.get("custody") or [] for g in c.get("gaps") or []]
+    if gaps:
+        _sub(pdf, "Gaps in custody")
+        _points(pdf, gaps)
+    if mine.get("pending"):
+        _sub(pdf, "Reports awaited")
+        _points(pdf, [f"{x['what']} ({x['record']})" + (f", requested {x['requested_on']}" if x.get("requested_on") else "")
+                      + (f" - {src.label(x['doc'])}" if src.label(x["doc"]) else "") for x in mine["pending"]])
+    return n
+
+
+def _documents_section(pdf: _Pdf, n: int, docs: list[dict[str, Any]], src: Any) -> int:
+    """Each document the officer uploaded, as Sherlock read it in full: what it is, what it finds, the evidence it
+    describes, the lines of investigation it raises, what people told it and whom it names."""
+    if not docs:
+        return n
+    n += 1
+    pdf.section(n, "Other reports and documents of the case")
+    pdf.para("Documents the officer uploaded, read in full. What each finds is the document's own finding - to be "
+             "checked against the records, not taken as proof. Its dated steps are in the story of the case above.",
+             size=8.5, colour=GREY)
+
+    def page(x: dict[str, Any]) -> str:
+        pages = str(x.get("pages") or "")
+        return f" (pp. {pages})" if "-" in pages else (f" (p. {pages})" if pages else "")
+
+    for d in docs:
+        _sub(pdf, d.get("kind") or d["title"])
+        read = (f"all {d['pages']} pages" if d.get("pages") else "in full") + (
+            f", in {d['parts']} parts" if (d.get("parts") or 0) > 1 else "") + (
+            f" - {d['parts'] - d['parts_read']} part(s) could not be read" if d.get("parts") and d.get("parts_read") is not None
+            and d["parts_read"] < d["parts"] else "")
+        for label, value in (("Document", d["title"]), ("Issued by", d.get("issued_by")), ("Date", d.get("date")),
+                             ("About", d.get("about")), ("Read", read)):
+            if value:
+                pdf.set_x(20)
+                pdf.label_value(label, value, 30)
+        if d.get("summary"):
+            _label(pdf, "What it establishes")
+            pdf.set_x(22)
+            pdf.para(src.text(d["summary"]), size=9.2)
+        if d.get("top"):
+            _label(pdf, "Most important for the investigation")
+            _points(pdf, [src.text(x) for x in d["top"]], indent=22)
+        if d.get("findings"):
+            _label(pdf, f"What it finds ({len(d['findings'])})")
+            _points(pdf, [src.text(x["text"]) + page(x) for x in d["findings"][:40]], indent=22)
+        if d.get("evidence"):
+            _label(pdf, "The evidence it describes, and what happened to it")
+            _table(pdf, ["Item", "What happened to it", "Pages"],
+                   [[x["item"], src.text(x["what"]), x.get("pages") or "-"] for x in d["evidence"][:40]], (40, 120, 18))
+        if d.get("leads"):
+            _label(pdf, "Lines of investigation it raises")
+            _numbered(pdf, [src.text(x["text"]) + page(x) for x in d["leads"][:25]])
+        if d.get("said"):
+            _label(pdf, "What people told it (by their account)")
+            _table(pdf, ["Who", "What they said", "Pages"],
+                   [[x["who"], src.text(x["said"]), x.get("pages") or "-"] for x in d["said"][:30]], (40, 120, 18))
+        if d.get("people"):
+            _label(pdf, f"People it names ({len(d['people'])})")
+            _table(pdf, ["Name", "Their part", "What it says about them"],
+                   [[x["name"], x.get("part") or "-", src.text(x.get("says") or "-")] for x in d["people"][:60]], (38, 46, 94))
+    return n
+
+
+def _papers_section(pdf: _Pdf, n: int, papers: dict[str, Any]) -> int:
+    """The papers a case of this kind needs: on the board, named in a document but not on the board, or missing."""
+    n += 1
+    pdf.section(n, "Case papers: on file and still needed")
+    kinds = {"death": "a death", "firearm": "a firearm", "kidnap": "a kidnapping or abduction", "property": "a robbery or theft",
+             "vehicle": "a vehicle theft", "exhumed": "an exhumation", "injury": "an injury", "sexual": "a sexual offence",
+             "fraud": "a fraud or breach of trust", "cheque": "a dishonoured cheque", "forgery": "a forgery",
+             "narcotics": "narcotics", "threat": "extortion or threats", "arms": "an illegal weapon", "terrorism": "terrorism"}
+    said = ", ".join(kinds.get(k, k) for k in papers.get("kinds") or [])
+    pdf.para("The papers a case of this kind" + (f" ({said})" if said else "") + " needs, and whether Sherlock has them. "
+             "'Not on the board' means Sherlock has not been given it: get it, or upload it.", size=8.5, colour=GREY)
+    _table(pdf, ["Paper", "On the board?", "Where"],
+           [[r["paper"], r["status"], r["where"] or "-"] for r in papers["papers"]], (70, 36, 72))
+    return n
+
+
+def _weighing_section(pdf: _Pdf, n: int, w: dict[str, Any], src: Any) -> int:
+    if not w or not (w.get("explanations") or w.get("view")):
+        return n
+    n += 1
+    pdf.section(n, "Weighing the evidence")
+    if w.get("question"):
+        pdf.para(f"The question: {src.text(w['question'])}", size=10, style="B", colour=NAVY)
+    pdf.para("Each possible explanation, what in the records supports it, what goes against it and what would settle it. "
+             "This is Sherlock's analysis to guide the investigation - not a finding.", size=8.5, colour=GREY)
+    for e in w.get("explanations") or []:
+        _sub(pdf, e["name"])
+        for title, key in (("What supports it", "for"), ("What goes against it", "against"), ("What would settle it", "settle")):
+            if e.get(key):
+                _label(pdf, title)
+                _points(pdf, [src.text(x) for x in e[key]], indent=22)
+    if w.get("view"):
+        _sub(pdf, "Sherlock's view (not confirmed)")
+        pdf.para(src.text(w["view"]), size=9.5)
+    return n
+
+
+def _said_block(pdf: _Pdf, person: dict[str, Any], src: Any) -> None:
+    """One statement: who, what they say explained in English, then their own words in full."""
+    head = " - ".join(x for x in (person.get("person"), person.get("part"), person.get("date"), person.get("kind")) if x)
+    _label(pdf, head, indent=18)
+    if person.get("explained"):
+        _label(pdf, "What they say (explained in English by Sherlock)", indent=22)
+        pdf.set_x(24)
+        pdf.para(src.text(person["explained"]), size=9.2)
+    _label(pdf, "Their own words (as recorded, in full)", indent=22)
+    pdf.set_x(24)
+    pdf.para(person.get("said") or "-", size=8.8, colour=(60, 66, 80))
+    pdf.ln(1.5)
+
+
+def _statements_section(pdf: _Pdf, n: int, entries: list[dict[str, Any]], mine: dict[str, Any], src: Any,
+                        title: str = "Statements", clashes: list[dict[str, Any]] | None = None) -> int:
+    n += 1
+    pdf.section(n, title)
+    pdf.para("A statement shows what the person said, not that it is true. Each is explained in English, then given in "
+             "the person's own words in full.", size=8.5, colour=GREY)
+    for fir in entries:
+        _sub(pdf, fir["fir"])
+        for person in fir["people"]:
+            _said_block(pdf, person, src)
+    if not entries:
+        _points(pdf, ["No statement of this case is on the board yet."], colour=GREY)
+    changed = [f"{person['name']}: changed between the {src.label(c['earlier']) or 'earlier statement'} and the "
+               f"{src.label(c['later']) or 'later statement'} - {src.text(c['what'])}"
+               for person in mine.get("said") or [] for c in person.get("changes") or []]
+    found_too = [x for x in clashes or [] if x.get("one")]     # statements against the reports, as Sherlock read them
+    clashes = [f"{person['name']}: the {src.label(c['statement']) or 'statement'} does not fit "
+               f"{src.label(c['against']) or 'the record'} - {src.text(c['what'])}"
+               for person in mine.get("said") or [] for c in person.get("clashes") or []]
+    found = mine.get("contradictions") or []
+    if changed or clashes or found or found_too:
+        _sub(pdf, "What does not fit")
+        pdf.para("\"Changed\" never means \"lied\": a change can have an innocent cause.", size=8, colour=GREY)
+        _points(pdf, changed + clashes)
+        if found_too:
+            _table(pdf, ["One source says", "Another source says", "Why it matters"],
+                   [[src.text(x["one"]), src.text(x["other"]), src.text(x["why"]) or "-"] for x in found_too], (64, 64, 50))
+        if found:
+            _table(pdf, ["How serious", "One source says", "Another says", "What would settle it", "Status"],
+                   [[x["severity"], src.text(x["first"]), src.text(x["second"]), src.text(x["settle"]), x["status"]]
+                    for x in found], (18, 54, 54, 34, 18))
+    return n
+
+
+def _earlier_cases(pdf: _Pdf, t: dict[str, Any]) -> None:
+    """The target's earlier FIRs, by their part in each: as complainant, as accused, named otherwise."""
+    cases = t.get("past_cases") or []
+    if not cases:
+        _points(pdf, [f"No earlier FIR names {t['name']} in the police systems searched."], colour=GREY)
+        return
+
+    def when(c: dict[str, Any]) -> str:
+        return c["occurred"] or (f"registered {c['registered']}" if c["registered"] else "not on record")
+
+    def fir(c: dict[str, Any], charges: bool = True) -> str:
+        return "\n".join(x for x in (f"FIR {c['fir']}", c["offence"] if charges else "", _stands(c)) if x)
+
+    from sherlocks.linkgraph.case_queries import role_kind
+
+    by: dict[str, list[dict[str, Any]]] = {"complainant": [], "accused": [], "other": []}
+    for c in cases:
+        # A row kept from an older report may lack its part and its summary: both come from what it does hold.
+        c = {**c, "role_kind": c.get("role_kind") or role_kind([str(c.get("role") or "")]),
+             "summary": c.get("summary") or str(c.get("what_happened") or "")[:300] or c.get("offence") or "-"}
+        by[c["role_kind"] if c["role_kind"] in ("complainant", "accused") else "other"].append(c)
+    if by["complainant"]:
+        _sub(pdf, f"As complainant ({len(by['complainant'])})")
+        _table(pdf, ["Date and time", "Police station", "What the case is about", "FIR, charges, where it stands"],
+               [[when(c), c["police_station"], c.get("summary") or "-", fir(c)] for c in by["complainant"]], (28, 26, 84, 40))
+    if by["accused"]:
+        _sub(pdf, f"As accused ({len(by['accused'])})")
+        _table(pdf, ["Date and time", "Accused by (complainant)", "Complainant's relation to them", "What the case is about",
+                     "Police station", "Charges", "FIR, where it stands"],
+               [[when(c), c["complainant"] or "not named", c.get("relation") or "-", c.get("summary") or "-",
+                 c["police_station"], c["offence"], fir(c, charges=False)] for c in by["accused"]],
+               (22, 24, 24, 50, 20, 18, 20))
+    if by["other"]:
+        _sub(pdf, f"Named in other ways - witness, victim, named in the file ({len(by['other'])})")
+        _table(pdf, ["Date and time", "Their part", "What the case is about", "Police station", "FIR, charges, where it stands"],
+               [[when(c), c["role"], c.get("summary") or "-", c["police_station"], fir(c)] for c in by["other"]],
+               (24, 28, 72, 22, 32))
+
+
+def _more_record(pdf: _Pdf, n: int, record: dict[str, Any], skip_reports: set[str] | None = None,
+                 skip_firs: set[str] | None = None, said: list[dict[str, Any]] | None = None,
+                 reads: dict[str, Any] | None = None) -> int:
+    """Hotel stays, tenancy records, the reports on the target and what each person states in the FIRs."""
+    from sherlocks.team.record_writer import _duration
+    targets = record.get("targets") or []
+    many = len(targets) > 1
+    n += 1
+    pdf.section(n, "Hotel stays")
+    for t in targets:
+        if many:
+            _sub(pdf, t["name"])
+        if t.get("hotels"):
+            _table(pdf, ["Check-in", "Location", "Hotel", "Stayed there at the same time", "Check-out", "Duration"],
+                   [[s["check_in"], s.get("location") or s["district"], s["hotel"] + (f" (room {s['room']})" if s["room"] != "-" else ""),
+                     ", ".join(s["with"]) or "-", re.sub(r"\s+00:00(?::00)?$", " (time not recorded)", str(s["check_out"])),
+                     _duration(s.get("check_in"), s.get("check_out"))] for s in t["hotels"]],
+                   (26, 28, 34, 32, 30, 28))
+        else:
+            _points(pdf, ["No hotel stay on record (Hotel Eye)."], colour=GREY)
+    n += 1
+    pdf.section(n, "Tenancy records")
+    for t in targets:
+        if many:
+            _sub(pdf, t["name"])
+        if t.get("tenancies"):
+            _table(pdf, ["Landlord", "Tenant", "Witnesses", "Date and time", "Property and other details",
+                         "Their part, record"],
+                   [[x["landlord"], x["tenant"], x["witnesses"], x["when"], x["details"], f"{x['part']}\n{x['record']}"]
+                    for x in t["tenancies"]], (30, 30, 32, 28, 40, 18))
+        else:
+            _points(pdf, ["No tenancy record names them as tenant, landlord or witness (matched by CNIC or phone)."],
+                    colour=GREY)
+            if t.get("family_tenancies"):
+                _label(pdf, "The family's tenancy records (the father's - often the home the target lived in)")
+                _table(pdf, ["Landlord", "Tenant", "Witnesses", "Date and time", "Property and other details",
+                             "Their part, record"],
+                       [[x["landlord"], x["tenant"], x["witnesses"], x["when"], x["details"], f"{x['part']}\n{x['record']}"]
+                        for x in t["family_tenancies"]], (30, 30, 32, 28, 40, 18))
+    reports = [(t, r) for t in targets for r in t.get("reports_on") or [] if r["doc"] not in (skip_reports or set())]
+    if reports:
+        n += 1
+        pdf.section(n, "Reports on the target")
+        for t, r in reports:
+            if (reads or {}).get(r["doc"]):
+                _report_block(pdf, reads[r["doc"]], _Plain())
+                continue
+            _sub(pdf, (f"{t['name']}: " if many else "") + r["report"])
+            pdf.set_x(20)
+            pdf.label_value("From", " · ".join(x for x in (r["from"], f"FIR {r['fir']}" if r["fir"] else "",
+                                                          f"received {r['received']}" if r["received"] else "") if x) or None, 22)
+            _points(pdf, [r["says"]], indent=22)
+    if said is not None:
+        if said:
+            n = _statements_section(pdf, n, said, {}, _Plain(), title="Statements in the earlier FIRs")
+        return n
+    said = [(t, w) for t in targets for w in t.get("statements") or [] if w["fir"] not in (skip_firs or set())]
+    if said:
+        n += 1
+        pdf.section(n, "What each person states in the FIRs")
+        pdf.para("A statement shows what the person said, not that it is true. The record's own words, shortened.",
+                 size=8.5, colour=GREY)
+        _table(pdf, ["FIR", "Person", "Their part", "What they stated"],
+               [[w["fir"], w["person"], w["part"] + (f"\n{w['date']}" if w["date"] else ""), w["said"]] for _, w in said],
+               (32, 30, 22, 94))
+    return n
+
+
+class _Plain:
+    """The text helpers of ``_Sources`` for sections that carry no record ids."""
+
+    def text(self, value: Any, bare: bool = True) -> str:
+        return _plainly(value)
+
+    def label(self, ref: Any) -> str | None:
+        return None
+
+    def labels(self, refs: Any) -> str:
+        return ""
+
+
+def _record_sections(pdf: _Pdf, n: int, record: dict[str, Any], said: list[dict[str, Any]] | None = None,
+                     reads: dict[str, Any] | None = None) -> int:
     """The target's record, for a report written before the case is described: earlier FIRs,
     the people the records tie to them, hotel stays, earlier reports."""
     kinds = record.get("kinds") or {}
@@ -793,12 +1405,7 @@ def _record_sections(pdf: _Pdf, n: int, record: dict[str, Any]) -> int:
         if many:
             _sub(pdf, t["name"])
         cases = t["past_cases"]
-        if not cases:
-            _points(pdf, [f"No earlier FIR names {t['name']} in the police systems searched."], colour=GREY)
-            continue
-        _table(pdf, ["FIR", "Police station", "Offence", "Incident (date, time)", "Their role", "Where it stands"],
-               [[c["fir"], c["police_station"], c["offence"], c["occurred"] or "not on record", c["role"],
-                 _stands(c)] for c in cases], (16, 28, 40, 30, 26, 38))
+        _earlier_cases(pdf, t)
         for c in cases:
             _sub(pdf, f"FIR {c['fir']} · PS {c['police_station']} - {c['offence']}")
             for label, value in (("Incident", c["occurred"]), ("FIR registered", c["registered"]), ("Place", c["place"]),
@@ -845,49 +1452,31 @@ def _record_sections(pdf: _Pdf, n: int, record: dict[str, Any]) -> int:
                      + (" - has a criminal record" if r["criminal"] and not r["police_officer"] else ""),
                      "\n".join(x["how"] for x in r["ties"]), ", ".join(dict.fromkeys(x["source"] for x in r["ties"]))]
                     for r in rows], (40, 110, 28))
-    # Hotel stays
-    n += 1
-    pdf.section(n, "Hotel history")
-    for t in targets:
-        if many:
-            _sub(pdf, t["name"])
-        if t["hotels"]:
-            _table(pdf, ["Hotel", "District", "Room", "Check-in", "Check-out", "Stayed at the same time"],
-                   [[s["hotel"], s["district"], s["room"], s["check_in"], s["check_out"], ", ".join(s["with"]) or "-"]
-                    for s in t["hotels"]], (40, 24, 14, 30, 30, 40))
-        else:
-            _points(pdf, ["No hotel stay on record (Hotel Eye)."], colour=GREY)
-    # Earlier reports
-    n += 1
-    pdf.section(n, "What the earlier reports say")
-    for t in targets:
-        if many:
-            _sub(pdf, t["name"])
-        if not t["reports"]:
-            _points(pdf, ["No medical, forensic or laboratory report of their earlier FIRs is on the board."], colour=GREY)
-            continue
-        for r in t["reports"]:
-            _sub(pdf, f"FIR {r['fir']} ({r['case']}) - {r['heading']}")
-            pdf.set_x(20)
-            pdf.label_value("From", " · ".join(x for x in (r["from"], f"case received {r['received']}" if r["received"] else "")
-                                                if x) or None, 30)
-            _points(pdf, ([r["says"]] if r["says"] else []) + r["found"], indent=24)
-    return n
+    return _more_record(pdf, n, record, said=said or None, reads=reads)
+
+
+def _cover_part(p: dict[str, Any]) -> str:
+    """The target's part for the cover, in a word or two: "Victim (deceased)", "Accused (arrested)"."""
+    said = f"{p.get('part') or ''} {p.get('status') or ''}"
+    status = str(p.get("status") or "")
+    status = "" if status in ("", "not on record") or status.lower() in str(p.get("part") or "").lower() else status
+    if re.search(r"\b(deceased|dead|killed|murdered)\b", said, re.IGNORECASE):
+        return "Victim (deceased)"
+    for word in ("victim", "accused", "suspect", "complainant", "witness"):
+        if re.search(rf"\b{word}\b", said, re.IGNORECASE):
+            return word.capitalize() + (f" ({status})" if status else "")
+    return _short_part(str(p.get("part") or "")) + (f" ({status})" if status else "")
 
 
 def _status_line(report: dict[str, Any]) -> str:
     """Whether the assessment covers the board this report was built from."""
-    version = report.get("board_version")
-    if report.get("status") == "current":
-        line = f"Assessment current (board v{version})"
-    elif report.get("as_of"):
-        line = (f"Assessment as of {str(report['as_of'])[:16].replace('T', ' ')} (board v{report.get('assessment_version')}); "
-                f"{len(report.get('not_covered') or [])} newer entr(ies) not yet assessed - see the appendix")
-    else:
-        line = "Sherlock has not assessed this case yet - sections from the records"
-    if not report.get("model"):
-        line += " · built without the AI model"
-    return line
+    # Board versions and entry counts are for developers (the trace), not the officer's cover.
+    return "" if report.get("model") else "built from the records, without the AI model"
+
+
+DISCLAIMER = ("This report is generated by Sherlock AI Agent, Sindh Police. It is only an aid to the Investigating "
+              "Officer and may contain errors. Anything written in this report - every fact, finding and piece of "
+              "evidence - must be verified against the source records it names before any action is taken.")
 
 
 def _cover(pdf: _Pdf, report: dict[str, Any], images: Any) -> None:
@@ -907,9 +1496,10 @@ def _cover(pdf: _Pdf, report: dict[str, Any], images: Any) -> None:
     pdf.multi_cell(pdf.w - 32, 7, pdf.t(report.get("subject") or ""), new_x="LMARGIN", new_y="NEXT")
     pdf.set_xy(16, 92)
     pdf.badge("CONFIDENTIAL — FOR OFFICIAL USE ONLY", RED, x=16, y=92)
-    pdf.set_xy(16, 100)
-    pdf.font(8.5, "", (214, 222, 235))
-    pdf.cell(0, 5, pdf.t(f"Generated {report.get('generated_at')}  ·  {_status_line(report)}"))
+    pdf.set_xy(16, 99)
+    pdf.font(8, "", (214, 222, 235))
+    pdf.multi_cell(pdf.w - 32, 4, pdf.t(" · ".join(x for x in (f"Generated {report.get('generated_at')}", _status_line(report)) if x)),
+                   new_x="LMARGIN", new_y="NEXT")
 
     targets = report.get("targets") or []
     y = 124
@@ -936,7 +1526,7 @@ def _cover(pdf: _Pdf, report: dict[str, Any], images: Any) -> None:
     rows = [("People in the network", stats.get("people")), ("Links", stats.get("links")),
             ("Linkage patterns found", stats.get("findings")), ("Case documents read", stats.get("documents")),
             ("Quoted facts", stats.get("facts")), ("Data source", (run.get("backend") or "").upper() or "-"),
-            ("Search", run.get("seed_label") or "-"), ("Run", (run.get("id") or "-")[:8])]
+            ("Search", run.get("seed_label") or "-")]
     parts = report.get("parts") or {}
     if parts.get("case_story") is not None:
         # The brief's cover: the case, not the size of the search.
@@ -944,11 +1534,11 @@ def _cover(pdf: _Pdf, report: dict[str, Any], images: Any) -> None:
         target = ((parts.get("target") or {}).get("targets") or [{}])[0]
         rows = [("FIR", re.sub(r"\s*\[[^\]]*\]", "", glance.get("FIR") or "not given yet")),
                 ("Offence", glance.get("Offence") or "not described yet"),
-                ("Target", " - ".join(x for x in (target.get("role_in_case"), target.get("status_in_case")) if x) or "-"),
+                ("Target", " - ".join(x for x in (target.get("role_in_case"), target.get("status_in_case")) if x)
+                 or next((_cover_part(p) for p in (parts.get("case_story") or {}).get("people") or []
+                          if p["name"] == target.get("name") or _same(p["name"], target.get("name"))), "-")),
                 ("Case position", glance.get("Case position") or "-"),
-                ("Investigating officer", glance.get("Investigating officer") or "-"),
-                ("Reports awaited", str(len((parts.get("in_case") or {}).get("pending") or [])) or "0"),
-                ("Board version", report.get("board_version")), ("Run", (run.get("id") or "-")[:8])]
+                ("Investigating officer", glance.get("Investigating officer") or "-")]
         record = ((parts.get("record") or {}).get("targets") or [{}])[0]
         if not glance and record:
             # Before the case is described the cover gives the target's record.
@@ -957,8 +1547,7 @@ def _cover(pdf: _Pdf, report: dict[str, Any], images: Any) -> None:
                     ("Earlier FIRs", len(cases)),
                     ("Convicted / acquitted", (f"{sum(c['outcome'] == 'convicted' for c in cases)} / "
                                                f"{sum(c['outcome'] == 'acquitted' for c in cases)}")),
-                    ("People connected", len(record.get("relations") or [])), ("Hotel stays", len(record.get("hotels") or [])),
-                    ("Board version", report.get("board_version")), ("Run", (run.get("id") or "-")[:8])]
+                    ("People connected", len(record.get("relations") or [])), ("Hotel stays", len(record.get("hotels") or []))]
     for i, (label, value) in enumerate(rows):
         col, row = i % 2, i // 2
         x, yy = 16 + col * 90, 205 + row * 13
@@ -969,16 +1558,34 @@ def _cover(pdf: _Pdf, report: dict[str, Any], images: Any) -> None:
         pdf.cell(80, 3.5, label.upper())
         pdf.set_xy(x + 3, yy + 5)
         pdf.font(10, "B", NAVY)
-        pdf.cell(80, 5, pdf.t(str(value if value is not None else "-"))[:60])
-    pdf.set_xy(16, 262)
+        text = pdf.t(str(value if value is not None else "-"))
+        while len(text) > 4 and pdf.get_string_width(text) > 80:
+            text = text[:-2].rstrip() + "…" if not text.endswith("…") else text[:-3].rstrip() + "…"
+        pdf.cell(80, 5, text)
+    # The disclaimer: the report is an aid to the IO, never evidence by itself. The cover's foot sits below the
+    # page-break margin, so no break is taken while it is drawn.
+    pdf.set_auto_page_break(False)
+    pdf.set_draw_color(*GOLD)
+    pdf.set_fill_color(255, 249, 230)
+    pdf.set_line_width(0.5)
+    pdf.rect(16, 249, pdf.w - 32, 22, style="DF")
+    pdf.set_line_width(0.2)
+    pdf.set_xy(20, 251)
+    pdf.font(8.5, "B", NAVY)
+    pdf.cell(0, 4.5, "DISCLAIMER", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_x(20)
+    pdf.font(8, "", INK)
+    pdf.multi_cell(pdf.w - 40, 4, pdf.t(DISCLAIMER), new_x="LMARGIN", new_y="NEXT")
+    pdf.set_xy(16, 273)
     pdf.font(7.5, "I", GREY)
     pdf.multi_cell(pdf.w - 32, 4, pdf.t(
         "Compiled by Sherlocks from Sindh Police and government records and the case documents read during the "
         "search. Every point names the record it rests on. A connection between two people is how the records "
         "link them - check it before acting on it." if parts.get("case_story") is not None else
         "Compiled by Sherlocks from Sindh Police and government records and the case documents read during the "
-        "search. Every assessment cites the record, document or quoted fact it rests on. Links marked inferred "
-        "are leads for investigation and must be verified before action."), new_x="LMARGIN", new_y="NEXT")
+        "search. Every assessment cites the record, document or quoted fact it rests on. Links found by "
+        "comparing records are leads for investigation and must be verified before action."), new_x="LMARGIN", new_y="NEXT")
+    pdf.set_auto_page_break(True, margin=18)
 
 
 def _target_card(pdf: _Pdf, t: dict[str, Any], images: Any) -> None:

@@ -39,12 +39,12 @@ def test_a_distinctive_name_word_finds_the_person_and_their_cases():
     from sherlocks.linkgraph.network import PersonNetwork
 
     graph = {"nodes": [
-        {"id": "a", "kind": "person", "label": "Muhammad Danish Rafiq", "data": {
+        {"id": "a", "kind": "person", "label": "Muhammad Danish Saleem", "data": {
             "seed": True, "flags": ["criminal_record"], "cnic": "9999900000011", "records": [{"system": "psrms", "summary": ""}],
             "firs": [{"label": "45/2023", "ps": "PS Gulshan", "role": "Accused", "offence": "395 PPC", "system": "psrms"},
                      {"label": "112/2024", "ps": "PS Ferozabad", "role": "Complainant", "system": "cro"}]}},
         {"id": "b", "kind": "person", "label": "Muhammad Ali", "data": {}}], "edges": []}
     assert PersonNetwork(graph).resolve("danish") == "a"
     answer = list(investigate(graph, "I mean which cases danish is involve ?"))[-1]["answer"]
-    assert answer.startswith("Muhammad Danish Rafiq") and "FIR 45/2023 at PS Gulshan - Accused - 395 PPC" in answer
+    assert answer.startswith("Muhammad Danish Saleem") and "FIR 45/2023 at PS Gulshan - Accused - 395 PPC" in answer
     assert "FIR 112/2024 at PS Ferozabad - Complainant" in answer

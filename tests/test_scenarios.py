@@ -156,8 +156,8 @@ def test_officer_linked_to_a_criminal_is_flagged_sensitive_but_not_as_investigat
 
 
 def test_one_rare_name_under_two_cnics():
-    g = (G().person("a", "Qurban Sarfraz", father_name="Allah Dino Mirbahar", cnic="9999900000011")
-         .person("b", "Qurban Sarfraz", father_name="Allah Dino Mirbahar", cnic="9999900000029")
+    g = (G().person("a", "Qadir Saleem", father_name="Ilahi Bux Somro", cnic="9999900000011")
+         .person("b", "Qadir Saleem", father_name="Ilahi Bux Somro", cnic="9999900000029")
          .person("c", "Muhammad Ali", father_name="Muhammad Iqbal", cnic="9999900000037")
          .person("d", "Muhammad Ali", father_name="Muhammad Iqbal", cnic="9999900000045"))
     found = scenarios_of(g.dict())["dual_identity"]

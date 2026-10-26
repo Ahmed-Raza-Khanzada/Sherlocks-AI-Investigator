@@ -36,7 +36,10 @@ _NOT_CIRCLE = re.compile(r"registered owner|sim \S+ on another|shares phone|shar
 # Ties that are: family, crime together, the same vehicle, travelling together, real phone contact.
 _CIRCLE = (("family", re.compile(r"\b(family|relative|sibling|husband|wife|father|mother|son|daughter|brother|sister)\b",
                                  re.IGNORECASE)),
-           ("crime", re.compile(r"co-accused|filed fir|in fir|accused|complainant", re.IGNORECASE)),
+           # A crime tie: accused together, or one filed an FIR against the other - being a witness in the
+           # target's own complaint, or named in the same file, is not one.
+           ("crime", re.compile(r"co-accused|accused alongside|accused (?:together|with)|filed fir\b.*\bagainst|"
+                                r"complainant against", re.IGNORECASE)),
            ("vehicle", re.compile(r"vehicle|driver", re.IGNORECASE)),
            ("travel", re.compile(r"hotel|co-guest|room-mate", re.IGNORECASE)),
            ("contact", re.compile(r"phone contact|called", re.IGNORECASE)))
@@ -50,7 +53,7 @@ def fir_number(text: Any) -> tuple[str, str] | None:
 
 
 def names(text: str, number: tuple[str, str]) -> bool:
-    """Does the text give this FIR number (569/26, 569/2026, 0569/26)?"""
+    """Does the text give this FIR number (123/26, 123/2026, 0123/26)?"""
     no, yy = number
     return bool(re.search(rf"(?<!\d)0*{re.escape(no)}\s*/\s*(?:20)?{re.escape(yy)}(?!\d)", text or ""))
 
@@ -163,6 +166,33 @@ def weak(case: Any, ref: str) -> bool:
     return (case.facts.get(ref) or {}).get("kind") in NOT_EVIDENCE
 
 
+_RANK = re.compile(r"^\W*(?:p\s*/\s*)?(?:asi|a\.s\.i\.?|si|s\.i\.?|sip|psi|pi|io|i\.o\.?|sio|pc|hc|h/c|l/c|lc|wpc|insp(?:ector)?\.?|sho|dsp|asp|sp|"
+                   r"ssp|dig|aig|addl\.?\s*igp?|igp?|constable|head\s+constable|lady\s+constable|sub[- ]inspector)"
+                   r"(?=[\s./:-]|$)", re.IGNORECASE)
+
+
+def is_officer(net: Any, pid: str) -> bool:
+    """A police officer: flagged so by a police system, or recorded under a rank ("P/ASI-Imran Saleem", "SIP
+    Nadeem") - an officer named in someone's FIR is there on duty, not as their associate."""
+    if "police_officer" in (net.data(pid).get("flags") or []):
+        return True
+    return any(_RANK.match(str(n or "")) for n in [net.name(pid), *(net.all_names(pid) or [])])
+
+
+def father_of(net: Any, pid: str, other: str) -> str:
+    """"father - ..." when the other person's name is the father's name the records give for ``pid`` (the
+    same name, in either script); "" otherwise. A name match, so it says what it rests on."""
+    from sherlocks.linkgraph.normalize import name_key, sounds_like
+
+    father = str(net.data(pid).get("father_name") or "").strip()
+    if not father or other not in net.people:
+        return ""
+    names = net.all_names(other)
+    same = any(name_key(n) == name_key(father) for n in names) or any(
+        sounds_like(father, n) and sounds_like(n, father) for n in names)
+    return f"father - {net.name(other)} is the father's name on {net.name(pid)}'s record" if same else ""
+
+
 def close_circle(net: Any, scope: dict[str, Any], most: int = 8) -> list[dict[str, Any]]:
     """The target's close circle: one line per person tied to a target by family, crime,
     the same vehicle, travel or phone contact - the strongest tie of each, with its source."""
@@ -174,8 +204,13 @@ def close_circle(net: Any, scope: dict[str, Any], most: int = 8) -> list[dict[st
         if seed not in net.G:
             continue
         for other in net.G.neighbors(seed):
-            if other not in net.people or other in scope["targets"] or "police_officer" in (net.data(other).get("flags") or []):
+            if other not in net.people or other in scope["targets"] or is_officer(net, other):
                 continue                                    # an officer on someone's FIR is not their circle
+            father = father_of(net, seed, other)
+            if father:
+                out[other] = {"pid": other, "name": net.name(other), "kind": "family", "how": father, "source": "records",
+                              "stated": True, "criminal": bool(net.criminal(other)), "in_case": other in scope["pids"]}
+                continue
             for link in sorted(net.G[seed][other]["links"], key=lambda link: link.cost):
                 text = f"{link.label or ''} {link.sentence or ''}"
                 kind = circle_kind(text)

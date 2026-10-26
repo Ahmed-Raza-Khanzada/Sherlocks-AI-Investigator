@@ -34,12 +34,13 @@ from typing import Any
 from pydantic import Field, field_validator
 
 from sherlocks.evidence.guard import DATA_NOT_INSTRUCTIONS
+from sherlocks.team.case_scope import is_officer
 from sherlocks.team.runtime import PLAIN, Typed, ask, dumps, real_refs
 
 logger = logging.getLogger(__name__)
 
-OUTCOMES = ("convicted", "acquitted", "under trial", "challan submitted", "under investigation", "cancelled",
-            "compromise", "not on record")
+OUTCOMES = ("convicted", "acquitted", "under trial", "challan submitted", "under investigation", "untraced",
+            "cancelled", "compromise", "not on record")
 MOST_FIRS = 15            # earlier FIRs set out per target
 MODEL_FIRS = 10           # of them read by the model
 MOST_PEOPLE = 60          # people listed as related to a target
@@ -127,7 +128,9 @@ def _outcome(*texts: Any) -> str:
     """Where a case stands, from the status a record gives it - the record's own word, in English."""
     words = " ".join(str(t or "") for t in texts).lower()
     for outcome, pattern in (("convicted", r"convict|sentenced|سزا"), ("acquitted", r"acquit|بری"),
-                             ("cancelled", r"cancel|a-class|b-class|c-class|اخراج|خارج"),
+                             # A-class: the accused not traced ("عدم پتہ") - closed for now, not cancelled.
+                             ("untraced", r"untraced|not traced|a-class|a class|عدم پتہ|عدم پتا|عدم سراغ"),
+                             ("cancelled", r"cancel|b-class|c-class|اخراج|خارج"),
                              ("compromise", r"compromise|راضی نامہ|صلح"),
                              ("under trial", r"under trial|pending trial|trial|زیر سماعت"),
                              ("challan submitted", r"challan|چالان"),
@@ -226,6 +229,31 @@ def _from_records(given: dict[str, Any]) -> dict[str, Any]:
     return {"what_happened": given["first_information"][:600], "complainant_said": said[:4], "found_against": found[:10]}
 
 
+def _short(text: Any, most: int) -> str:
+    """At most ``most`` characters, cut at the end of a sentence (or a word) - two to four lines in a table."""
+    text = re.sub(r"\s+", " ", plainly(text)).strip()
+    if len(text) <= most:
+        return text
+    cut = text[:most]
+    end = max(cut.rfind(". "), cut.rfind("۔ "), cut.rfind("۔"))
+    return (cut[:end + 1] if end > most * 0.5 else cut[:cut.rfind(" ")] + " …").strip()
+
+
+def _relation(net: Any, pid: str, name: str) -> str:
+    """How the person who filed an FIR is related to the target, as the records say."""
+    if not name.strip():
+        return "-"
+    other = net.resolve(name)
+    if other == pid:
+        return "the target himself"
+    if other is None or other not in net.people:
+        return "not on the graph"
+    if not net.G.has_edge(pid, other):
+        return "no direct tie on record"
+    link = net.best_link(pid, other)
+    return plainly(link.sentence or link.label or "") or "tied in the records"
+
+
 def past_cases(case: Any, net: Any, pid: str, skip: set[str], llm: Any = None) -> list[dict[str, Any]]:
     """Every earlier FIR that names the target - newest first - with its file read when it is on the board."""
     from sherlocks.linkgraph.case_queries import _firs
@@ -252,6 +280,7 @@ def past_cases(case: Any, net: Any, pid: str, skip: set[str], llm: Any = None) -
             "fir": "/".join(number), "police_station": data.get("police_station") or r.get("ps") or "-",
             "offence": str(data.get("sections") or r.get("offence") or "-").strip(),
             "role": ", ".join(dict.fromkeys(str(x).split("(")[0].strip() for x in r["roles"])) or r.get("role_kind") or "named",
+            "role_kind": r.get("role_kind") or "named",
             "occurred": str(data.get("occurred") or r.get("occurred") or "").strip(),
             "registered": str(data.get("reported") or "").strip(), "place": str(data.get("place") or "")[:220],
             "complainant": str((complainant.get("name") if isinstance(complainant, dict) else complainant) or ""),
@@ -262,7 +291,11 @@ def past_cases(case: Any, net: Any, pid: str, skip: set[str], llm: Any = None) -
             "outcome_detail": _detail(outcome, recorded, latest),
             "file_read": doc is not None, "doc": doc["id"] if doc else None, "reports": [d["id"] for d in reports],
             "what_happened": "", "complainant_said": [], "found_against": [], "by": "records",
-            "sources": r.get("sources") or []})
+            "sources": r.get("sources") or [],
+            # The case in two or three lines: what the file was read to say, else its first information.
+            "summary": _short((doc or {}).get("ai_summary") or data.get("narrative") or r.get("offence") or "", 300),
+            "relation": _relation(net, pid, str((complainant.get("name") if isinstance(complainant, dict) else complainant)
+                                                or ""))})
     rows.sort(key=lambda x: _sort_key(x["occurred"]) or "0", reverse=True)
     rows = rows[:MOST_FIRS]
 
@@ -375,13 +408,55 @@ def relations(net: Any, graph: dict[str, Any], pid: str, targets: list[str]) -> 
             continue
         flags = net.data(other).get("flags") or []
         rows.append({"pid": other, "name": net.name(other), "ties": ties[:4], "kind": min((t["kind"] for t in ties), key=_RANK.get),
-                     "criminal": bool(net.criminal(other)), "police_officer": "police_officer" in flags,
+                     "criminal": bool(net.criminal(other)), "police_officer": "police_officer" in flags or is_officer(net, other),
                      "stated": bool(net.G[pid][other]["stated"])})
     rows.sort(key=lambda r: (_RANK[r["kind"]], not r["stated"], not r["criminal"], r["name"]))
     return rows[:MOST_PEOPLE]
 
 
 # -- hotel stays ----------------------------------------------------------------------------
+
+
+def _duration(start: Any, end: Any) -> str:
+    """How long a stay lasted: "2 days 13 h", "9 h" - or "-" when a time is missing."""
+    from datetime import UTC, datetime
+
+    sample = datetime(2000, 1, 1, tzinfo=UTC)
+
+    def when(x: Any) -> datetime | None:
+        text = re.sub(r"\s+", " ", str(x or "").replace("T", " ").replace("/", "-")).strip()
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%d-%m-%Y %I:%M %p", "%d-%m-%Y %I:%M:%S %p",
+                    "%d-%m-%Y %H:%M:%S", "%d-%m-%Y %H:%M", "%Y-%m-%d", "%d-%m-%Y"):
+            try:
+                return datetime.strptime(text[:len(sample.strftime(fmt))], fmt).replace(tzinfo=UTC)
+            except ValueError:
+                continue
+        return None
+
+    a, b = when(start), when(end)
+    if not a or not b or b < a:
+        return "-"
+    if re.search(r"\b00:00(?::00)?\s*$", str(end or "")) and a.hour + a.minute:
+        # A check-out at exactly midnight is a date with no time recorded: count the days only.
+        days = (b.date() - a.date()).days
+        return f"about {days} day(s) (check-out time not recorded)"
+    hours = int((b - a).total_seconds() // 3600)
+    return f"{hours // 24} day(s) {hours % 24} h" if hours >= 24 else f"{hours} h"
+
+
+def _place(*parts: Any) -> str:
+    """Address, city, district - each said once ("SOUTH" and "DISTRICT SOUTH" are the same place)."""
+    kept: list[str] = []
+    for part in (str(p).strip() for p in parts if str(p or "").strip()):
+        inner = re.search(r"\(([^)]*)\)", part)
+        if inner and set(re.findall(r"\w+", inner.group(1).lower())) - {"district"} <= set(
+                re.findall(r"\w+", part[:inner.start()].lower())):
+            part = (part[:inner.start()] + part[inner.end():]).strip()    # "SOUTH( DISTRICT SOUTH)" is SOUTH
+        words = set(re.findall(r"\w+", part.lower())) - {"district"}
+        if not any(words <= set(re.findall(r"\w+", k.lower())) or set(re.findall(r"\w+", k.lower())) - {"district"} <= words
+                   for k in kept):
+            kept.append(part)
+    return ", ".join(kept) or "-"
 
 
 def hotels(net: Any, pid: str) -> list[dict[str, Any]]:
@@ -399,8 +474,10 @@ def hotels(net: Any, pid: str) -> list[dict[str, Any]]:
                 if hit and hit[0] >= 0.7 and net.name(other) not in with_them:
                     with_them.append(net.name(other))
         out.append({"hotel": s.get("hotel") or "-", "district": s.get("district") or "-", "room": s.get("room") or "-",
+                    "location": _place(s.get("address"), s.get("city"), s.get("district")),
                     "check_in": str(s.get("check_in") or "-").replace("T", " "),
-                    "check_out": str(s.get("check_out") or "-").replace("T", " "), "with": with_them[:6]})
+                    "check_out": str(s.get("check_out") or "-").replace("T", " "), "with": with_them[:6],
+                    "duration": _duration(s.get("check_in"), s.get("check_out"))})
     out.sort(key=lambda s: _sort_key(s["check_in"]) or "0", reverse=True)
     return out
 
@@ -430,6 +507,140 @@ def reports(case: Any, cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+# -- tenancy, the reports on the target, who said what -----------------------------------------
+
+
+def tenancies(graph: dict[str, Any], net: Any, pid: str) -> list[dict[str, Any]]:
+    """Every tenancy record in which the target is the tenant, the landlord or a witness - matched by
+    CNIC or phone, never by name - with the property, both parties, since when and the witnesses."""
+    from sherlocks.linkgraph.extractors import _rows
+
+    me = net.data(pid)
+    cnic = re.sub(r"\D", "", str(me.get("cnic") or ""))
+    phones = {re.sub(r"\D", "", str(p))[-10:] for p in me.get("phones") or [] if p}
+
+    def is_me(c: Any, phone: Any) -> bool:
+        """The CNIC on that side decides; a phone only when the side has no CNIC - one number is often on
+        the records of several people (a shared or a family SIM), so a phone never outweighs another CNIC."""
+        theirs = re.sub(r"\D", "", str(c or ""))
+        if theirs:
+            return bool(cnic) and theirs == cnic
+        return bool(phones) and re.sub(r"\D", "", str(phone or ""))[-10:] in phones
+
+    def who(name: Any, c: Any, phone: Any = None) -> str:
+        # One line, " · " between: a line of only digits under an Urdu name took the Urdu font's glyphs.
+        return " · ".join(str(x).strip() for x in (name, c, phone) if str(x or "").strip()) or "-"
+
+    def stamp(epoch: Any) -> str:
+        from datetime import UTC, datetime
+
+        try:
+            return datetime.fromtimestamp(int(epoch), tz=UTC).astimezone().strftime("%d-%m-%Y %H:%M")
+        except (TypeError, ValueError, OverflowError, OSError):
+            return ""
+
+    out: dict[str, dict[str, Any]] = {}
+    for node in graph.get("nodes") or []:
+        data = node.get("data") or {}
+        if node.get("kind") != "system" or data.get("system") != "old_tenant":
+            continue
+        raw = data.get("raw") if isinstance(data.get("raw"), dict) else {}
+        for branch in ("by_mobile", "by_cnic"):
+            payload = raw.get(branch)
+            if not (isinstance(payload, dict) and payload.get("success") is True):
+                continue
+            for row in _rows(payload.get("data")):
+                x = {**row, **(row.get("raw") if isinstance(row.get("raw"), dict) else {})}
+                witnesses = [(x.get(f"tenant_witness_name_{i}"), x.get(f"tenant_witness_cnic_{i}"),
+                              x.get(f"tenant_witness_mobile_number_{i}") or x.get(f"tenant_witness_mobile_{i}"))
+                             for i in (1, 2, 3)]
+                witnesses = [w for w in witnesses if w[0] or w[1]]
+                if is_me(x.get("tenant_cnic"), x.get("tenant_mobile") or x.get("tenant_mobile_number")):
+                    part = "tenant"
+                elif is_me(x.get("owner_cnic"), x.get("owner_mobile_number")):
+                    part = "landlord"
+                elif any(is_me(w[1], w[2]) for w in witnesses):
+                    part = "witness to the tenancy"
+                else:
+                    continue
+                key = str(x.get("tenant_id") or x.get("id") or len(out))
+                when = [f"possession {x['date_of_possession']}" if x.get("date_of_possession") else "",
+                        f"registered {stamp(x.get('created_at'))}" if stamp(x.get("created_at")) else "",
+                        f"released {x['release_of_property']}" if x.get("release_of_property") else "",
+                        f"last updated {str(x['last_updated_at'])[:16]}" if x.get("last_updated_at") else ""]
+                details = [", ".join(dict.fromkeys(str(v).strip() for v in (x.get("property_house_no"), x.get("property_street_mohalla"),
+                                                                            x.get("property_address")) if str(v or "").strip())),
+                           f"type: {x['property_area_type']}" if x.get("property_area_type") else "",
+                           f"family members: {x['tenant_family_members_total']}" if x.get("tenant_family_members_total") else "",
+                           f"tenant's permanent address: {x['tenant_permanent_address']}" if x.get("tenant_permanent_address") else ""]
+                out[key] = {"part": part,
+                            "landlord": who(x.get("owner_name"), x.get("owner_cnic"), x.get("owner_mobile_number")),
+                            "tenant": who(x.get("tenant_name"), x.get("tenant_cnic"),
+                                          x.get("tenant_mobile_number") or x.get("tenant_mobile")),
+                            "witnesses": "\n".join(" · ".join(str(v).strip() for v in w if str(v or "").strip())
+                                                   for w in witnesses) or "-",
+                            "when": "\n".join(w for w in when if w) or "-",
+                            "details": "\n".join(d for d in details if d)[:400] or "-",
+                            "record": f"tenancy #{key}"}
+    return list(out.values())
+
+
+def family_tenancies(graph: dict[str, Any], net: Any, pid: str) -> list[dict[str, Any]]:
+    """When the target is on no tenancy record himself: those of his father (the records' father's name) - often the
+    family's home, where he lived."""
+    from sherlocks.team.case_scope import father_of
+
+    if pid not in net.G:
+        return []
+    out = []
+    for other in net.G.neighbors(pid):
+        if other in net.people and father_of(net, pid, other):
+            out += [{**x, "part": f"father ({net.name(other)}) is the {x['part']}"} for x in tenancies(graph, net, other)]
+    return out[:6]
+
+
+def reports_on(case: Any, pid: str, cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every medical, forensic or laboratory report about the target - tied to them by the records or filed
+    under one of their FIRs - and what it says, in three or four lines."""
+    ids = list(dict.fromkeys([*(d["id"] for d in case.for_person(pid)["documents"]), *(d for c in cases for d in c["reports"])]))
+    out = []
+    for d in ids:
+        doc = case.documents.get(d) or {}
+        if doc.get("kind") in ("fir", "graph", "notes", "cdr", "upload", "cro", None):
+            continue
+        ref = doc.get("ref") or {}
+        fir = re.search(r"(\d{1,5}\s*/\s*\d{2,4})", str(ref.get("fir") or ref.get("labs_of") or doc.get("title") or ""))
+        received = re.search(r"case received ([\d\-: ]+)", doc.get("summary") or "")
+        out.append({"doc": d, "report": doc.get("title") or d, "from": doc.get("source") or "",
+                    "fir": fir.group(1).replace(" ", "") if fir else "",
+                    "received": received.group(1).strip() if received else "",
+                    "says": _short(doc.get("ai_summary") or doc.get("summary") or "The report is on file but its text could "
+                                   "not be read.", 420)})
+    return out
+
+
+def who_said(case: Any, docs: list[str]) -> list[dict[str, Any]]:
+    """For each FIR file: each person who gave a statement - their part and what they said, in two or
+    three lines of the record's own words. The complainant's first information when no statement of theirs
+    is on the board."""
+    out = []
+    for d in dict.fromkeys(docs):
+        doc = case.documents.get(d) or {}
+        if doc.get("kind") != "fir":
+            continue
+        data = doc.get("data") or {}
+        said = [w for w in case.statements.values() if w["doc"] == d]
+        rows = [{"fir": doc["title"], "person": w["speaker"], "part": w.get("role") or w.get("kind") or "-",
+                 "date": w.get("date") or "", "said": _short(w["text"], 240)} for w in said]
+        complainant = data.get("complainant") or {}
+        name = complainant.get("name") if isinstance(complainant, dict) else complainant
+        if name and data.get("narrative") and not any(r["part"] == "complainant" for r in rows):
+            rows.insert(0, {"fir": doc["title"], "person": str(name), "part": "complainant", "date": str(data.get("reported") or ""),
+                            "said": _short(data["narrative"], 240)})
+        out += rows[:12]
+    return out
+
+
 def build(case: Any, net: Any, graph: dict[str, Any], scope: dict[str, Any], llm: Any = None) -> dict[str, Any]:
     """The target's record: ``{targets: [{pid, name, past_cases, relations, hotels, reports, overview}]}``."""
     skip = set(scope.get("fir_numbers") or [])
@@ -438,8 +649,13 @@ def build(case: Any, net: Any, graph: dict[str, Any], scope: dict[str, Any], llm
         cases = past_cases(case, net, pid, skip, llm)
         related = relations(net, graph, pid, scope["targets"])
         stays = hotels(net, pid)
+        own = tenancies(graph, net, pid)
         out.append({"pid": pid, "name": net.name(pid), "past_cases": cases, "relations": related, "hotels": stays,
-                    "reports": reports(case, cases), "overview": overview(net.name(pid), cases, related, stays)})
+                    "reports": reports(case, cases), "overview": overview(net.name(pid), cases, related, stays),
+                    "tenancies": own, "family_tenancies": [] if own else family_tenancies(graph, net, pid),
+                    "reports_on": reports_on(case, pid, cases),
+                    "statements": who_said(case, [*([scope["main"]] if scope.get("main") else []),
+                                                  *(c["doc"] for c in cases if c["doc"])])})
     return {"targets": out, "kinds": KINDS}
 
 

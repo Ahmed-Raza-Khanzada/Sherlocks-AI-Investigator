@@ -56,6 +56,9 @@ def the_new_case(case: Any) -> dict[str, Any]:
                  "Every other FIR is a past record.")
     elif basis == "new_matter":
         which = "The officer said this is a NEW matter: every FIR on file is a past record, another case."
+    elif basis == "record_check" and not told:
+        which = ("The officer said there is NO case: nothing happened, they are only checking the target's past "
+                 "record. Every FIR on file is a past record; ask nothing about an incident.")
     else:
         which = ("not said yet - the officer has not told us whether this is a new matter or one of the FIRs on file. "
                  "Until then every FIR on file is treated as a past record.")

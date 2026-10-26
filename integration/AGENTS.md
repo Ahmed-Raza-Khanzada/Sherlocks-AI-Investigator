@@ -111,6 +111,192 @@ date, time and place are taken from the FIR file (`recorder.adopt_fir`, marked
 `incident.from_fir`) and are not asked again. One target is never asked "who is the main
 suspect?" - entering him said so.
 
+**No case at all.** The officer may only be looking at someone's record ("he is not in any
+case, I am just checking his past record"). The recorder decides this first, before
+anything else it writes (`purpose` is the first field of its reading - written after the
+entries, the office model followed its own entries instead of the message):
+`purpose: "only checking the record"` sets `case_basis = "record_check"`. Then nothing
+about an incident, its roles or its FIR is asked (`questioner.NO_CASE_QUESTIONS`, closed;
+`only_the_record`), what the model files with it ("not involved in any case" as an
+offence, the person as a suspect, an answer to an open question) is dropped, and the
+report is the target's record with "the officer said there is no case" in place of "has
+not said". Describing an incident later makes it a case again, and its questions return.
+Which case a message is about - no case, no event, a new one, or an FIR on file - is the
+Case matcher's answer (below), which overrides the recorder's own reading.
+
+**Plain words where the model must weigh, a form where it must fill.** Measured on the
+office model (Qwen 27B) on 2026-10-21: inside a JSON form it could not weigh a message
+against the records - it read "X nahi, Y!" and a bare name as news,
+carried "complainant" from an earlier question to "tell me about his FIRs", called a man's
+death a new matter beside the FIR of his disappearance, and listed lab findings without
+weighing them. Asked to reason in plain text and end on a fixed line, it got these right
+(30/30 messages, 22/22 roles). So these decisions are asked that way (`llm.generate_text`),
+and code reads only the last line:
+
+| Who | Last line | Decides |
+|---|---|---|
+| O0, `question_reader.act_in_words` (alongside the JSON reading) | `ANSWER: ask / point / tell / both / greeting`, `ROLE:`, `JUDGMENT:` | what the message does - "point" re-reads the officer's last question aimed at the person named (`question_text`, `case.dialog.last_question`); the role asked about; whether Sherlock's view is wanted |
+| O3b Case matcher, `team/case_matcher.py` (alongside the recorder) | `ANSWER: no case / no event / new / same <FIR>` | which case the message is about - each FIR given with its first information and its reports (`its_reports`), the FIRs that name a target first |
+| Sherlock's view, `quick_view.ask` | `VIEW:` | his judgment, weighed on the reports and this case's FIR |
+
+With no plain-text model (Ollama) the JSON reading decides, as before. A role is taken only
+from a message read as a question - a wrong one hides FIRs from the answer.
+
+**Who a document is about.** `readers.link_people` ties a document to a person by CNIC,
+phone, plate or name. A phone that is a target's links the target only (a SIM in a
+relative's or a stranger's name is not tied by it - before, one holder was kept at random);
+a name written as one word or two ("میرجواد" / "میر جواد") is the same name; a laboratory or
+medical report is about whom its FIR's file names by an identifier. Boards from before this
+are pruned (`prune_phone_links`) and linked again once, when opened. An FIR file that names
+a person by CNIC or phone is one of that person's FIRs (`case_queries._firs`, "named in the
+FIR file"). O1 is given the reports on the people asked about up front (`reports_on_them`,
+scanned page-header lines left out) and this case's FIR text; the Answer checker reads
+those first, so a true finding is not sent back as unsupported. `network.resolve`: a match
+on the distinctive words of a name must carry the officer's other words too ("Mir Jawad" is
+not Mir Shakeel because "Jawad" is a common name), and sound keys squeeze a doubled letter. An Urdu name is also
+tried with its Arabic article silent ("Abdur Rehman" is عبدالرحمن, "Shamsuddin" شمس الدین).
+
+**O4 Case reader - the board read whole before any answer** (`team/case_reader.py`). An
+answer used to start from what a search for the question's words found, so a question about
+the case could be answered from an old FIR while the reports that settle it, filed under
+another FIR, were never in front of the writer. Now, before every reply, code reads
+the board as a whole - nothing skipped, no model waited on: the case being worked and the
+FIR that IS it; every FIR of each target (the systems' list and the FIR files that name
+them by CNIC or phone), each with what happened, where it stands and its medical and
+laboratory reports with what was found; other documents about them. It is kept on the
+board (`case.dialog.case_read`) and read again only when the board changes. O1 gets it
+first (`case_read_first`), the Answer checker reads it first, Sherlock's view is given it.
+When the officer moves the case to another FIR, what was taken from the earlier FIR is
+dropped first (it had left the new FIR's number with the old FIR's date, place and offence). A new
+link takes the next free id - one dropped link no longer lets the next overwrite another.
+
+Each FIR in the reading carries its `first_information` in its own words beside the model's
+summary - a summary can be wrong about who was last with someone, and O1 is told the record
+stands. Questions of meaning or method ("what is GSR", "which reports settle murder or
+suicide") are answered from investigative knowledge in a section 'General guidance (not
+from the records)', which the checker does not flag; everything else stays tied to records.
+The checker judges a cited document by what was read in the whole of it (summary and
+findings), not by the start of its text - a lab report's start is its sample list. A
+scanned report's letterhead lines are no longer facts (`report_facts` keeps the record
+header only) and are never quoted as evidence. The context pack's "missing" list counts the
+documents linked to the people too, so a search that missed the reports cannot make "no lab
+on record" a fact. Chat time limits (`ChatSettings`): reply 120 s, draft 75 s, view 45 s,
+check 20 s, revision 25 s; `SHERLOCKS_LLM_TIMEOUT` 120 s.
+
+**P9 Network writer - the target's network, up to two steps** (`team/network_view.py`, part
+`network`, section after "The target", in the brief and in the record-only report). Code
+only, from the link graph: everyone tied to a target directly (how the records connect them,
+stated or found by comparing records, their part in this case, criminal record), and one step
+further only the people who matter - involved in this case, with a criminal record, or tied to
+two or more of the direct connections - each with whom they are reached through. A police
+officer, or anyone tied only as the investigating officer of an FIR, is left out unless
+involved in this case. The page draws the target in the middle, the first ring, the outer ring
+beside whom each is reached through (fewest crossings), involved people red, criminal records
+orange, stated links solid and compared ones dashed - then a table for each ring. What is left
+out is counted. Capped at 30 direct and 24 further people.
+
+**The target's record in tables** (P8, `record_writer`, both the brief and the record-only
+report). Earlier cases are split by the target's part in each FIR: *as complainant* (date
+and time, police station, what the case is about in two or three lines, FIR, charges and
+where it stands), *as accused* (the same, with who filed it and how the records relate that
+complainant to the target), and *named otherwise* (witness, victim, named in the file).
+"Where it stands" knows untraced (A-class, عدم پتہ) apart from cancelled. Hotel stays: check-in,
+location, hotel and room, who stayed there at the same time, check-out, how long. Tenancy
+records: landlord, tenant, witnesses, date and time (possession, registered, released, last
+updated), property and other details, the target's part and the record number - matched by
+CNIC, and by phone only where that party has no CNIC (one number is often on several people's
+records). Reports on the target: each report tied to them, in three or four lines. What each
+person states in the FIRs: per FIR, each person, their part and their words, two or three
+lines. In the brief, the case's own reports and statements keep their sections and are not
+repeated. A table cell with Urdu names and numbers reads left to right, so CNICs and phones
+are never turned round.
+A stored report carries the build of the report team that wrote it (`report_graph.REPORT_BUILD`):
+one from an older build is written again, never only re-drawn with the new layout (its parts
+lack what the layout reads). Raise `REPORT_BUILD` whenever what a part holds changes.
+
+**P10 Case analyst** (`team/case_analyst.py`, after the story, before the brief). *Forensic
+reading*: each report of the case and on the target is read in full (a form): laboratory,
+report no., who submitted, received and issued, every exhibit with its test and RESULT, the
+findings with their numbers, what they indicate (Sherlock's reading, labelled) and what the
+report does not state. *Statements*: every statement of the case's FIRs and the target's
+earlier FIRs explained in plain English, with the person's own words below it, never cut.
+*Weighing the evidence* (plain text, labelled lines): the question the case turns on, each
+explanation with what supports it, what goes against it and what would settle it (a finding
+that rules an explanation out outweighs findings merely consistent with it; a record's own
+words outweigh a summary of it), Sherlock's view, clashes between statements and reports,
+open questions, an action plan by priority, persons of interest (never an officer doing his
+duty) and up to two sections of Sherlock's own. The brief's "still missing", view and next
+steps come from it - this case's, never another FIR's open points. The brief's order:
+glance (with "Under inquiry"), brief, the victim or the target, the story, forensic and
+medical findings, other reports and documents (uploads, read in full), weighing the
+evidence, statements and what does not fit, people, police on the case and persons of
+interest, the network (a number on many people's records stands once, not as a
+tie; the father by the father's name on record; each person's FIRs and offences, the serious
+ones marked), earlier cases, hotel stays, tenancy, leads resting on this case's records,
+case papers, open questions, the action plan, Sherlock's own sections, annex.
+
+*Since 2026-10-23*: a report filed twice (the same text under two record numbers) is read
+once and says so; the laboratory system's received date stands over a reading of the scan; a
+finding with several possible causes names them all; something not tested is never "absent";
+residue on the hands shows nearness to a firing, not who fired; no one is called a suspect
+unless a record does; a clash is two records that cannot both be right, never a guess at a
+motive. A second plain-text call checks each claim of the weighing against what the reports
+and documents found and takes out what misstates them (kept in `weighing.checked`). The
+uploaded documents feed the weighing, the story (their dated steps) and the people (a
+separate call lists the people, so a long story cannot crowd them out).
+Before that check, a completeness pass adds any decisive finding the weighing left out (the
+direction of the shot from the hole sizes, a board's finding, a missing weapon - never how the
+investigation was handled), under the explanation it bears on; a measured finding is given
+with its measurement and its own report. The check also takes out a point that does not bear
+on the explanation it is under (a kidnapping FIR is no support for suicide), and shows the
+checker the FIR and statements. A line goes only when the checker says the record contradicts
+it or does not say it - never over wording, and never when its own reason calls the line
+correct or reasonable; Sherlock's view is his labelled opinion and is not cut. A separate short
+call puts each point on its side (MORE / LESS / NEITHER for that explanation: a missing weapon
+supports "a third party did it"; a finding that fits an explanation is support even when it fits
+another too) and takes out what does not bear on it. Last, by code, a report's own measurements
+of a direction or distance (hole sizes back and front, blackening) are written into the point
+that rests on that report when the analysis gave the conclusion without them.
+
+**General for any case.** No prompt carries one case's facts or one kind of crime: the rules
+are general (a finding that rules an explanation out outweighs consistent ones; a trace that
+fits several explanations decides none; name every cause a finding could have; give a record's
+measurements - a size, an amount, a weight, a time - with the point). The measured-findings
+step matches any measured finding (mm, kg, Rs, %, hours...) to the point about the same thing,
+so a transfer of Rs 4,500,000 in a fraud is given as surely as a wound's size in a death. The
+case papers come from the offence itself (`offences.classify` of the FIR's sections): cheque
+and fraud (the cheque and return memo, bank statements, agreements, a handwriting expert),
+theft and vehicle theft (ownership papers, registration, identification parade), narcotics
+(chemical report, weight and sealing memo), sexual offences (medical examination, DNA, 164
+statement), extortion and threats (recordings), arms, terrorism (JIT/CTD) - and what the
+records show happened (a death, a firearm, an exhumation). Examples in code comments and tests
+use made-up names only.
+
+**P11 Case papers** (`team/case_papers.py`, code only): from the kind of case (a death, a
+firearm, an exhumation from its records; a kidnapping or robbery only from the FIR's sections)
+each paper it needs - FIR, 161 statements, case diaries, site plan, recovery memos,
+post-mortem, MLO, inquest (174), inspection memo, chemical, DNA, exhumation, FSL on casings
+and weapon, arms licences, CDR/IPDR, phone extraction, CCTV with DVR seizure memos,
+identification parade - is "on the board", "mentioned, not on the board" (another document
+speaks of it: get a copy) or "not on the board". Its section comes before the open questions.
+
+Also in the brief: police on the case in their own table (who registered, investigated and
+sent exhibits - ranks such as P/ASI, SIP, PI/IO are read as police everywhere, so an officer
+in someone's old FIR never enters their circle); family the case's records name join the
+close circle and the network even when no police system ties them; a tenant on someone's
+tenancy form is never a step on in the network; an AVLC "stolen vehicle" record marks the
+owner (a victim), not a criminal record; the father's tenancy shows when the target has none;
+a check-out at exactly midnight is a date without a time; the cover carries no board version
+and a disclaimer (made by Sherlock AI Agent, Sindh Police; may contain errors; verify every point
+against its source before acting). The network picture labels its rings: step 1, direct
+connections; step 2, one step further - and the section and its tables say the same.
+
+**Hint keeper** (`team/hint_keeper.py`): after each answered question, in the background,
+what the reply noticed is proposed as hints (what the records show | why it matters | next
+step | ids) and kept as leads `K#` (`found_in: chat`, the turn) - only when it rests on a
+record of the case (a report's or FIR's finding, a statement, a link proven by CNIC or
+phone), never on the officer's words, a graph pattern or a common pattern, and never twice.
+
 ## What each police system tells
 
 `linkgraph/systems.MEANING` says, for every system, what its record is and how a link from
@@ -415,6 +601,40 @@ those that found nothing; a topic no system holds is said so.
   board as tiered facts, while the graph builds and when it is done.
 * **A2 Document reader** (`evidence/collector.py`, `readers.py`, `uploads.py`) - FIR files,
   lab reports, CRO dossiers and uploads, as quoted facts.
+* **R7 Document reader** (`team/document_reader.py`) - every document the officer uploads
+  (the 📎 in the chat: an inquiry or commission report, a post-mortem, a statement, a memo) is
+  read whole, however long: an uploaded PDF to its last page (no 30-page cap) and kept whole
+  on the board (400,000 characters, not 60,000). The text goes in parts of whole pages (~7,000
+  characters), four side by side, each answering in labelled lines - EVENT (a dated step),
+  FINDING (the document's own conclusion), PERSON, EVIDENCE (an item and what happened to
+  it), LEAD (a line of inquiry of THIS case still to trace or check - not its terms of
+  reference, reform or disciplinary recommendations) and SAID - each with words copied from
+  that part; a line whose words are not in the text is dropped. Lines become facts, leads go
+  on the board as `K#` (`found_in: document`, near-duplicates once), and a last call says what
+  the document is, its summary and its most important points (`doc["reading"]`). The officer
+  sees "📖 Reading… 3/14 parts" on the document while it is read (`reading_status`) and a
+  chat message when it is done. The chat's case reader gets its steps, findings, leads and
+  people with their ids; the report gets its own section, its steps in the story and its
+  findings in the weighing. A 62-page inquiry report reads in about two minutes. The same
+  file uploaded again is kept once - unless an older reader read it (cut at 30 pages, ten
+  facts): then it is read again, whole, into the same document. Until then the chat's case
+  reader still gives such an upload's summary and facts, marked "read in part". What a
+  document recommends investigating reaches the chat as `recommends_investigating`.
+  Every attached file has a status the chat follows (`case.upload_status`, in the case index
+  as `uploads`): received, extracting (the text taken out), analysing (a CDR), reading (part x
+  of y, with a bar), then done (what was found - steps, findings, leads, people) or failed
+  (why). The chat shows one line a file, updated in place; the case board shows the files
+  being read, a badge on each document, and a "Leads to check" zone - the chat's notes, the
+  documents' leads and the rest, open ones only.
+  When a document is read, the open leads it answers ("who found the body is not recorded")
+  are marked `answered` with the fact that answers them (a lead status after confirmed); a lead
+  noted from the chat or raised by a document keeps its own words (the lead spotter only ties
+  it to a hypothesis). A family tie is written only when the record says whose relative the
+  person is ("two brothers, A and B" are brothers to each other). A name word the model writes
+  that no record of the case holds is put back as the records spell it, when one record name
+  sounds the same (`story_writer.respelt`). Read documents never enter the lab-report section.
+  In the chat, each place and time belongs to its own event: an FIR's place is where the
+  reported incident happened, never where a body was later found unless a record says so.
 * **A4 Dossier agent** (`evidence/dossiers.py`) - one card per person, rebuilt only when
   something about that person changed.
 * **CDR team** (`evidence/cdr.py`, `evidence/cdr_team.py`): R1 Intake (columns, cleaning,
@@ -628,7 +848,7 @@ Order of work: `freeze -> scope -> [evidence | statements | analysis] -> editor 
 record -> story -> summary -> check -> (summary once more) -> build`. P6 checks every id.
 
 **No internal ids in the PDF.** The board keeps its ids (D1, W2, X3) and P6 checks them, but
-the PDF never prints one: a record is named by what it is ("FIR 211/24 · PS Saddar",
+the PDF never prints one: a record is named by what it is ("FIR 77/24 · PS Saddar",
 "statement of Asif, 06-06-2023"), the analysts' own entries (contradictions, leads, lines of
 inquiry) are not cited, and the annex lists the records the report rests on
 (`report_pdf._Sources`).

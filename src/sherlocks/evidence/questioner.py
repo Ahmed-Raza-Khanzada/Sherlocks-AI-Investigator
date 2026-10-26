@@ -29,6 +29,19 @@ PRIORITY = {"case:which": "red", "incident:what": "red", "incident:when": "red",
             "suspects:other": "green"}
 
 
+# The officer said there is no case - they are only looking at the target's record: nothing about
+# an incident, its roles or its FIR is asked until they describe one.
+RECORD_CHECK = "record_check"
+NO_CASE_QUESTIONS = ("case:which", "incident:place", "incident:pin", "incident:what", "incident:when", "incident:fir",
+                     "incident:vehicle", "roles:main", "roles:victim", "link:why", "suspects:other")
+
+
+def only_the_record(case: CaseFile) -> bool:
+    """No case: the officer said they are only checking the record, and has described no incident since."""
+    inc = case.incident or {}
+    return case.dialog.get("case_basis") == RECORD_CHECK and not any(inc.get(k) for k in ("offence", "date", "place", "fir"))
+
+
 def priority_of(key: str) -> str:
     return PRIORITY.get(key) or PRIORITY.get(key.split(":", 1)[0]) or "orange"
 
@@ -173,6 +186,8 @@ def gaps(case: CaseFile, graph: dict[str, Any]) -> list[dict[str, Any]]:
     out.append({"key": "suspects:other", "action": "text",
                 "text": "Is there anyone else you suspect who is not on the graph yet? Give me a name with a CNIC "
                         "or number and I will tell you what is known."})
+    if only_the_record(case):
+        out = [g for g in out if g["key"] not in NO_CASE_QUESTIONS and not g["key"].startswith("cdr_of:")]
     if inc.get("lat") is not None:
         main = next((p for p, r in case.roles.items() if r == "main suspect"), seeds[0] if len(seeds) == 1 else None)
         covered = {o for d in case.documents.values() if d["kind"] == "cdr" for o in d.get("owners") or []}

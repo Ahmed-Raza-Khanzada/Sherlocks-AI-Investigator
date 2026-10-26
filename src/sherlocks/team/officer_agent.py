@@ -21,7 +21,7 @@ from pydantic import Field
 
 from sherlocks.evidence.guard import DATA_NOT_INSTRUCTIONS
 from sherlocks.linkgraph.relevance import the_new_case
-from sherlocks.team import shapes
+from sherlocks.team import case_reader, shapes
 from sherlocks.team.runtime import NEW_CASE, PLAIN, Typed, ask, dumps, real_refs
 
 MAX_LOOKUPS = 4
@@ -65,6 +65,16 @@ _SYSTEM = (
     "lists - use them as they are), the RECORDS ON FILE (entries of everything gathered), the SOURCES fetched for this kind of question, GRAPH_PATTERNS (what "
     "the link analysis found across ALL the people and records of the case: who recurs as witness, guarantor, "
     "co-accused, landlord, SIM owner, hotel companion - each with the records it rests on) and the open FINDINGS.\n"
+    "- CASE_READ_FIRST is everything on the board about the targets, read for you: start from it. An FIR's "
+    "`first_information` is the record in its own words (often Urdu) - its `what_happened` summary was written by a "
+    "model and can be wrong; where they differ, the first information stands. Who last saw or spoke to someone, "
+    "when and where, is usually told there and in the statements - read them before saying it is not known.\n"
+    "- When the officer asks what something means, how something is done or what is needed (a forensic or legal "
+    "term, which reports or tests would settle a question, a procedure), answer from established investigative and "
+    "forensic knowledge in a section named 'General guidance (not from the records)' - points with no source id - "
+    "and in the other sections say what of it is already on the board (with ids) and what is still missing. Never "
+    "give such knowledge as a fact about this case, and never answer 'the records do not list it' to such a "
+    "question.\n"
     "- `first_line` answers exactly what was asked, first: a count opens with the number, a yes / no question with "
     "yes, no or 'not known'. Never open with a summary of the case.\n"
     "- Every fact you state comes from a record in GIVEN and carries its source id. CHAT_SO_FAR_NOT_EVIDENCE only "
@@ -97,6 +107,10 @@ _SYSTEM = (
     "A recorded statement shows what was said, not that it is true. A lead is a hint, never evidence. A person's "
     "sect, caste, ethnicity, religion or family name is never evidence of anything, and a past record is background, "
     "not proof about this incident.\n"
+    "- Each place and time belongs to its own event. An FIR's place and time are where and when the incident it "
+    "reports happened - never where or when something later happened (a discovery, an arrest, a recovery, a "
+    "payment) unless a record says so. A later event's place and time come from the record of that event (a "
+    "report, an inquiry, a memo); when none gives them, say they are not on record.\n"
     "- An open contradiction or lead about the people asked about is part of the answer (its section) - never "
     "answer as if it were not there. Sherlock's own opinion is shown separately: do not write it.\n"
     "- When what you were given covers the question and shows there is none - no such pattern in GRAPH_PATTERNS, a "
@@ -129,6 +143,8 @@ def payload(*, message: str, ask_: dict[str, Any], net: Any, case: Any, pack: di
         "depth": ask_.get("depth") or "detailed",
         "shape": {"kind": shape, "sections": shapes.sections(shape)},
         "given": {
+            # Everything on the board about the targets, read before this answer (O4 Case reader).
+            "case_read_first": case_reader.ensure(case, net),
             "context": {k: (pack or {}).get(k) for k in ("summary", "sherlock_view", "statements", "conflicts",
                                                          "missing", "whats_new")},
             # What was said before - to follow the conversation ("he", "that FIR"). Not evidence:
@@ -144,14 +160,58 @@ def payload(*, message: str, ask_: dict[str, Any], net: Any, case: Any, pack: di
             "findings": findings,
             "the_new_case": told,
             "case": {"targets": [net.name(p) for p in net.seeds()],
+                     # Every FIR of each target - with the FIR files that name them by CNIC or phone though no
+                     # system lists them as a party (a victim named in a relative's FIR).
+                     "targets_firs": {net.name(p): [f"FIR {r['label']} ({', '.join(r['roles'])})" for r in _firs(net, p, case)]
+                                      for p in net.seeds()},
                      "roles": {net.name(p): r for p, r in case.roles.items() if p in net.people},
                      "documents_on_the_board": [{"id": d["id"], "title": d["title"], "kind": d["kind"]}
                                                 for d in list(case.documents.values())[:30]]},
+            "reports_on_them": reports_on(case, [p for p in ask_.get("people") or [] if p not in net.seeds()]),
+            # The case's own FIR in its words, once the officer has said the case is that FIR ("who saw him
+            # last?" is answered in its first information, often in Urdu).
+            "this_case_fir_text": _case_fir_text(case),
             "looked_up_now": looked,
         },
         "tools": {} if last_round else tools,
         "note": "This is your last draft: answer from GIVEN, mark what is still missing." if last_round else None,
     }
+
+
+def _firs(net: Any, pid: str, case: Any) -> list[dict[str, Any]]:
+    from sherlocks.linkgraph.case_queries import _firs as firs_of
+
+    return firs_of(net, pid, case)[:12]
+
+
+def _case_fir_text(case: Any) -> str | None:
+    doc = case.documents.get((case.incident or {}).get("fir_doc") or "")
+    if not doc or case.dialog.get("case_basis") != "fir_on_record":
+        return None
+    return f"{doc['id']} {doc['title']}: {(doc.get('text') or '')[:3000]}"
+
+
+def page_line(fact: dict[str, Any], doc: dict[str, Any]) -> bool:
+    """A "fact" that is only a line of a scanned page ("Report X: [page 1] INDUSTRIAL ANALYTICAL CENTER")."""
+    return fact.get("by") == "rule" and str(fact.get("statement") or "").startswith(f"{doc.get('title')}:")
+
+
+def reports_on(case: Any, pids: list[str], most: int = 4) -> list[dict[str, Any]]:
+    """The medical and laboratory reports on these people, with what was read in them - given up
+    front: asked "what do the reports say?", O1 otherwise answered "not on the board" first and
+    only read them in a second round that came after the reply."""
+    out, seen = [], set()
+    for pid in dict.fromkeys(pids):
+        for d in case.for_person(pid)["documents"]:
+            doc = case.documents.get(d["id"]) or {}
+            if doc.get("kind") in ("fir", "graph", "notes", "cdr", "upload") or doc["id"] in seen:
+                continue
+            seen.add(doc["id"])
+            facts = [f for f in (case.facts.get(i) for i in doc.get("facts") or []) if f and not page_line(f, doc)
+                     and case.usable(f["id"])]
+            out.append({"id": doc["id"], "title": doc["title"], "summary": (doc.get("ai_summary") or doc.get("summary") or "")[:600],
+                        "findings": [f"{f['id']}: {f['statement'][:220]}" for f in facts][:14]})
+    return out[:most]
 
 
 def _systems_in_play(cards: list[dict[str, Any]], sources: dict[str, Any]) -> dict[str, str]:
@@ -178,17 +238,21 @@ def draft(llm: Any, language: str, data: dict[str, Any]) -> dict[str, Any] | Non
                                            "and quoted record text stay as they are."
                                            + (" Roman Urdu is written in Latin letters only - never in Urdu script, "
                                               "except a name exactly as a record writes it." if language == "roman" else "")}
-    out = ask(llm, _Draft, dumps(data), system=_SYSTEM.format(lang=lang), kind="officer_draft", version="v3",
+    out = ask(llm, _Draft, dumps(data), system=_SYSTEM.format(lang=lang), kind="officer_draft", version="v6",
               max_tokens=1400)
     return out.model_dump() if out is not None else None
 
 
-def evidence_digest(data: dict[str, Any], limit: int = 10000) -> str:
-    """What O1 was given, for O2: the checker judges the draft against these records."""
+def evidence_digest(data: dict[str, Any], limit: int = 30000) -> str:
+    """What O1 was given, for O2: the checker judges the draft against these records. The records
+    themselves first, the bulky system output last: cut at the limit, the reports and what was looked
+    up were lost, and true lines from a lab report were sent back as unsupported."""
     given = data.get("given") or {}
-    return dumps({k: given.get(k) for k in ("the_new_case", "case", "context", "computed_in_words", "dossiers",
-                                            "records_on_file", "PAST_RECORDS_on_file_not_the_new_case", "graph_patterns", "sources", "findings",
-                                            "looked_up_now")}, limit)
+    return dumps({k: given.get(k) for k in ("case_read_first", "the_new_case", "case", "reports_on_them",
+                                            "this_case_fir_text", "looked_up_now",
+                                            "context", "computed_in_words", "records_on_file",
+                                            "PAST_RECORDS_on_file_not_the_new_case", "dossiers", "findings",
+                                            "graph_patterns", "sources")}, limit)
 
 
 def systems_in(data: dict[str, Any]) -> set[str]:

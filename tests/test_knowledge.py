@@ -16,7 +16,7 @@ def _graph():
                 "data": {"owner": owner, "system": system, "fields": [{"label": k, "value": v} for k, v in fields]}}
 
     return {"nodes": [
-        person("p1", "Muhammad Danish Rafiq", cnic="9999900000777", father_name="Rafiq Anwar", seed=True,
+        person("p1", "Muhammad Danish Saleem", cnic="9999900000777", father_name="Rafiq Anwar", seed=True,
                addresses=["Flat 4 Block 2 Sample Terrace"], phones=["03990000777"]),
         person("p2", "Tariq Mehmood", cnic="4210100000001", addresses=["House 5 Gulshan"]),
         person("p3", "محمد نبی ولد", cnic="4210100000002"),
@@ -61,7 +61,7 @@ def test_an_unknown_job_is_said_to_be_missing():
     case = CaseFile()
     case.dialog["focus"] = ["p1"]
     final = list(run_turn(graph, "danish ka kaam kya hai?", case=case))[-1]
-    assert "Muhammad Danish Rafiq" in final["answer"]
+    assert "Muhammad Danish Saleem" in final["answer"]
     assert "Karachi Port Trust" not in final["answer"]
     assert "nahi" in final["answer"]
 
@@ -80,7 +80,7 @@ def test_the_research_agent_calls_the_systems_when_nothing_is_known():
             self.asked.append(system)
             if system == "evs":
                 return {"status": "found", "hit": True, "summary": "EVS record",
-                        "data": {"name": "Muhammad Danish Rafiq", "cnic": "9999900000777",
+                        "data": {"name": "Muhammad Danish Saleem", "cnic": "9999900000777",
                                  "organisation": "Karachi Port Trust", "designation": "Clerk"}}
             return {"status": "not_found", "hit": False, "summary": "no record", "data": {}}
 

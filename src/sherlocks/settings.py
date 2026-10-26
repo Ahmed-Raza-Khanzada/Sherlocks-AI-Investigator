@@ -243,13 +243,15 @@ class ChatSettings(BaseModel):
     pack may be. A step over budget falls back (templates, the board, rules only) and
     what finishes late is sent as a follow-up message - partial beats late."""
 
-    reply_budget_s: float = 40.0      # the whole reply, never longer
-    draft_budget_s: float = 30.0      # O1 understanding + drafting (one model call)
-    tools_budget_s: float = 10.0      # toolbox / live calls, together, in parallel
-    view_budget_s: float = 10.0       # Sherlock's quick view (one model call, no tools)
-    investigate_budget_s: float = 25.0  # the investigator's tool loop in a reply
-    check_budget_s: float = 6.0       # the Answer checker's model check
-    revise_budget_s: float = 6.0      # O1 fixing a draft once
+    # Raised 2026-10-21: with the whole board read first, a draft on the office model takes 20-40 s, and a
+    # step over budget fell back to the rule answer - a slower right answer beats a fast wrong one.
+    reply_budget_s: float = 120.0     # the whole reply, never longer
+    draft_budget_s: float = 75.0      # O1 understanding + drafting (one model call)
+    tools_budget_s: float = 20.0      # toolbox / live calls, together, in parallel
+    view_budget_s: float = 45.0       # Sherlock's quick view (one model call, no tools)
+    investigate_budget_s: float = 45.0  # the investigator's tool loop in a reply
+    check_budget_s: float = 20.0      # the Answer checker's model check
+    revise_budget_s: float = 25.0     # O1 fixing a draft once
     pack_chars: int = 14000           # the context pack, all parts together
     recent_turns: int = 4             # chat turns given word for word; older ones summarised
 

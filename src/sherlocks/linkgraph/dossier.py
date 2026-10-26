@@ -24,8 +24,9 @@ from sherlocks.linkgraph.systems import system_label
 logger = logging.getLogger(__name__)
 
 # Flags that mark a criminal footprint on their own. "fir_record" is deliberately absent:
-# complainants and witnesses are named in FIRs too - see is_criminal().
-CRIMINAL_FLAGS = ("criminal_record", "watchlist", "arms_record", "stolen_vehicle")
+# complainants and witnesses are named in FIRs too - see is_criminal(). Nor is "stolen_vehicle": the AVLC record's
+# subject is the vehicle's OWNER - the person whose vehicle was stolen, a victim, not an offender.
+CRIMINAL_FLAGS = ("criminal_record", "watchlist", "arms_record")
 
 
 def criminal_flags(data: dict[str, Any]) -> list[str]:

@@ -26,6 +26,7 @@ counts from the board alone.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any, Literal
@@ -53,14 +54,16 @@ class _Reading(Typed):
                                 "person or the incident ('who is he', 'tell me about this FIR', 'poori tafseel'). False "
                                 "when they ask one particular thing about it (whose name a number is in, where he "
                                 "stayed, when it was registered).")
-    type: str = Field(default="open", description="What is wanted - one of: cases (which FIRs), count_cases, "
+    type: str = Field(default="open", description="What is wanted - one of: cases (which FIRs; also someone's past or criminal record), count_cases, "
                       "fir_details (what each FIR / the case is about, its story, charges explained), fir_status, "
                       "serious_cases, io_report, criminals_near, criminals_all, profile, associates, connection, "
                       "hotels, phones, vehicles, documents, graph_stats, news, summary, open.")
     people: list[str] = Field(default_factory=list, description="Names of the people asked about, as written.")
-    role: Literal["accused", "complainant", "witness", "victim", "any"] = Field(
-        default="any", description="The role the question is about: an FIR 'on / against' someone = accused; "
-                                   "'filed by', 'darj karwaya' = complainant; 'gawah' = witness; else any.")
+    role: Literal["any", "accused", "complainant", "witness", "victim"] = Field(
+        default="any", description="Only when the officer asks for FIRs in which the person had ONE role: accused "
+                                   "for FIRs on / against them ('par', 'against'); complainant for FIRs filed by "
+                                   "them ('darj karwai', 'filed by'); witness ('gawah'); victim. Otherwise any - "
+                                   "'who is he', 'his FIRs', 'his record' are any.")
     depth: Literal["brief", "detailed"] = Field(
         default="brief", description="detailed when the officer wants an explanation, the story, details, what the "
                                      "case is - and whenever the officer asks about an FIR, a person, the incident, "
@@ -102,7 +105,9 @@ class _Reading(Typed):
 
 _READER_SYSTEM = (
     "You read one message a police officer sends to an investigation assistant (English, Urdu or Roman Urdu) and say "
-    "what it does and what it wants. Read the meaning, not keywords. FIRST decide what the message does. It TELLS us "
+    "what it does and what it wants. Read the meaning, not keywords. FIRST decide what the message does - from THIS "
+    "message alone: the recent conversation only tells you who 'he / ye / wo' is, never whether this message asks or "
+    "tells (an officer who told us something last turn may ask now). It TELLS us "
     "something (act statement, states_something true): it reports what happened, names a suspect, gives a date or a "
     "place, says which case this is, says someone was arrested. It ASKS for something (act question, asks_something "
     "true): it wants information or an explanation. It can do both. A message with no question and no request for "
@@ -110,10 +115,13 @@ _READER_SYSTEM = (
     "hua' -> act statement, asks_something false, states_something true. 'usne mere saath fraud kiya, 5 lakh liye aur "
     "wapas nahi kiye' -> act statement, asks_something false, states_something true. 'usne mere saath fraud kiya, uska "
     "record kya hai?' -> act question, asks_something true, states_something true. 'Kamran kaun hai?' -> act question, "
-    "asks_something true, states_something false. A message that asks for anything is a question even if it names a "
+    "asks_something true, states_something false. 'Kamran ki hotel stays dikhao' / 'show me his FIRs' / 'us ke FIRs dikhao' (a request, "
+    "'dikhao', 'batao', 'show', 'list') -> act question, asks_something true, states_something false. 'He is not in "
+    "any case, just checking his past record' -> act question, asks_something true (his record, type cases, role "
+    "any), states_something true (there is no case). A message that asks for anything is a question even if it names a "
     "person Sherlock asked about - 'answer' is only a reply to Sherlock's question that asks nothing back. Requests like "
     "'explain me the FIR filed by X' are questions; 'what is the case filed by X' wants the case's details (type "
-    "fir_details, depth detailed, role complainant). Use the recent conversation to resolve who 'he / ye / wo' is "
+    "fir_details, depth detailed, role complainant - the message says 'filed by'). Use the recent conversation to resolve who 'he / ye / wo' is "
     "and what 'that' refers to. When one specific fact is asked ('who is the IO of this case', 'kab hua', 'which "
     "weapon'), name it in asks_for, so exactly that is answered. When the officer wants what a document or case "
     "says, its story, an explanation or a summary ('what does the FIR say', 'what happened', 'tell me about the "
@@ -216,33 +224,118 @@ def model_reading(message: str, case: Any, llm: Any) -> dict[str, Any] | None:
     recent = [{"officer": t.get("q", "")[:200], "sherlock": t.get("a", "")[:200]} for t in case.conversation[-3:]]
     asked = (case.conversation[-1].get("checks") or {}).get("asked") if case.conversation else None
     try:
-        out, _ = llm.generate_structured(prompt=f"Recent conversation: {recent}\nSherlock last asked: {asked}\n"
-                                                f"Message: {message}", schema=_Reading, system=_READER_SYSTEM,
-                                         cache_kind="question_reader", prompt_version="v10", max_tokens=600)
+        # The message first: read before it, the conversation made a request read as one more statement.
+        out, _ = llm.generate_structured(prompt=f"Message to read: {message}\n\nSherlock last asked: {asked}\n"
+                                                f"Earlier conversation (only to tell who 'he / ye / wo' is): {recent}",
+                                         schema=_Reading, system=_READER_SYSTEM,
+                                         cache_kind="question_reader", prompt_version="v21", max_tokens=600)
         return out.model_dump()
     except Exception as exc:  # noqa: BLE001 - the rules read it instead
         logger.info("Question reader model failed: %s", exc)
         return None
 
 
+_ACT_SYSTEM = (
+    "You read one message a police officer sends to an investigation assistant (English, Urdu or Roman Urdu, often "
+    "with spelling mistakes) and say what it does:\n"
+    "- ask: it asks a question or asks for information or records ('kn c fir krwai ha X ne?', 'tell me about his "
+    "FIRs', 'hotel stays dikhao', 'I want his record');\n"
+    "- point: it asks nothing new but points the officer's previous question at a person, or corrects who it was "
+    "about ('not X, Y', 'X nahi Y', 'I am asking about Y', or only a name);\n"
+    "- tell: it gives information about the case and asks nothing (what happened, who did it or is suspected, when, "
+    "where, a role, which case this is, that there is no case, an answer to Sherlock's question);\n"
+    "- both: it gives such information AND asks something - news at the start ('we found the body', 'he was "
+    "arrested', 'the reports have come') followed by a request is both, not ask;\n"
+    "- greeting: hello, thanks.\n"
+    "Words of a question are not information: 'which FIR did X file?' tells nothing. Think briefly in plain words, "
+    "then end with three last lines exactly:\nANSWER: ask | point | tell | both | greeting\n"
+    "ROLE: the one role the person must have in the FIRs asked about - complainant (FIRs they filed: 'krwai', "
+    "'darj karwai', 'filed'), accused (FIRs on or against them: 'par', 'against', 'mulzim'), witness ('gawah'), "
+    "victim - or any when THIS message (or, for point, the question it points) names no role. A role from an "
+    "earlier question does not carry over to a new one.\n"
+    "JUDGMENT: yes when the officer wants a judgment - why, which way the evidence points, who did it, is he "
+    "involved, suicide or murder, what to do next; otherwise no.")
+_ACT_LINE = re.compile(r"ANSWER:\s*\**\s*(ask|point|tell|both|greeting)\b", re.IGNORECASE)
+_ROLE_LINE = re.compile(r"ROLE:\s*\**\s*(any|accused|complainant|witness|victim)\b", re.IGNORECASE)
+_JUDGMENT_LINE = re.compile(r"JUDGMENT:\s*\**\s*(yes|no)\b", re.IGNORECASE)
+
+
+def act_in_words(message: str, case: Any, llm: Any) -> tuple[str | None, str | None, bool]:
+    """What the message does - ask, point (the last question at someone), tell, both, greeting -
+    weighed in plain words: inside the JSON reading the office model took "X nahi, Y!" and a
+    bare name for news; asked to reason in words it read 30 of 30 test messages right - and the role asked about, 22 of 22 (in JSON it carried "complainant" over from
+    earlier questions to "tell me about his FIRs"). (None, None) when there is no answer: the JSON
+    reading decides then."""
+    if llm is None or not hasattr(llm, "generate_text") or not (message or "").strip():
+        return None, None, False
+    earlier = [t.get("q", "")[:200] for t in case.conversation[-3:]]
+    try:
+        text = llm.generate_text(prompt=json.dumps({"previous_messages_of_the_officer": earlier, "message": message},
+                                                   ensure_ascii=False),
+                                 system=_ACT_SYSTEM, cache_kind="message_act", prompt_version="v4", max_tokens=400)
+    except Exception as exc:  # noqa: BLE001 - the JSON reading decides
+        logger.info("Message act reading failed: %s", exc)
+        return None, None, False
+    acts, roles = _ACT_LINE.findall(text or ""), _ROLE_LINE.findall(text or "")
+    judged = _JUDGMENT_LINE.findall(text or "")
+    return ((acts[-1].lower() if acts else None), (roles[-1].lower() if roles and acts else None),
+            bool(judged and judged[-1].lower() == "yes"))
+
+
 def read_message(message: str, net: Any, case: Any, focus: list[str], llm: Any = None) -> dict[str, Any]:
     """O0: the whole ask. With the model, its reading is the reading - it understands any
-    wording; the keyword rules are only the fallback when there is no model or it fails."""
-    reading = model_reading(message, case, llm)
+    wording; the keyword rules are only the fallback when there is no model or it fails.
+    What the message does (ask, point, tell) is weighed in plain words alongside."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        doing = pool.submit(act_in_words, message, case, llm)
+        reading = model_reading(message, case, llm)
+        does, role, judgment = doing.result()
+    if reading and role:
+        reading = {**reading, "role": role}
+    if reading and judgment:
+        reading = {**reading, "wants_view": True}
+    last = str((case.dialog or {}).get("last_question") or (case.conversation[-1].get("q") if case.conversation else "")
+               or "")
+    pointed = None
+    if reading and does == "point" and last:
+        # "X nahi, Y!", "I am asking about Y", a bare name: the officer points
+        # their last question at someone. It is read again as that question, and answered.
+        pointed = f"{last} ({message})"
+        again = model_reading(pointed, case, llm) or reading
+        # Who is meant is what this message says; what is asked is the last question's.
+        reading = {**again, "people": reading.get("people") or again.get("people") or [], "act": "question",
+                   "asks_something": True, "states_something": False}
     if reading and reading.get("act"):
         said = reading["act"]
         # A message that asks is a question - also when it names someone Sherlock asked about
         # ("did Zameer stay in a hotel then?" does not answer "who is the main suspect?").
+        # What the message does is the plain-words reading when there is one; the JSON reading otherwise.
         asking = said == "question" or bool(reading.get("asks_something")) or (message or "").rstrip().endswith(("?", "؟"))
+        if does in ("ask", "both", "point"):
+            asking = True
+        elif does in ("tell", "greeting"):
+            asking = False
+        if does in ("ask", "point", "greeting"):
+            reading = {**reading, "states_something": False}     # nothing to record: a question is not news
+        elif does in ("tell", "both"):
+            reading = {**reading, "states_something": True}
+        if said != "question" and not reading.get("asks_something"):
+            # The role is a hint to the answer writer, and a wrong one hides FIRs ("no FIR lists him as the
+            # complainant"): the model read no question here, so its filter for one is not taken.
+            reading = {**reading, "role": "any"}
         if asking:
             act = "question"
-        elif said == "greeting":
+        elif said == "greeting" or does == "greeting":
             act = "greeting"
         else:                       # information: an answer when Sherlock has a question open
             act = "answer" if said == "answer" and case.open_questions() else "statement"
-        ask = {"act": act, "reading": reading, "tells": bool(reading.get("states_something"))}
+        ask = {"act": act, "reading": reading, "tells": bool(reading.get("states_something")),
+               "question_text": pointed or message, "pointed": bool(pointed)}
         if act == "question":
             ask.update(from_reading(message, net, case, focus, reading))
+            case.dialog["last_question"] = (pointed or message)[:400]
         return ask
     act = act_of(message, case.open_questions()) if message else "greeting"
     ask = {"act": act, "reading": None}

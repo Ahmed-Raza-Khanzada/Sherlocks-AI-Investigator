@@ -12,7 +12,7 @@ from sherlocks.linkgraph.sherlock_team import run_turn
 
 def _graph():
     return {"nodes": [
-        {"id": "p1", "kind": "person", "label": "Muhammad Danish Rafiq",
+        {"id": "p1", "kind": "person", "label": "Muhammad Danish Saleem",
          "data": {"seed": True, "cnic": "9999900000777", "phones": ["03990000777"],
                   "firs": [{"label": "45/2023", "role": "Accused", "offence": "392 PPC", "system": "psrms"}]}},
         {"id": "p2", "kind": "person", "label": "Tariq Mehmood", "data": {"cnic": "4210100000001"}},
@@ -48,7 +48,7 @@ def test_the_models_reading_decides_not_keywords():
     """Words that the rules would read as a count ("how many") - the model says the officer
     wants the story; its reading is the ask."""
     net, case = PersonNetwork(_graph()), CaseFile()
-    llm = _ReaderOnly({"act": "question", "type": "fir_details", "people": ["Muhammad Danish Rafiq"],
+    llm = _ReaderOnly({"act": "question", "type": "fir_details", "people": ["Muhammad Danish Saleem"],
                        "depth": "detailed", "role": "accused", "scope": "case", "about_new_case": False})
     ask = question_reader.read_message("how many things happened in Danish's matter, walk me through", net, case, [], llm)
     assert ask["by"] == "model" and ask["type"] == "fir_details" and ask["depth"] == "detailed"
@@ -60,7 +60,7 @@ def test_the_models_reading_decides_not_keywords():
 
 def test_a_question_about_a_person_asks_the_dossier_agent_first():
     case = CaseFile()
-    events = list(run_turn(_graph(), "who is Muhammad Danish Rafiq?", case=case))
+    events = list(run_turn(_graph(), "who is Muhammad Danish Saleem?", case=case))
     agents = [e["agent"] for e in events if e.get("type") == "agent"]
     assert "Dossier agent" in agents and agents.index("Dossier agent") < agents.index("Knowledge base")
     assert "p1" in case.dossiers                      # the card is kept on the board
@@ -68,9 +68,9 @@ def test_a_question_about_a_person_asks_the_dossier_agent_first():
 
 
 def test_the_api_agent_is_called_when_the_board_has_no_answer():
-    backend, case = _Backend({"evs": {"name": "Muhammad Danish Rafiq", "cnic": "9999900000777",
+    backend, case = _Backend({"evs": {"name": "Muhammad Danish Saleem", "cnic": "9999900000777",
                                       "organisation": "Karachi Port Trust", "designation": "Clerk"}}), CaseFile()
-    events = list(run_turn(_graph(), "Muhammad Danish Rafiq ka kaam kya hai?", case=case, backend=backend, live_calls=3))
+    events = list(run_turn(_graph(), "Muhammad Danish Saleem ka kaam kya hai?", case=case, backend=backend, live_calls=3))
     assert backend.asked and "evs" in backend.asked
     assert any(e.get("agent") == "API agent" for e in events if e.get("type") == "agent")
     assert "Karachi Port Trust" in events[-1]["answer"]

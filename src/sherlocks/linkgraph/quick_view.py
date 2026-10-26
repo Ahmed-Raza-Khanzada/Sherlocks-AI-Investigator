@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -35,13 +36,49 @@ _SYSTEM = ("You are Sherlock, the lead detective. The officer asks for your judg
            "gatekeeper, cluster, hub, centrality). Reply in {lang}. " + DATA_NOT_INSTRUCTIONS)
 
 
-def ask(llm: Any, message: str, language: str, pack: dict[str, Any]) -> dict[str, Any] | None:
+_WEIGH = ("You are Sherlock, the lead detective. The officer asks for your judgment in the chat. Weigh the case "
+          "board given like a detective - nothing else, no new facts: what each finding (a report, a statement, a "
+          "record, a movement, a time) means for the question and what it cannot mean, what points each way, which "
+          "explanation fits all of it, and what would settle it. Plain words an investigating officer uses. Think it "
+          "through "
+          "briefly, then write a line 'VIEW:' followed by your view in 2-4 sentences in {lang}, citing the ids it "
+          "rests on in [brackets] - an opinion, not a new fact. If the board does not support a view, say what is "
+          "missing. " + DATA_NOT_INSTRUCTIONS)
+_VIEW_LINE = re.compile(r"VIEW:\s*\**\s*(.+)", re.DOTALL)
+
+
+def ask(llm: Any, message: str, language: str, pack: dict[str, Any], *, case: Any = None,
+        people: list[str] | None = None, read: dict[str, Any] | None = None) -> dict[str, Any] | None:
     from sherlocks.linkgraph.conversation import LANG_NAME
 
     payload = {"question": message, "your_assessment": pack.get("sherlock_view"), "summary": pack.get("summary"),
                "facts": pack.get("matched_facts"), "officer_said": pack.get("statements"),
                "conflicts": pack.get("conflicts"), "missing": pack.get("missing"), "focus": pack.get("focus"),
                "write_your_view_in": LANG_NAME.get(language, "English")}
+    if read is not None:
+        payload["case_read_first"] = read          # everything on the board about the targets (O4)
+    if case is not None:
+        from sherlocks.linkgraph.relevance import the_new_case
+        from sherlocks.team.officer_agent import reports_on
+
+        # The reports and the case's own FIR: a view on "suicide or murder?" is weighed on them.
+        payload["reports"] = reports_on(case, people or [])
+        payload["the_case"] = the_new_case(case)
+        fir = (case.incident or {}).get("fir_doc")
+        if fir in case.documents:
+            payload["the_case_fir"] = (case.documents[fir].get("text") or "")[:2500]
+    if hasattr(llm, "generate_text"):
+        # In words first: inside a JSON form the office model listed the findings without weighing them.
+        try:
+            text = llm.generate_text(prompt=json.dumps(payload, ensure_ascii=False, default=str),
+                                     system=_WEIGH.format(lang=LANG_NAME.get(language, "English")),
+                                     cache_kind="sherlock_view_words", prompt_version="v1", max_tokens=900)
+        except Exception as exc:  # noqa: BLE001 - the reply carries on without his view
+            logger.info("Sherlock's view in words failed: %s", exc)
+            return None
+        found = _VIEW_LINE.findall(text or "")
+        view = found[-1].strip()[:900] if found else ""
+        return {"view": view, "people": [], "supported": True} if view else None
     try:
         out, _ = llm.generate_structured(prompt=json.dumps(payload, ensure_ascii=False, default=str), schema=_View,
                                          system=_SYSTEM.format(lang=LANG_NAME.get(language, "English")),
