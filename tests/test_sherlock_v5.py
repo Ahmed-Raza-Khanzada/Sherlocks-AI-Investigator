@@ -461,12 +461,12 @@ def test_the_report_team_writes_the_parts_and_the_summary_last_from_them():
     assert order[:2] == ["P1 Report editor", "P1 Report editor"] and set(order[2:5]) == {
         "P2 Evidence writer", "P3 Statements and timeline writer", "P4 Analysis writer"}
     # P6 sent the summary back to P5 once (it cited D99, which is not on the board); the second passed.
-    assert order[5:] == ["P1 Report editor", "P2 Target writer", "P8 Record writer", "P7 Story writer", "P10 Case analyst",
+    assert order[5:] == ["P1 Report editor", "P2 Target writer", "P12 Group writer", "P8 Record writer", "P7 Story writer", "P10 Case analyst", "P13 Section writer",
                          "P5 Summary writer",
                          "P6 Report checker", "P5 Summary writer", "P6 Report checker", "P1 Report editor"] and Writer.calls == 2
     # The report has one fixed structure, each section written by a named member of the team.
-    assert [s["key"] for s in report["structure"]] == ["glance", "summary", "story", "target", "network", "record", "people", "statements",
-                                                       "reports", "leads", "next_steps"]
+    assert [s["key"] for s in report["structure"]] == ["glance", "summary", "story", "target", "group", "network", "record", "people", "statements",
+                                                       "reports", "leads", "next_steps", "added"]
     target = report["parts"]["target"]["targets"][0]
     assert target["name"] == "Kamran Aslam" and target["cnic"] == "9999900000011"
     imran = next(r for r in report["parts"]["in_case"]["said"] if r["name"] == "Imran Rashid")
@@ -477,7 +477,7 @@ def test_the_report_team_writes_the_parts_and_the_summary_last_from_them():
     assert not any("no source" in s for s in summary["established"])           # a sentence that cites nothing is left out
     assert any("cites no id" in p for p in report["checked"])
     parts = report["parts"]
-    assert set(parts) == {"A", "B", "C", "D", "E", "F", "annex", "target", "network", "record", "in_case", "case_story", "glance",
+    assert set(parts) == {"A", "B", "C", "D", "E", "F", "annex", "target", "group", "added", "network", "record", "in_case", "case_story", "glance",
                           "case_analysis"}
     assert next(p["name"] for p in parts["A"]["people"]) == "Kamran Aslam"
     assert parts["B"]["B1"]["cards"][0]["record"] == "fir" and parts["B"]["B2"]["cards"][0]["record"] == "mlo"
@@ -638,7 +638,7 @@ def test_work_planned_for_sherlock_runs_and_his_conclusion_comes_back_through_th
     assert asked["answer"].startswith("The FIR names Kamran")
     told = next(c for c in insight_desk.waiting(case) if c["kind"] == "investigation")
     assert told["ref"] == "ASK4" and "asal mein yeh kis ne kiya?" in told["text"]
-    assert case.report is not None and case.report["team"] == "P1-P11"   # the Report team prebuilt it after the run
+    assert case.report is not None and case.report["team"] == "P1-P13"   # the Report team prebuilt it after the run
 
 
 def test_the_summary_keeps_only_real_ids_in_brackets_and_five_next_steps():

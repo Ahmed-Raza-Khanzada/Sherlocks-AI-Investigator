@@ -437,6 +437,10 @@ def write(case: Any, net: Any, message: str, record: _Record, *, language: str, 
                     "certainty": e.certainty, "when": e.when, "when_words": e.when_words,
                     "tolerance_min": max(0, min(e.tolerance_min, 720)), "where": e.where}
             out["recorded"].append(f"recorded {fid}: {e.what}")
+            if field == "place" and len(value.split()) > 12 and e.where and len(e.where.split()) <= 12:
+                value = e.where.strip()                # the place, not the whole message it was said in
+            if field in ("place", "date", "time") and len(value.split()) > 15:
+                value = ""                             # a sentence is not a place or a date: asked again
             if field and value and not on_file:
                 case.set_incident({field: value[:200]})
                 if e.topic in CLOSES:

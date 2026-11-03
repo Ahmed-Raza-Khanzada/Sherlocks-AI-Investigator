@@ -280,6 +280,53 @@ and weapon, arms licences, CDR/IPDR, phone extraction, CCTV with DVR seizure mem
 identification parade - is "on the board", "mentioned, not on the board" (another document
 speaks of it: get a copy) or "not on the board". Its section comes before the open questions.
 
+**P12 Group writer** (`team/group_view.py`, code only): when several targets are searched
+together (a gang, a group of accused, a family) - for any kind of case - the report's third
+section becomes "The targets" (one table: CNIC, father, every phone and address, criminal record,
+group) and a new section "How the targets are connected" follows it:
+the groups the ties make (and the targets nothing ties to the others, with what to check); each
+tie between two targets - stated by a record (accused together, family, one filed against the
+other), found by comparing records (the same phone, phone numbers in sequence - SIMs often bought
+together - the same address or the same chak/goth/village) or through a common contact; names on
+a record that may be a target (a person an FIR lists without a CNIC whose name sounds the same as
+a target's - a question, never a tie that joins groups; it says which groups it would join); the
+people tied to two or more targets, directly or one step on (never through a complainant or a
+witness of their FIR); and each target's contacts to investigate with CNIC, phones and address.
+Its lines go to the brief writer and the weighing (HOW_THE_TARGETS_CONNECT, from the records,
+never the officer's words). The report writes about up to 12 targets in full
+(`case_scope.MOST_TARGETS`, was 3); with several targets the network section keeps its picture
+and step 2 and points to the contacts tables instead of repeating them.
+
+**P13 Section writer** (`team/section_writer.py`): the fixed sections are in every report; P13 adds
+the headings and tables THIS case needs that they do not give. After the case analyst it reads the
+finished parts (targets with phones, addresses and vehicles; earlier cases; hotel stays; contacts and
+common connections; reports read; uploaded documents; statements) and the list of fixed headings, and
+writes labelled lines - `SECTION: heading | why`, `PLACE: targets|story|network|record|end`,
+`TABLE: columns`, `ROW: values`, `POINT:` (up to four sections, six columns, 25 rows). Code keeps only
+what the records hold: a row or point whose numbers (FIR, phone, CNIC, date in either order, amount)
+are not in the material, or that names nothing from it, is dropped; a heading that repeats a fixed
+one is dropped; ids not on the board are removed and ids written in another cell move to the source
+column. The prompt names kinds of sections (offences across FIRs, vehicles and weapons, phone numbers,
+recurring places, money moved, arrests by date) - never one case's facts. The PDF draws each where
+P13 placed it, sized to what its columns hold, under "Added by Sherlock for this case".
+
+**No repeats.** Before a section is added, each of its rows and points is compared with what the
+report already prints, item by item: each target, contact and tie, each step of the story, each
+exhibit and finding of a report (and the report as a whole), each earlier FIR, hotel stay and point
+of the analysis - not the long narratives (an FIR's first information, a statement in full), so a
+table that gathers facts out of those is new. A row is a repeat when one item already holds its
+numbers (a date in either order) and most of its words; the same people or one FIR number found
+elsewhere is not enough. Repeated rows go; a section that is mostly repeats goes whole, whatever its
+heading; each added section counts as shown for the next. Headings that name the same kind of section
+(plurals; chemical, DNA, lab and medical as forensic; SIM and mobile as phone) are repeats too, and the
+analysis's own extra sections go when a fixed or added section already holds them. A column empty in
+every row is dropped; a value written as "implied" or "probably" is no row.
+
+**Open questions are checked.** Before the report lists a question as open, the case analyst checks it
+against the whole case material: answered (moved to "Already answered by the records", with the answer
+and its record), partly (the question stays, with what the records give and what is missing) or open.
+An answer whose numbers or names are not in the material is not taken.
+
 Also in the brief: police on the case in their own table (who registered, investigated and
 sent exhibits - ranks such as P/ASI, SIP, PI/IO are read as police everywhere, so an officer
 in someone's old FIR never enters their circle); family the case's records name join the

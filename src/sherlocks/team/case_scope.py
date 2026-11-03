@@ -27,6 +27,8 @@ from typing import Any
 
 # Graph patterns that are too common to be a lead or evidence about a crime: a SIM in
 # another person's name (usually a relative or a friend), a tenancy witness, a PRVS guarantor.
+# The targets the report writes about in full (a search of a gang can name many).
+MOST_TARGETS = 12
 NOT_EVIDENCE = ("graph_sim_front", "graph_tenancy_witness", "graph_recurring_guarantor")
 # Ties that are not the target's circle: who a SIM is registered to, who witnessed a
 # tenancy, who vouched in PRVS, a landlord, a number found on someone else's record.

@@ -645,7 +645,9 @@ def build(case: Any, net: Any, graph: dict[str, Any], scope: dict[str, Any], llm
     """The target's record: ``{targets: [{pid, name, past_cases, relations, hotels, reports, overview}]}``."""
     skip = set(scope.get("fir_numbers") or [])
     out = []
-    for pid in scope["targets"][:3]:
+    from sherlocks.team.case_scope import MOST_TARGETS
+
+    for pid in scope["targets"][:MOST_TARGETS]:
         cases = past_cases(case, net, pid, skip, llm)
         related = relations(net, graph, pid, scope["targets"])
         stays = hotels(net, pid)

@@ -128,10 +128,315 @@ pre.code { margin: 0; padding: 12px 14px; border-radius: 10px; background: var(-
 
 <div class="wrap">
   <header>
-    <div class="eyebrow">Plan · v6 · built on LangGraph · 13 October 2026</div>
+    <div class="eyebrow">Plan · v7 · built on LangGraph · 2 November 2026</div>
     <h1>Sherlock agent plan</h1>
-    <p class="lede">Two teams share one case board. The <b>Officer team</b> talks to the user and makes sure every question gets a correct answer. The <b>Sherlock team</b> works quietly to solve the case. The <b>Question desk</b> sits between them, so a question is never asked twice and every answer the user gives reaches Sherlock. In v5 the Sherlock team gets specialists for claims, contradictions, statements and leads, a Skeptic that tries to break the leading hypothesis, and an <b>Insight desk</b> that brings what they find to the officer. <b>v6</b> makes Sherlock settle which case is being investigated before it reasons about it, keeps a trace of every agent on every question, and gives the report one fixed reading order.</p>
+    <p class="lede">Two teams share one case board. The <b>Officer team</b> talks to the user and makes sure every question gets a correct answer. The <b>Sherlock team</b> works quietly to solve the case. The <b>Question desk</b> sits between them, so a question is never asked twice and every answer the user gives reaches Sherlock. In v5 the Sherlock team gets specialists for claims, contradictions, statements and leads, a Skeptic that tries to break the leading hypothesis, and an <b>Insight desk</b> that brings what they find to the officer. <b>v6</b> makes Sherlock settle which case is being investigated before it reasons about it, keeps a trace of every agent on every question, and gives the report one fixed reading order. <b>v7</b> reads uploaded documents in full, gives the report a Report team of thirteen members that writes a brief an investigating officer can act on - for one target or a whole gang - adds headings made for the case, never repeats itself, and checks every open question against the records. <a href="#v7">The current flow</a>.</p>
   </header>
+
+  <section class="panel" id="v7">
+    <h2>The agents today: v7 <span class="pill new">built</span></h2>
+    <p class="sub">The whole flow as it runs in the code on 2 November 2026: one chat turn, documents the officer uploads, the link analysis, the Sherlock team in the background and the Report team that writes the case report. Node names are the names in the code and in the agent trace. Everything is general: no prompt or rule holds one case's facts, so the same agents serve a murder, a robbery gang, a fraud or a theft.</p>
+    <div class="legend">
+      <span style="--c:var(--navy)">Officer graph</span>
+      <span style="--c:var(--red)">Desk and checks</span>
+      <span style="--c:var(--blue)">Toolbox</span>
+      <span style="--c:var(--orange)">Uploaded documents</span>
+      <span style="--c:var(--gold)">Case board</span>
+      <span style="--c:var(--violet)">Sherlock graph</span>
+      <span style="--c:var(--muted)">Report graph</span>
+      <span style="--c:var(--teal)">New since v6</span>
+    </div>
+    <div class="diagram">
+      <svg viewBox="0 0 1200 1176" role="img" aria-labelledby="v7-t">
+        <title id="v7-t">Current flow. A chat turn runs through the Officer graph: read, record with the case matcher or brief, draft with lookups, desk, check, present; after the reply the Hint keeper keeps what the answer noticed as leads. Uploaded documents are read in full by the Document reader with a live status. The link analysis of one or more targets fills the case board. The board wakes the Sherlock graph. The Report graph writes the report from one board version: three writers side by side, the editor, the target and group writers, the record and story writers, the case analyst, the section writer, the summary, the checker and the PDF.</title>
+        <defs>
+          <marker id="w-navy" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--navy)"/></marker>
+          <marker id="w-violet" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--violet)"/></marker>
+          <marker id="w-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--red)"/></marker>
+          <marker id="w-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--blue)"/></marker>
+          <marker id="w-gold" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--gold)"/></marker>
+          <marker id="w-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--teal)"/></marker>
+          <marker id="w-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--orange)"/></marker>
+          <marker id="w-muted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker>
+        </defs>
+
+        <!-- 1 · Officer graph -->
+        <rect class="lane" x="20" y="20" width="1160" height="252" rx="14"/>
+        <text class="lanelbl" x="36" y="42" style="fill:var(--navy)">OFFICER GRAPH · ONE CHAT TURN</text>
+        <text class="al" x="1164" y="42" text-anchor="end">model off or no answer → rules node (fallback)</text>
+        <g class="box" style="--c:var(--muted)"><rect x="36" y="107" width="138" height="66" rx="10"/>
+          <text class="bt" x="48" y="129">Officer</text>
+          <text class="bs" x="48" y="147">asks, tells,</text>
+          <text class="bs" x="48" y="163">corrects, uploads</text></g>
+        <g class="box" style="--c:var(--navy)"><rect x="201" y="107" width="138" height="66" rx="10"/>
+          <text class="bt" x="213" y="129"><tspan class="id">O0 </tspan>Reader</text>
+          <text class="bs" x="213" y="147">node: read</text>
+          <text class="bs" x="213" y="163">question or info?</text></g>
+        <g class="box" style="--c:var(--navy)"><rect x="366" y="64" width="138" height="66" rx="10"/>
+          <text class="bt" x="378" y="86"><tspan class="id">O3 </tspan>Recorder</text>
+          <text class="bs" x="378" y="104">node: record</text>
+          <text class="bs" x="378" y="120"><tspan style="fill:var(--teal)">O3b</tspan> which case?</text></g>
+        <g class="box" style="--c:var(--navy)"><rect x="366" y="150" width="138" height="66" rx="10"/>
+          <text class="bt" x="378" y="172"><tspan class="id">O4 </tspan>Briefer</text>
+          <text class="bs" x="378" y="190">node: brief</text>
+          <text class="bs" x="378" y="206">dossier, facts</text></g>
+        <g class="box" style="--c:var(--navy)"><rect x="531" y="64" width="138" height="66" rx="10"/>
+          <text class="bt" x="543" y="86"><tspan class="id">O1 </tspan>Officer agent</text>
+          <text class="bs" x="543" y="104">node: draft</text>
+          <text class="bs" x="543" y="120">reads uploads too</text></g>
+        <g class="box" style="--c:var(--blue)"><rect x="531" y="150" width="138" height="66" rx="10"/>
+          <text class="bt" x="543" y="172">Toolbox</text>
+          <text class="bs" x="543" y="190">node: lookup</text>
+          <text class="bs" x="543" y="206">board + API agent</text></g>
+        <g class="box" style="--c:var(--red)"><rect x="696" y="107" width="138" height="66" rx="10"/>
+          <text class="bt" x="708" y="129">Desk</text>
+          <text class="bs" x="708" y="147">not found · Q3</text>
+          <text class="bs" x="708" y="163">Q1: one question</text></g>
+        <g class="box" style="--c:var(--red)"><rect x="861" y="107" width="138" height="66" rx="10"/>
+          <text class="bt" x="873" y="129"><tspan class="id">O2 </tspan>Checker</text>
+          <text class="bs" x="873" y="147">node: check</text>
+          <text class="bs" x="873" y="163">right? sourced?</text></g>
+        <g class="box" style="--c:var(--navy)"><rect x="1026" y="107" width="138" height="66" rx="10"/>
+          <text class="bt" x="1038" y="129"><tspan class="id">O5 </tspan>Presenter</text>
+          <text class="bs" x="1038" y="147">node: present</text>
+          <text class="bs" x="1038" y="163">EN · Roman · Urdu</text></g>
+        <path class="ar" d="M174 140H199" style="stroke:var(--navy)" marker-end="url(#w-navy)"/>
+        <path class="ar" d="M339 140H352V97H364" style="stroke:var(--navy)" marker-end="url(#w-navy)"/>
+        <path class="ar" d="M352 140V183H364" style="stroke:var(--navy)" marker-end="url(#w-navy)"/>
+        <path class="ar" d="M435 130V148" style="stroke:var(--navy)" marker-end="url(#w-navy)"/>
+        <path class="ar" d="M450 64V52H765V105" style="stroke:var(--navy)" marker-end="url(#w-navy)"/>
+        <text class="al" x="607" y="47" text-anchor="middle">told us something, asked nothing</text>
+        <path class="ar" d="M504 183H517V97H529" style="stroke:var(--navy)" marker-end="url(#w-navy)"/>
+        <path class="ar" d="M600 130V148" style="stroke:var(--blue)" marker-start="url(#w-blue)" marker-end="url(#w-blue)"/>
+        <text class="al" x="612" y="143">max 2</text>
+        <path class="ar" d="M669 97H682V140H694" style="stroke:var(--navy)" marker-end="url(#w-navy)"/>
+        <path class="ar" d="M834 140H859" style="stroke:var(--red)" marker-end="url(#w-red)"/>
+        <path class="ar" d="M999 140H1024" style="stroke:var(--navy)" marker-end="url(#w-navy)"/>
+        <path class="ar" d="M1095 173V226H105V175" style="stroke:var(--navy)" marker-end="url(#w-navy)"/>
+        <text class="al" x="600" y="239" text-anchor="middle">the reply: checked, in the officer's language · every step kept in the agent trace</text>
+        <text x="1134" y="262" text-anchor="end"><tspan class="bt" style="font-size:13px;fill:var(--teal)">Hint keeper</tspan><tspan class="al" dx="8">after the reply: what it noticed → lead K#, only on a record</tspan></text>
+        <path class="ar dash" d="M1150 268V292" style="stroke:var(--teal)" marker-end="url(#w-teal)"/>
+
+        <!-- 2 · Uploaded documents -->
+        <rect class="lane" x="20" y="294" width="660" height="196" rx="14"/>
+        <text class="lanelbl" x="36" y="316" style="fill:var(--orange)">UPLOADED DOCUMENTS · READ IN FULL</text>
+        <text class="al" x="664" y="316" text-anchor="end" style="fill:var(--teal)">new</text>
+        <g class="box" style="--c:var(--orange)"><rect x="36" y="334" width="130" height="66" rx="10"/>
+          <text class="bt" x="48" y="356">Upload</text>
+          <text class="bs" x="48" y="374">PDF, image,</text>
+          <text class="bs" x="48" y="390">Word, sheet</text></g>
+        <g class="box" style="--c:var(--orange)"><rect x="190" y="334" width="130" height="66" rx="10"/>
+          <text class="bt" x="202" y="356">Extract</text>
+          <text class="bs" x="202" y="374">400 pages,</text>
+          <text class="bs" x="202" y="390">OCR 40 pages</text></g>
+        <g class="box" style="--c:var(--teal)"><rect x="344" y="334" width="150" height="66" rx="10"/>
+          <text class="bt" x="356" y="356"><tspan class="id">R7 </tspan>Doc reader</text>
+          <text class="bs" x="356" y="374">part by part, whole</text>
+          <text class="bs" x="356" y="390">pages, copied words</text></g>
+        <g class="box" style="--c:var(--teal)"><rect x="518" y="334" width="146" height="66" rx="10"/>
+          <text class="bt" x="530" y="356">Live status</text>
+          <text class="bs" x="530" y="374">chat + board: reading</text>
+          <text class="bs" x="530" y="390">3/9 parts … done</text></g>
+        <path class="ar" d="M166 367H188" style="stroke:var(--orange)" marker-end="url(#w-orange)"/>
+        <path class="ar" d="M320 367H342" style="stroke:var(--orange)" marker-end="url(#w-orange)"/>
+        <path class="ar" d="M494 367H516" style="stroke:var(--teal)" marker-end="url(#w-teal)"/>
+        <text class="al" x="36" y="424">keeps: events · findings · people · evidence · leads · statements, each with its page</text>
+        <text class="al" x="36" y="442">then: a summary, the key points; open leads it answers → answered</text>
+        <text class="al" x="36" y="460">its facts reach the chat (O1), the case board and the report</text>
+        <path class="ar" d="M664 384H698" style="stroke:var(--teal)" marker-end="url(#w-teal)"/>
+
+        <!-- Case board -->
+        <rect class="boardr" x="700" y="294" width="480" height="196" rx="14"/>
+        <text x="720" y="322"><tspan class="boardt">CASE BOARD</tspan><tspan class="al" dx="12">one memory for every team</tspan></text>
+        <text class="boardrow" x="720" y="346">Incident · which case · roles · officer's words</text>
+        <text class="boardrow" x="720" y="366">Documents D# · <tspan class="tier">uploads with their reading</tspan></text>
+        <text class="boardrow" x="720" y="386">Facts F# · Statements W# · Claims · Entities E#</text>
+        <text class="boardrow" x="720" y="406">Contradictions X# · Leads K# <tspan class="tier">open | answered</tspan></text>
+        <text class="boardrow" x="720" y="426">Hypotheses H# · Questions Q# (4 open at most)</text>
+        <text class="boardrow" x="720" y="446">Agent traces · the report, kept per board version</text>
+        <text class="al" x="720" y="474">red = new since v6</text>
+
+        <!-- 3 · Link graph -->
+        <rect class="lane" x="20" y="508" width="1070" height="56" rx="14"/>
+        <text class="lanelbl" x="36" y="530" style="fill:var(--teal)">LINK ANALYSIS · ONE OR MORE TARGETS (CNIC, PHONE) ACROSS POLICE AND GOVERNMENT SYSTEMS</text>
+        <text class="bs" x="36" y="550">PSRMS · CRO · FIR roster · CFMS · subscriber · NADRA · Hotel Eye · TRUST · PRVS · DLS · excise · AVLC … → people, records, links stated or matched</text>
+        <path class="ar" d="M960 508V492" style="stroke:var(--teal)" marker-end="url(#w-teal)"/>
+        <path class="ar dash" d="M1120 490V582" style="stroke:var(--gold)" marker-end="url(#w-gold)"/>
+        <text class="al" transform="translate(1112 536) rotate(-90)" text-anchor="middle">wakes</text>
+        <path class="ar" d="M1160 584V492" style="stroke:var(--violet)" marker-end="url(#w-violet)"/>
+        <text class="al" transform="translate(1176 536) rotate(-90)" text-anchor="middle">writes</text>
+
+        <!-- 4 · Sherlock graph -->
+        <rect class="lane" x="20" y="584" width="1160" height="108" rx="14"/>
+        <text class="lanelbl" x="36" y="606" style="fill:var(--violet)">SHERLOCK GRAPH · ONE BACKGROUND RUN</text>
+        <g class="box" style="--c:var(--violet)"><rect x="36" y="618" width="204" height="66" rx="10"/>
+          <text class="bt" x="48" y="640">A2 · A5 · S10 · S5</text>
+          <text class="bs" x="48" y="658">records read, who is who,</text>
+          <text class="bs" x="48" y="674">register, claims, presence</text></g>
+        <g class="box" style="--c:var(--violet)"><rect x="267" y="618" width="204" height="66" rx="10"/>
+          <text class="bt" x="279" y="640">S6 · S7 · S8 together</text>
+          <text class="bs" x="279" y="658">contradictions, statements,</text>
+          <text class="bs" x="279" y="674">leads: one per pattern</text></g>
+        <g class="box" style="--c:var(--violet)"><rect x="498" y="618" width="204" height="66" rx="10"/>
+          <text class="bt" x="510" y="640">S2 → S1 ⇄ S9</text>
+          <text class="bs" x="510" y="658">summary, hypotheses,</text>
+          <text class="bs" x="510" y="674">the Skeptic</text></g>
+        <g class="box" style="--c:var(--violet)"><rect x="729" y="618" width="204" height="66" rx="10"/>
+          <text class="bt" x="741" y="640"><tspan class="id">S4 </tspan>Questioner</text>
+          <text class="bs" x="741" y="658">at most 4 open at a time</text>
+          <text class="bs" x="741" y="674">stale ones are withdrawn</text></g>
+        <g class="box" style="--c:var(--red)"><rect x="960" y="618" width="204" height="66" rx="10"/>
+          <text class="bt" x="972" y="640"><tspan class="id">Q3 </tspan>Insight desk</text>
+          <text class="bs" x="972" y="658">new and answered leads,</text>
+          <text class="bs" x="972" y="674">never told twice</text></g>
+        <path class="ar" d="M240 651H265" style="stroke:var(--violet)" marker-end="url(#w-violet)"/>
+        <path class="ar" d="M471 651H496" style="stroke:var(--violet)" marker-end="url(#w-violet)"/>
+        <path class="ar" d="M702 651H727" style="stroke:var(--violet)" marker-end="url(#w-violet)"/>
+        <path class="ar" d="M933 651H958" style="stroke:var(--violet)" marker-end="url(#w-violet)"/>
+        <path class="ar" d="M600 692V712" style="stroke:var(--muted)" marker-end="url(#w-muted)"/>
+        <text class="al" x="608" y="707">after every Sherlock run, and when the officer downloads the report</text>
+
+        <!-- 5 · Report graph -->
+        <rect class="lane" x="20" y="714" width="1160" height="306" rx="14"/>
+        <text class="lanelbl" x="36" y="736" style="fill:var(--muted)">REPORT GRAPH · P1–P13 · ONE REPORT FROM ONE FROZEN BOARD VERSION</text>
+        <!-- row 1 -->
+        <g class="box" style="--c:var(--muted)"><rect x="36" y="756" width="120" height="66" rx="10"/>
+          <text class="bt" x="46" y="778"><tspan class="id">P1 </tspan>freeze</text>
+          <text class="bs" x="46" y="796">board version,</text>
+          <text class="bs" x="46" y="812">case scope</text></g>
+        <g class="box" style="--c:var(--muted)"><rect x="180" y="746" width="120" height="24" rx="8"/>
+          <text class="bt" x="190" y="763" style="font-size:12.5px"><tspan class="id">P2 </tspan>evidence</text></g>
+        <g class="box" style="--c:var(--muted)"><rect x="180" y="777" width="120" height="24" rx="8"/>
+          <text class="bt" x="190" y="794" style="font-size:12.5px"><tspan class="id">P3 </tspan>statements</text></g>
+        <g class="box" style="--c:var(--muted)"><rect x="180" y="808" width="120" height="24" rx="8"/>
+          <text class="bt" x="190" y="825" style="font-size:12.5px"><tspan class="id">P4 </tspan>analysis</text></g>
+        <g class="box" style="--c:var(--muted)"><rect x="324" y="756" width="120" height="66" rx="10"/>
+          <text class="bt" x="334" y="778"><tspan class="id">P1 </tspan>editor</text>
+          <text class="bs" x="334" y="796">glance, annex,</text>
+          <text class="bs" x="334" y="812">ids</text></g>
+        <g class="box" style="--c:var(--muted)"><rect x="468" y="756" width="120" height="66" rx="10"/>
+          <text class="bt" x="478" y="778"><tspan class="id">P2 </tspan>target</text>
+          <text class="bs" x="478" y="796">up to 12 targets</text>
+          <text class="bs" x="478" y="812"><tspan style="fill:var(--teal)">P9</tspan> network 1–2</text></g>
+        <g class="box" style="--c:var(--teal)"><rect x="612" y="756" width="120" height="66" rx="10"/>
+          <text class="bt" x="622" y="778"><tspan class="id">P12 </tspan>group</text>
+          <text class="bs" x="622" y="796">targets tied</text>
+          <text class="bs" x="622" y="812">to each other</text></g>
+        <g class="box" style="--c:var(--teal)"><rect x="756" y="756" width="120" height="66" rx="10"/>
+          <text class="bt" x="766" y="778"><tspan class="id">P8 </tspan>record</text>
+          <text class="bs" x="766" y="796">earlier FIRs,</text>
+          <text class="bs" x="766" y="812">hotels, tenancy</text></g>
+        <g class="box" style="--c:var(--teal)"><rect x="900" y="756" width="120" height="66" rx="10"/>
+          <text class="bt" x="910" y="778"><tspan class="id">P7 </tspan>story</text>
+          <text class="bs" x="910" y="796">the case by date,</text>
+          <text class="bs" x="910" y="812">its people</text></g>
+        <g class="box" style="--c:var(--teal)"><rect x="1044" y="756" width="120" height="66" rx="10"/>
+          <text class="bt" x="1054" y="778"><tspan class="id">P10 </tspan>analyst</text>
+          <text class="bs" x="1054" y="796">reports, weighing,</text>
+          <text class="bs" x="1054" y="812">open questions</text></g>
+        <path class="ar" d="M156 789H168" style="stroke:var(--muted)"/>
+        <path class="ar" d="M168 758V820" style="stroke:var(--muted)"/>
+        <path class="ar" d="M168 758H178" style="stroke:var(--muted)" marker-end="url(#w-muted)"/>
+        <path class="ar" d="M168 789H178" style="stroke:var(--muted)" marker-end="url(#w-muted)"/>
+        <path class="ar" d="M168 820H178" style="stroke:var(--muted)" marker-end="url(#w-muted)"/>
+        <path class="ar" d="M300 758H312" style="stroke:var(--muted)"/>
+        <path class="ar" d="M300 820H312" style="stroke:var(--muted)"/>
+        <path class="ar" d="M312 758V820" style="stroke:var(--muted)"/>
+        <path class="ar" d="M300 789H322" style="stroke:var(--muted)" marker-end="url(#w-muted)"/>
+        <path class="ar" d="M444 789H466" style="stroke:var(--muted)" marker-end="url(#w-muted)"/>
+        <path class="ar" d="M588 789H610" style="stroke:var(--muted)" marker-end="url(#w-muted)"/>
+        <path class="ar" d="M732 789H754" style="stroke:var(--muted)" marker-end="url(#w-muted)"/>
+        <path class="ar" d="M876 789H898" style="stroke:var(--muted)" marker-end="url(#w-muted)"/>
+        <path class="ar" d="M1020 789H1042" style="stroke:var(--muted)" marker-end="url(#w-muted)"/>
+        <path class="ar" d="M1104 822V854" style="stroke:var(--muted)" marker-end="url(#w-muted)"/>
+        <!-- row 2, right to left -->
+        <g class="box" style="--c:var(--teal)"><rect x="1044" y="856" width="120" height="66" rx="10"/>
+          <text class="bt" x="1054" y="878"><tspan class="id">P13 </tspan>sections</text>
+          <text class="bs" x="1054" y="896">headings, tables</text>
+          <text class="bs" x="1054" y="912">for this case</text></g>
+        <g class="box" style="--c:var(--muted)"><rect x="900" y="856" width="120" height="66" rx="10"/>
+          <text class="bt" x="910" y="878"><tspan class="id">P5 </tspan>summary</text>
+          <text class="bs" x="910" y="896">the brief,</text>
+          <text class="bs" x="910" y="912">written last</text></g>
+        <g class="box" style="--c:var(--red)"><rect x="756" y="856" width="120" height="66" rx="10"/>
+          <text class="bt" x="766" y="878"><tspan class="id">P6 </tspan>check</text>
+          <text class="bs" x="766" y="896">sources, ids,</text>
+          <text class="bs" x="766" y="912">no guessing</text></g>
+        <g class="box" style="--c:var(--muted)"><rect x="612" y="856" width="120" height="66" rx="10"/>
+          <text class="bt" x="622" y="878"><tspan class="id">P1 </tspan>build</text>
+          <text class="bs" x="622" y="896">PDF, kept by</text>
+          <text class="bs" x="622" y="912">board version</text></g>
+        <path class="ar" d="M1044 889H1022" style="stroke:var(--muted)" marker-end="url(#w-muted)"/>
+        <path class="ar" d="M900 881H878" style="stroke:var(--muted)" marker-end="url(#w-muted)"/>
+        <path class="ar dash" d="M876 899H898" style="stroke:var(--red)" marker-end="url(#w-red)"/>
+        <text class="al" x="888" y="938" text-anchor="middle">fails: back once</text>
+        <path class="ar" d="M756 889H734" style="stroke:var(--muted)" marker-end="url(#w-muted)"/>
+        <path class="ar" d="M672 922V1040" style="stroke:var(--muted)" marker-end="url(#w-muted)"/>
+        <!-- inside P10 -->
+        <g class="box" style="--c:var(--teal)"><rect x="36" y="846" width="552" height="160" rx="10"/>
+          <text class="bt" x="50" y="868"><tspan class="id">P10 </tspan>inside the case analyst</text>
+          <text class="bs" x="50" y="890">Each report read: every exhibit and result, a report filed twice read once</text>
+          <text class="bs" x="50" y="908">Each statement explained in English, with the person's own words in full</text>
+          <text class="bs" x="50" y="926">Weighing: explanations, for and against → complete → sides → check → measured</text>
+          <text class="bs" x="50" y="944">Open questions checked against the records: answered · partly · still open</text>
+          <text class="bs" x="50" y="962"><tspan style="fill:var(--teal)">P11</tspan> case papers: on the board, mentioned, or missing for this kind of case</text>
+          <text class="bs" x="50" y="980">Uploaded documents: summary, findings, dated steps, leads</text>
+          <text class="bs" x="50" y="998" style="fill:var(--teal)">every line it writes must quote a record of this case</text></g>
+        <!-- inside P13 -->
+        <g class="box" style="--c:var(--teal)"><rect x="756" y="946" width="408" height="60" rx="10"/>
+          <text class="bs" x="768" y="966">P13: each row checked against the records; repeats dropped</text>
+          <text class="bs" x="768" y="984">placed after targets, story, network, record, or at the end</text>
+          <text class="bs" x="768" y="1000">P12 runs when two or more targets are searched</text></g>
+
+        <!-- The report -->
+        <g class="box" style="--c:var(--muted)"><rect x="20" y="1042" width="1160" height="120" rx="14"/>
+          <text x="40" y="1068"><tspan class="bt">The report</tspan><tspan class="al" dx="12">fixed sections in every report · sections P13 adds for this case where they fit · disclaimer on the cover</tspan></text>
+          <text class="boardrow" x="40" y="1092">Glance · Brief · Victim or target(s) · <tspan class="tier">How the targets are connected</tspan> · Story · Forensic and medical findings</text>
+          <text class="boardrow" x="40" y="1112"><tspan class="tier">Documents uploaded</tspan> · Weighing · Statements · People, police, persons of interest · Network step 1–2</text>
+          <text class="boardrow" x="40" y="1132">Earlier cases · Hotels · Tenancy · Leads · <tspan class="tier">Case papers</tspan> · Questions open <tspan class="tier">and answered</tspan> · Action plan</text>
+          <text class="al" x="40" y="1152">annex: police systems checked · records the report rests on · <tspan style="fill:var(--teal)">+ sections added by P13, e.g. vehicles and weapons, money moved, places that recur</tspan></text></g>
+      </svg>
+    </div>
+
+    <h3>Who does what now</h3>
+    <div class="tablewrap">
+      <table class="wrapcells">
+        <thead><tr><th>Agent</th><th>Team</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td>O0 Reader</td><td>Officer</td><td>Reads the message: a question, information, a correction, or both</td></tr>
+          <tr><td>O3 Recorder · O3b Case matcher <span class="pill new">O3b</span></td><td>Officer</td><td>Keeps what the officer says as facts; O3b decides in plain words whether the message is about no case, a new event or an FIR on file. A place or date is kept only when it is one, never the whole message</td></tr>
+          <tr><td>O4 Briefer · O1 Officer agent</td><td>Officer</td><td>Gathers the person's dossier, the case's facts and the uploaded documents' readings; O1 drafts the answer, with up to two lookups</td></tr>
+          <tr><td>Desk · O2 Checker · O5 Presenter</td><td>Officer</td><td>One question at a time to the officer; the answer is checked against its sources; written in English, Roman Urdu or Urdu</td></tr>
+          <tr><td>Hint keeper <span class="pill new">new</span></td><td>Officer</td><td>After a reply, keeps what it noticed as a lead K# - only when a record of the case supports it</td></tr>
+          <tr><td>R7 Document reader <span class="pill new">new</span></td><td>Uploads</td><td>Reads an uploaded document in full, part by part; keeps events, findings, people, evidence, leads and statements with their page; marks the open leads it answers; shows its progress in the chat and on the board</td></tr>
+          <tr><td>A2 · A5 · S10 · S5 · S6 · S7 · S8 · S2 · S1 · S9 · S4 · Q3</td><td>Sherlock</td><td>As in v5 and v6: records, entities, claims, contradictions, statements, leads, hypotheses and the Skeptic, questions, and the Insight desk (which now also reports leads a document answered)</td></tr>
+          <tr><td>P1 Report editor</td><td>Report</td><td>Freezes one board version, sets the case scope, lays out the glance and the annex, builds the PDF</td></tr>
+          <tr><td>P2 · P3 · P4</td><td>Report</td><td>Evidence, statements and analysis side by side; P2 then writes the target - or all targets, up to 12</td></tr>
+          <tr><td>P5 Summary writer · P6 Report checker</td><td>Report</td><td>The brief, written last from the finished parts; checked for sources and ids, sent back once if it fails</td></tr>
+          <tr><td>P7 Story writer <span class="pill new">new</span></td><td>Report</td><td>The case in date order from its own records, and its people with their part and status</td></tr>
+          <tr><td>P8 Record writer <span class="pill new">new</span></td><td>Report</td><td>The target's earlier FIRs, relations, hotel stays, tenancy and earlier reports</td></tr>
+          <tr><td>P9 Network writer <span class="pill new">new</span></td><td>Report</td><td>Step 1: everyone tied to the target directly; step 2: one step further, only those who matter</td></tr>
+          <tr><td>P10 Case analyst <span class="pill new">new</span></td><td>Report</td><td>Reads each report and statement, weighs the evidence (each explanation, for and against, what settles it, with the records' own measurements) and checks every open question against the records</td></tr>
+          <tr><td>P11 Case papers <span class="pill new">new</span></td><td>Report</td><td>The papers this kind of case needs, from its offence and records: on the board, mentioned elsewhere, or missing</td></tr>
+          <tr><td>P12 Group writer <span class="pill new">new</span></td><td>Report</td><td>Several targets searched together: groups, ties between targets (accused together, family, the same or consecutive numbers, the same address or village), names on a record that may be a target, people tied to two or more targets, each target's contacts with CNIC, phones and address</td></tr>
+          <tr><td>P13 Section writer <span class="pill new">new</span></td><td>Report</td><td>Adds the headings and tables this case needs that the fixed sections do not give; every row checked against the records; anything already in the report is dropped</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>What changed since v6</h3>
+    <div class="rules">
+      <div><b>Documents read in full</b>An uploaded report (an inquiry, a post-mortem, a memo) is read to the last page by R7; its facts reach the chat, the board and the report, with a live status until it is done.</div>
+      <div><b>A report the officer can act on</b>Story, earlier record, network in two steps, forensic findings exhibit by exhibit, statements, weighing with measurements, case papers, action plan.</div>
+      <div><b>Gangs and groups</b>Up to 12 targets in full; P12 shows how they connect and who links them, and each target's contacts to investigate.</div>
+      <div><b>Headings made for the case</b>P13 adds sections such as vehicles and weapons, money moved or places that recur, placed where they read best.</div>
+      <div><b>No repeats</b>A row already shown by a fixed section - item by item: an exhibit, a contact, a step of the story, an FIR - is dropped; a section that is mostly repeats goes whole.</div>
+      <div><b>Open questions checked</b>A question the records answer moves to "Already answered by the records" with its source; one they answer in part says what is still missing.</div>
+      <div><b>Leads kept from the chat</b>The Hint keeper keeps what a reply noticed - only when a record supports it; a document can mark a lead answered.</div>
+      <div><b>General for any case</b>No prompt or rule holds one case's facts. Tests use made-up names only.</div>
+      <div><b>Every point has a source</b>Each line of the report names its record; a model line that no record supports is removed; the cover says the report is an aid to be verified.</div>
+    </div>
+  </section>
 
   <section class="panel" id="v6">
     <h2>What changed in v6 <span class="pill new">built</span></h2>

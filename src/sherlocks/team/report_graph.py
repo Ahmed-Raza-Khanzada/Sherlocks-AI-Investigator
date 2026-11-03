@@ -29,6 +29,7 @@ templates, and the cover says so. The team's writes never wake the Sherlock team
 
 from __future__ import annotations
 
+import json
 import logging
 import operator
 import re
@@ -43,7 +44,7 @@ from pydantic import Field, field_validator
 
 from sherlocks.evidence.guard import DATA_NOT_INSTRUCTIONS
 from sherlocks.linkgraph.relevance import the_new_case
-from sherlocks.team import runtime  # noqa: F401 - switches tracing off before a graph is built
+from sherlocks.team import group_view, runtime, section_writer  # noqa: F401 - runtime switches tracing off first
 from sherlocks.team.runtime import NEW_CASE, PLAIN, Typed, ask, dumps, real_refs
 
 logger = logging.getLogger(__name__)
@@ -65,7 +66,7 @@ NO_CASE = ("The investigating officer said there is no case: they are checking t
 # What wrote a stored report: a report kept from before a change to the report team is written again, not
 # re-drawn - its parts lack what the new layout reads (a case shown with no summary, under the wrong part).
 # Raise it whenever a part's content changes.
-REPORT_BUILD = "2026-10-23.5"
+REPORT_BUILD = "2026-11-02.3"
 MOST_LEADS = 12
 NOT_WEIGHED = "Not assessed: no case has been described yet, so no line of inquiry is weighed."
 MEDICAL, LAB, SCENE = ("mlo", "postmortem"), ("dna", "chemical", "forensic"), ("recovery_memo", "site_plan")
@@ -84,6 +85,11 @@ STRUCTURE = (
     ("target", "The target", "P2 Target writer",
      ("Who the target is, their part and status in this case, where the records put them at the time, their own "
       "earlier cases, and their close circle (family, co-accused, the same vehicle, travel, phone contact).")),
+    ("group", "How the targets are connected", "P12 Group writer",
+     ("When several targets are searched together (a gang, a group of accused): each target's identity, phones and "
+      "addresses side by side; the ties between the targets (accused together, family, the same or consecutive "
+      "phone numbers, the same address or village); names on a record that may be a target; the people tied to two "
+      "or more targets; the groups the ties make; and each target's contacts to investigate.")),
     ("network", "The target's network: step 1 and step 2", "P9 Network writer",
      ("A picture of everyone the records tie to the target directly, and the people one step further who matter "
       "(involved in this case, with a criminal record, or tied to two or more of the direct ones) - with tables "
@@ -104,7 +110,17 @@ STRUCTURE = (
       "guarantor. Not evidence.")),
     ("next_steps", "Next steps for the investigating officer", "P1 Report editor",
      "What to do now, in order, and the questions waiting for the officer."),
+    ("added", "Sections written for this case", "P13 Section writer",
+     ("Headings and tables the fixed sections do not give, chosen for THIS case from its records - a gang's "
+      "crimes across FIRs, the vehicles or weapons on record, money moved, arrests by date - each placed where "
+      "it reads best. Every row is checked against the records; what they do not hold is dropped.")),
 )
+# Headings the PDF always prints (besides STRUCTURE's): the Section writer never repeats one.
+FIXED_HEADINGS = ("The targets", "Forensic and medical findings", "Documents uploaded", "Weighing the evidence",
+                  "Statements", "Persons of interest", "Police and officials on the case", "Earlier cases of the target",
+                  "Hotel stays", "Tenancy records", "Reports on the target", "Statements in the earlier FIRs",
+                  "Case papers: on file and still needed", "Questions still open", "Action plan for the investigating officer",
+                  "Police systems checked for the target", "Records this report rests on", "Contacts of each target")
 
 
 @dataclass
@@ -419,13 +435,13 @@ def _target(job: ReportRun) -> dict[str, Any]:
     from sherlocks.evidence.dossiers import build_card
     from sherlocks.linkgraph.systems import system_label
     from sherlocks.team import network_view
-    from sherlocks.team.case_scope import close_circle
+    from sherlocks.team.case_scope import MOST_TARGETS, close_circle
 
     case, net, scope = job.case, job.net, job.scope
     presence = {r["pid"]: r for r in (case.presence or {}).get("rows") or []}
     found = {s["pid"]: s["lines"] for s in job.parts["B"]["B5"]["systems"]}
     targets = []
-    for pid in scope["targets"][:3]:
+    for pid in scope["targets"][:MOST_TARGETS]:
         card = build_card(case, net, pid)
         owners = _sim_owners(net, pid)
         firs: dict[str, dict[str, Any]] = {}
@@ -462,6 +478,118 @@ def _target(job: ReportRun) -> dict[str, Any]:
     return {"targets": len(targets), "own_firs": sum(len(t["firs"]) for t in targets),
             "circle": len(job.parts["target"]["circle"]), "network_first": len(job.parts["network"]["first"]),
             "network_second": len(job.parts["network"]["second"])}
+
+
+# -- P13 Section writer -------------------------------------------------------------------
+
+
+def _section_material(job: ReportRun) -> dict[str, Any]:
+    """Everything the finished parts hold, short: what the Section writer may build its tables from."""
+    target, record = job.parts["target"], job.parts["record"]
+    group = job.parts.get("group") or {}
+    analysis = job.parts.get("case_analysis") or {}
+    return {
+        "finished_parts": _digest(job),
+        "targets": [{k: t.get(k) for k in ("name", "cnic", "father", "phones", "addresses", "vehicles", "work", "firs",
+                                           "hotel_stays", "role_in_case")} for t in target["targets"]],
+        "earlier_cases": [{"target": t["name"], **{k: c.get(k) for k in (
+            "fir", "police_station", "offence", "role", "occurred", "registered", "place", "complainant", "outcome_detail",
+            "found_against", "summary", "doc")}} for t in record["targets"] for c in t["past_cases"]],
+        "hotel_stays": [{"target": t["name"], **h} for t in record["targets"] for h in t["hotels"]][:30],
+        "contacts": [{"target": c["target"], "contacts": [{k: r[k] for k in ("name", "cnic", "phones", "address", "how", "record")}
+                                                          for r in c["rows"]]} for c in group.get("contacts") or []],
+        "common_connections": [{k: c[k] for k in ("name", "cnic", "phones", "address", "tied_to", "record")}
+                               for c in group.get("common") or []],
+        "network_step_2": [{k: r.get(k) for k in ("name", "through", "how", "record")}
+                           for r in (job.parts.get("network") or {}).get("second") or []],
+        "reports_read": [{k: r.get(k) for k in ("doc", "title", "findings", "indicates")} for r in analysis.get("reports") or []],
+        "documents_uploaded": analysis.get("documents") or [],
+        "statements": [{"fir": x.get("fir"), "people": [{k: p.get(k) for k in ("person", "part", "date", "explained")}
+                                                        for p in x.get("people") or []]} for x in analysis.get("statements") or []],
+    }
+
+
+def _sections(job: ReportRun) -> dict[str, Any]:
+    """The headings and tables this case needs beyond the fixed sections (``team/section_writer``)."""
+    weighing = (job.parts.get("case_analysis") or {}).get("weighing") or {}
+    holds = {title: what for _, title, _, what in STRUCTURE if title != "Sections written for this case"}
+    holds.update({title: "" for title in FIXED_HEADINGS})
+    if job.parts.get("group"):
+        holds["How the targets are connected"] = next(what for key, _, _, what in STRUCTURE if key == "group")
+    # The analysis's own extra sections: never one that repeats a fixed section.
+    before = len(weighing.get("sections") or [])
+    if weighing.get("sections"):
+        weighing["sections"] = [x for x in weighing["sections"]
+                                if not any(section_writer.same_heading(x["heading"], f) for f in holds)]
+    fixed = [*holds, *(x["heading"] for x in weighing.get("sections") or [])]
+    out = section_writer.write(_section_material(job), fixed, job.case.known_ids(), job.llm, holds=holds,
+                               shown=_shown(job))
+    job.parts["added"] = out
+    if weighing.get("sections") and out["sections"]:
+        # ... nor one whose points the added tables already hold (the same vehicles, numbers, FIRs).
+        tables = " ".join(" ".join(" ".join(r) for r in s["rows"]) + " ".join(s["points"]) for s in out["sections"])
+        weighing["sections"] = [x for x in weighing["sections"] if not _covered(x["points"], tables)]
+    return {"sections": [s["heading"] for s in out["sections"]], "rows_dropped": out["dropped"],
+            "analysis_sections_dropped": before - len(weighing.get("sections") or [])}
+
+
+def _shown(job: ReportRun) -> dict[str, list[str]]:
+    """What the fixed sections print, item by item - each target, contact, tie, step of the story, exhibit and
+    finding of a report, earlier FIR, hotel stay, point of the analysis. Not the long narratives (an FIR's first
+    information, a statement in full): a table that gathers facts out of those is not a repeat."""
+    parts, analysis = job.parts, job.parts.get("case_analysis") or {}
+    group, weighing = parts.get("group") or {}, (analysis.get("weighing") or {})
+
+    def text(value: Any) -> str:
+        return json.dumps(value, ensure_ascii=False, default=str)
+
+    record = parts["record"]["targets"]
+    reports = []
+    for r in analysis.get("reports") or []:
+        head = text({k: r.get(k) for k in ("title", "lab", "report_no", "received", "issued", "submitted_by")})
+        each = [*(r.get("exhibits") or []), *(r.get("findings") or []), *(r.get("indicates") or [])]
+        # Each exhibit and finding, and the report as a whole (a point that joins two of its findings repeats it).
+        reports += [head + " " + text(x) for x in each] + [head + " " + text(each)]
+    return {
+        "The targets": [text({k: t.get(k) for k in ("name", "cnic", "father", "phones", "addresses", "vehicles", "firs")})
+                        for t in parts["target"]["targets"]] + [text(t) for t in group.get("targets") or []],
+        "How the targets are connected": [text(x) for x in [*(group.get("ties") or []), *(group.get("common") or []),
+                                                            *(group.get("same_person") or [])]]
+        + [text({"target": c["target"], **r}) for c in group.get("contacts") or [] for r in c["rows"]],
+        "The story of the case": [text([e.get("when"), e.get("what")]) for e in parts["case_story"]["events"]],
+        "People in this case": [text(p) for p in parts["case_story"]["people"]],
+        "Forensic and medical findings": reports,
+        "Weighing the evidence": [text(x) for e in weighing.get("explanations") or [] for x in [*e["for"], *e["against"]]]
+        + [weighing.get("view") or ""],
+        "Earlier cases": [text({k: c.get(k) for k in ("fir", "police_station", "offence", "occurred", "registered",
+                                                      "outcome_detail", "complainant")}) for t in record for c in t["past_cases"]],
+        "Hotel stays": [text(h) for t in record for h in t["hotels"]],
+    }
+
+
+def _covered(points: list[str], tables: str) -> bool:
+    """Do the added tables already hold most of these points (their numbers: plates, FIRs, phones, dates)?"""
+    numbered = [p for p in points if re.findall(r"\d{2,}", p)]
+    held = [p for p in numbered if all(n in tables for n in re.findall(r"[A-Z]*-?\d[\d/.-]*\d", p))]
+    return bool(numbered) and len(held) >= max(1, len(numbered) * 0.6)
+
+
+# -- P12 Group writer ---------------------------------------------------------------------
+
+
+def _graph_doc(case: Any) -> str | None:
+    """The board's link-analysis document - what the ties between people rest on."""
+    return next((d for d, doc in case.documents.items() if doc.get("kind") == "graph"), None)
+
+
+def _group(job: ReportRun) -> dict[str, Any]:
+    """Several targets searched together (a gang, a group of accused): how the records tie them to each other, the
+    people tied to two or more of them, and each one's contacts to investigate (``team/group_view``)."""
+    group = job.parts["group"] = group_view.build(job.case, job.net, job.scope)
+    if not group:
+        return {"targets": len(job.scope.get("targets") or []), "group": "one target - nothing to compare"}
+    return {"targets": len(group["targets"]), "ties": len(group["ties"]), "groups": len(group["groups"]),
+            "alone": len(group["alone"]), "same_person": len(group["same_person"]), "common": len(group["common"])}
 
 
 # -- P8 Record writer ---------------------------------------------------------------------
@@ -587,7 +715,7 @@ def _glance(job: ReportRun) -> dict[str, Any] | None:
     from sherlocks.linkgraph.offences import classify, labels
 
     sections = str(data.get("sections") or "").strip()
-    said = str(inc.get("offence") or "").strip()
+    said = str(inc.get("offence") or "").replace("_", " ").strip()         # "vehicle_theft" is the board's key
     # The offence in words, with its sections; what the officer called it only when it is a name for a crime
     # (a few words) - a whole message once landed here.
     offence = "; ".join(x for x in (
@@ -601,7 +729,8 @@ def _glance(job: ReportRun) -> dict[str, Any] | None:
         ("Offence", offence),
         ("Occurred", str(occurred or "")),
         ("FIR registered", f"{registered}{delay}" if registered else ""),
-        ("Place", str(data.get("place") or inc.get("place") or "")[:220]),
+        ("Place", str(data.get("place") or (inc.get("place") if len(str(inc.get("place") or "").split()) <= 15 else "")
+                      or "")[:220]),
         ("Complainant", "; ".join(n + status(n) for n, r in named if r == "complainant")),
         # The victim is the one whose part or status IS victim or deceased - not the father "of the deceased".
         ("Victim", "; ".join(f"{p['name']}" + (f" ({_flat(p['status'])})" if p["status"] != "not on record" else "")
@@ -707,7 +836,8 @@ def _analyst(job: ReportRun) -> dict[str, Any]:
         weighing = case_analyst.weigh(case, {
             "the_officer_said": [f["statement"].replace("Stated by the officer: ", "") for f in case.live_facts()
                                  if f.get("by") == "officer"][-12:],
-            "the_case": described(case), "everything_on_the_target": case_reader.read(case, job.net),
+            "the_case": described(case), "how_the_targets_connect": group_view.lines(job.parts.get("group"), _graph_doc(job.case)),
+            "everything_on_the_target": case_reader.read(case, job.net),
             "reports_of_this_case": [{"id": r["doc"], "report": r["title"], "findings": r["findings"], "indicates": r["indicates"],
                                       "not_stated": r["not_stated"]} for r in reads if r["doc"] in ours],
             "statements": [{"fir": s["fir"], "person": p["person"], "part": p["part"], "date": p["date"],
@@ -771,6 +901,12 @@ _SUMMARY_SYSTEM = ("You are a senior investigating officer writing the brief at 
                    "is not about this case or its people: other people's cases, tenancy witnesses, landlords, "
                    "guarantors. A SIM registered in another person's name is common in Pakistan (a relative's or a "
                    "friend's) - never a point, a lead or a step by itself. "
+                   "When several targets were searched together, HOW_THE_TARGETS_CONNECT says how the records of the "
+                   "search tie them (never cite the officer for these): "
+                   "give the strongest ties (who is accused together, family, a shared or consecutive number, the same "
+                   "address, the people tied to two or more targets) as points under what the evidence shows, the "
+                   "targets nothing ties to the others under what is missing, and the checks that would confirm a tie "
+                   "as next steps. "
                    "CASE_DECLARED tells you whether the officer has said what case is being investigated. When it is "
                    "false, ASSUME NOTHING about that case: leave `established` and `stands` empty and do not call the "
                    "target an accused or a suspect of anything current. "
@@ -792,6 +928,7 @@ def _digest(job: ReportRun) -> dict[str, Any]:
         "case_declared": known, "the_new_case": the_new_case(job.case) if known else "not described by the officer yet",
         "story_of_the_case": {"in_short": story["in_short"], "events": story["events"][:24]},
         "people_in_this_case": story["people"] or job.scope["people"][:16],
+        "how_the_targets_connect": group_view.lines(job.parts.get("group"), _graph_doc(job.case)),
         "the_target": [{"name": t["name"], "cnic": t["cnic"], "role_in_case": t["role_in_case"],
                         "status_in_case": t["status_in_case"], "where_at_the_time": t["presence"][:4],
                         "own_earlier_cases": [f"FIR {r['fir']} {r['offence']} ({r['role']}, {r['status']})" for r in t["firs"][:6]]}
@@ -1013,7 +1150,7 @@ def _summary(job: ReportRun) -> dict[str, Any]:
     _keep_to_this_case(job)
     out = ask(job.llm, _Summary, dumps({"finished_parts": _digest(job),
                                         "fix_these_problems": job.send_back or None}),
-              system=_SUMMARY_SYSTEM, kind="report_summary", version="v2", max_tokens=2200)
+              system=_SUMMARY_SYSTEM, kind="report_summary", version="v3", max_tokens=2200)
     if out is None:
         job.summary, job.summary_by = _from_parts(job), "templates"
     else:
@@ -1150,7 +1287,7 @@ def _build(job: ReportRun) -> dict[str, Any]:
               "executive_summary": summary_text(job.summary), "summary_by": job.summary_by,
               "model": getattr(job.llm, "model", None) if job.summary_by == "model" else None,
               "built_without_model": job.summary_by != "model", "checked": job.problems,
-              "report_board_version": job.version, "team": "P1-P11", "build": REPORT_BUILD}
+              "report_board_version": job.version, "team": "P1-P13", "build": REPORT_BUILD}
     with case.acting("P1 Report editor"):
         case.set_report(report, "ready")
     report["saved_at_version"] = case.version
@@ -1167,9 +1304,11 @@ def build() -> Any:
     g.add_node("analysis", _member("P4 Analysis writer", _analysis))
     g.add_node("editor", _member("P1 Report editor", _editor))
     g.add_node("target", _member("P2 Target writer", _target))
+    g.add_node("group", _member("P12 Group writer", _group))
     g.add_node("record", _member("P8 Record writer", _record))
     g.add_node("story", _member("P7 Story writer", _case_story))
     g.add_node("analyst", _member("P10 Case analyst", _analyst))
+    g.add_node("sections", _member("P13 Section writer", _sections))
     g.add_node("summary", _member("P5 Summary writer", _summary))
     g.add_node("check", _member("P6 Report checker", _check))
     g.add_node("build", _member("P1 Report editor", _build))
@@ -1179,10 +1318,12 @@ def build() -> Any:
         g.add_edge("scope", writer)
     g.add_edge(["evidence", "statements", "analysis"], "editor")
     g.add_edge("editor", "target")
-    g.add_edge("target", "record")
+    g.add_edge("target", "group")
+    g.add_edge("group", "record")
     g.add_edge("record", "story")
     g.add_edge("story", "analyst")
-    g.add_edge("analyst", "summary")
+    g.add_edge("analyst", "sections")
+    g.add_edge("sections", "summary")
     g.add_edge("summary", "check")
     g.add_conditional_edges("check", _again, {"summary": "summary", "build": "build"})
     g.add_edge("build", END)

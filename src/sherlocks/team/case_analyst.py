@@ -254,7 +254,11 @@ _WEIGH_SYSTEM = (
     "Documents the officer uploaded (an inquiry report, a medical or forensic report, a statement, a memo, an audit, "
     "bank records) are "
     "records of the case too: use their dated steps, findings and leads; an inquiry's conclusion is that inquiry's "
-    "finding - say so, and weigh the evidence it rests on. Cite the record ids in [brackets] where a point rests "
+    "finding - say so, and weigh the evidence it rests on. When several targets were searched together, "
+    "HOW_THE_TARGETS_CONNECT says how the records tie them to each other (accused together, family, the same or "
+    "consecutive phone numbers, the same address, people tied to two or more of them, a name on a record that may be "
+    "a target): weigh what those ties show and do not show, and make confirming the unconfirmed ones (a name with no "
+    "CNIC, a number in sequence) and checking the common connections ACTION lines. Cite the record ids in [brackets] where a point rests "
     "on one. Never use the words "
     "'inferred' or 'corroborated' - say what the record shows. No view on anyone's guilt as a fact: a view is a view.\n"
     "Write ONLY lines that start with these labels, in this order:\n"
@@ -339,7 +343,7 @@ def weigh(case: Any, material: dict[str, Any], llm: Any = None) -> dict[str, Any
         return None
     try:
         text = llm.generate_text(prompt=json.dumps(material, ensure_ascii=False, default=str)[:90000],
-                                 system=_WEIGH_SYSTEM, cache_kind="report_weighing", prompt_version="v8", max_tokens=4500)
+                                 system=_WEIGH_SYSTEM, cache_kind="report_weighing", prompt_version="v9", max_tokens=4500)
     except Exception as exc:  # noqa: BLE001 - the report goes out without it
         logger.info("Weighing the evidence failed: %s", exc)
         return None
@@ -353,6 +357,7 @@ def weigh(case: Any, material: dict[str, Any], llm: Any = None) -> dict[str, Any
         for key in ("for", "against"):
             e[key] = once(e[key])
     got["measured"] = measured(got, material)
+    got["gaps"], got["answered"] = still_open(got["gaps"], material, llm)
     return got
 
 
@@ -401,6 +406,54 @@ _MEASURE = re.compile(r"\d[\d,]*(?:\.\d+)?\s*(?:mm|cm|km|m|kg|g|mg|ml|l|%|percen
 _WORD = re.compile(r"[a-z]{4,}")
 _COMMON = {"report", "found", "shows", "with", "from", "that", "this", "which", "were", "have", "been", "approximately",
            "measuring", "about", "article", "item", "records", "record"}
+
+
+_OPEN_SYSTEM = (
+    "You check a list of questions a case report calls still open against the case material. For each question, "
+    "look through the whole material - the FIRs' own words, the statements, the reports, the documents, the story, "
+    "the officer's words: does it already answer the question? Write one line per question, nothing else:\n"
+    "Q<n>: OPEN - the material does not answer it\n"
+    "Q<n>: ANSWERED | the answer, in the material's own words (names, dates, numbers exactly), ending with the record "
+    "id in [brackets] where one is given\n"
+    "Q<n>: PARTLY | what the material gives, with the record id | what is still missing\n"
+    "Answer only from the material, never from what usually happens. When unsure, OPEN. " + TERMS)
+
+
+def still_open(gaps: list[str], material: dict[str, Any], llm: Any) -> tuple[list[str], list[dict[str, str]]]:
+    """The questions the material does not answer yet, and the ones it does: ``(open, [{question, answer}])``.
+    A question the records answer is not "open"; one they answer in part says what they give and what is missing.
+    An answer whose numbers or names are not in the material is not taken: the question stays open."""
+    from sherlocks.team.section_writer import _haystack, grounded
+
+    if not gaps or llm is None:
+        return gaps, []
+    try:
+        text = llm.generate_text(prompt=json.dumps({"questions": {f"Q{n}": g for n, g in enumerate(gaps, 1)},
+                                                    "case_material": material}, ensure_ascii=False, default=str)[:90000],
+                                 system=_OPEN_SYSTEM, cache_kind="report_open_questions", prompt_version="v1",
+                                 max_tokens=1200)
+    except Exception as exc:  # noqa: BLE001 - unchecked, the questions stand as written
+        logger.info("Checking the open questions failed: %s", exc)
+        return gaps, []
+    hay = _haystack(material)
+    still, answered = [], []
+    said = {int(m.group(1)): (m.group(2).upper(), m.group(3).strip())
+            for m in re.finditer(r"Q[ \t]*(\d+)[ \t]*[:.-][ \t]*\**(OPEN|ANSWERED|PARTLY)\**[ \t]*\|?[ \t]*(.*)", text or "",
+                            re.IGNORECASE)}
+    for n, question in enumerate(gaps, 1):
+        verdict, rest = said.get(n, ("OPEN", ""))
+        parts = [x.strip() for x in rest.split("|")]
+        answer = plain(parts[0]) if parts and parts[0] else ""
+        if verdict == "ANSWERED" and answer and grounded(answer, hay):
+            answered.append({"question": question, "answer": answer})
+        elif verdict == "PARTLY" and answer and grounded(answer, hay):
+            missing = plain(parts[1]) if len(parts) > 1 and parts[1] else ""
+            answer = answer if len(answer) <= 240 else answer[:237].rsplit(" ", 1)[0] + "..."
+            missing = missing if len(missing) <= 160 else missing[:157].rsplit(" ", 1)[0] + "..."
+            still.append(f"{question} (the records give: {answer}" + (f"; still missing: {missing})" if missing else ")"))
+        else:
+            still.append(question)
+    return still, answered
 
 
 def measured(got: dict[str, Any], material: dict[str, Any]) -> list[str]:

@@ -16,6 +16,7 @@ import io
 import json
 import logging
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -447,7 +448,8 @@ def two_step_png(network: dict[str, Any]) -> bytes | None:
 
 
 def render(report: dict[str, Any], case: CaseFile, graph: dict[str, Any], images: Any = None) -> bytes:
-    pdf = _Pdf(report.get("subject") or "")
+    many = len(report.get("targets") or []) > 3
+    pdf = _Pdf(f"{len(report['targets'])} targets searched together" if many else report.get("subject") or "")
     pdf.set_title(f"Case report - {report.get('subject')}")
     pdf.set_author("Sherlocks")
     _cover(pdf, report, images)
@@ -761,8 +763,11 @@ def _brief_report(pdf: _Pdf, report: dict[str, Any], case: CaseFile) -> None:
     victim = any(re.search(r"\b(victim|deceased)\b", " ".join((str(t.get("role_in_case") or ""), str(t.get("status_in_case") or ""),
                                                              part_of(t["name"]))), re.IGNORECASE)
                  for t in target.get("targets") or [])
-    pdf.section(n, "The victim" if glance and victim else "The target")
-    for t in target.get("targets") or []:
+    group = parts.get("group") or {}
+    pdf.section(n, "The victim" if glance and victim else ("The targets" if group else "The target"))
+    if group:
+        _targets_table(pdf, group, target, part_of)
+    for t in [] if group else target.get("targets") or []:
         _sub(pdf, t["name"])
         role = " - ".join(x for x in (t.get("role_in_case"), t.get("status_in_case")) if x) or (
             _plainly(part_of(t["name"])) if glance else "")
@@ -788,8 +793,19 @@ def _brief_report(pdf: _Pdf, report: dict[str, Any], case: CaseFile) -> None:
         _points(pdf, t.get("presence") or [("Nothing on record places them anywhere in the incident window. A phone "
                                             "on a tower or a hotel record is not the person.")],
                 colour=INK if t.get("presence") else GREY)
+    if group and glance:
+        here = [t for t in target.get("targets") or [] if t.get("presence")]
+        _sub(pdf, "Where the records put them at the time")
+        if here:
+            for t in here:
+                _points(pdf, [f"{t['name']}: {x}" for x in t["presence"]])
+        else:
+            _points(pdf, [("Nothing on record places any target anywhere in the incident window. A phone on a tower "
+                           "or a hotel record is not the person.")], colour=GREY)
+    if group:
+        n = _group_section(pdf, n, group)
     circle = target.get("circle") or []
-    if glance and circle:
+    if glance and circle and not group:
         _sub(pdf, "Close circle")
         pdf.para("Family, accused together, the same vehicle, travelling together, phone contact - as the records state. "
                  "Tenancy witnesses, landlords, guarantors and SIM owners are not listed.", size=8, colour=GREY)
@@ -798,9 +814,18 @@ def _brief_report(pdf: _Pdf, report: dict[str, Any], case: CaseFile) -> None:
         _table(pdf, ["Person", "Tie", "How the record states it", "Source", "Criminal record"],
                [[c["name"], kinds.get(c["kind"], c["kind"]), _plainly(c["how"]), c["source"], "yes" if c["criminal"] else "-"]
                 for c in circle], (34, 24, 74, 26, 20))
+    added = (parts.get("added") or {}).get("sections") or []
+
+    def place(n: int, where: str) -> int:              # the sections the Section writer added for this case
+        return _added_sections(pdf, n, [s for s in added if s.get("place") == where], src)
+
+    n = place(n, "targets")
     if not glance:
         n = _network_section(pdf, n, parts.get("network") or {})
+        n = place(n, "network")
         n = _record_sections(pdf, n, record, said=said, reads=reads)
+        n = place(n, "record")
+        n = place(n, "story")
     else:
         # 4 - the story of the case
         n += 1
@@ -809,14 +834,16 @@ def _brief_report(pdf: _Pdf, report: dict[str, Any], case: CaseFile) -> None:
         if story.get("events"):
             # The source column names the record: the same names are not repeated at the end of each step.
             _table(pdf, ["When", "What happened", "Source"],
-                   [[e["when"], src.text(_uncited(e["what"])), src.labels(e["sources"])]
+                   [[_day(e["when"]), src.text(_uncited(e["what"])), src.labels(e["sources"])]
                     for e in story["events"]], (30, 108, 40))
         else:
             _points(pdf, [("No record of this case is on the board yet: upload the FIR, the case diaries and the "
                            "statements, or tell Sherlock what happened.")], colour=GREY)
+        n = place(n, "story")
         # 5 - forensic and medical findings
+        filed_twice = {c for r in analysis.get("reports") or [] for c in r.get("copies") or []}
         n = _forensic_section(pdf, n, [reads.get(r["id"]) or {"doc": r["id"], "title": r["title"], "findings": r["found"]}
-                                       for r in mine.get("reports") or []], mine, src)
+                                       for r in mine.get("reports") or [] if r["id"] not in filed_twice], mine, src)
         # 5b - the documents the officer uploaded (an inquiry report, a post-mortem, a memo), read in full
         n = _documents_section(pdf, n, analysis.get("documents") or [], src)
         # 6 - weighing the evidence
@@ -864,10 +891,11 @@ def _brief_report(pdf: _Pdf, report: dict[str, Any], case: CaseFile) -> None:
             _table(pdf, ["Person", "How the records tie them to this case", "What to check"],
                    [[x["name"], src.text(x["tie"]), src.text(x["check"])] for x in weighing["persons"]], (34, 80, 64))
         # 9 - the network
-        n = _network_section(pdf, n, parts.get("network") or {})
+        n = _network_section(pdf, n, parts.get("network") or {}, many=bool(group))
+        n = place(n, "network")
         # 10 - the target's own record: earlier cases, hotel stays, tenancy, other reports and statements on them
         n += 1
-        pdf.section(n, "Earlier cases of the " + ("victim" if victim else "target"))
+        pdf.section(n, "Earlier cases of the " + ("victim" if victim else "targets" if group else "target"))
         for t in record.get("targets") or []:
             if len(record.get("targets") or []) > 1:
                 _sub(pdf, t["name"])
@@ -875,6 +903,7 @@ def _brief_report(pdf: _Pdf, report: dict[str, Any], case: CaseFile) -> None:
         copies = {c for r in analysis.get("reports") or [] for c in r.get("copies") or []}      # a report filed twice
         n = _more_record(pdf, n, record, skip_reports=(set(reads) & {r["id"] for r in mine.get("reports") or []}) | copies,
                          said=[x for x in said if not x.get("this_case")], reads=reads)
+        n = place(n, "record")
         # 11 - leads that rest on this case's records
         if not file and mine.get("leads"):
             n += 1
@@ -883,14 +912,24 @@ def _brief_report(pdf: _Pdf, report: dict[str, Any], case: CaseFile) -> None:
             _table(pdf, ["What was noticed", "Why it could matter", "Next step", "Status"],
                    [[src.text(k["hint"])[:220], src.text(k["why"]), src.text(k["next_step"]), k["status"]]
                     for k in mine["leads"]], (66, 48, 46, 18))
+    n = place(n, "end")
     # 12 - the case papers: which a case of this kind needs, which are on the board
     if glance and (analysis.get("papers") or {}).get("papers"):
         n = _papers_section(pdf, n, analysis["papers"])
     # 13 - questions still open, 14 - the action plan, then Sherlock's own sections
-    if glance and weighing.get("gaps"):
+    if glance and (weighing.get("gaps") or weighing.get("answered")):
         n += 1
         pdf.section(n, "Questions still open")
-        _numbered(pdf, [src.text(g) for g in weighing["gaps"]])
+        if weighing.get("gaps"):
+            _numbered(pdf, [src.text(g) for g in weighing["gaps"]])
+        else:
+            _points(pdf, ["Every question the analysis raised is answered by the records below."], colour=GREY)
+        if weighing.get("answered"):
+            _sub(pdf, "Already answered by the records")
+            pdf.para("Questions checked against the records before this report was written: the records answer them, "
+                     "so they are not open. Check the answer in the record named.", size=8, colour=GREY)
+            _table(pdf, ["Question", "What the records say"],
+                   [[src.text(x["question"]), src.text(x["answer"])] for x in weighing["answered"]], (70, 108))
     n += 1
     pdf.section(n, "Action plan for the investigating officer" if glance and weighing.get("actions")
                 else "Next steps for the investigating officer")
@@ -914,7 +953,7 @@ def _brief_report(pdf: _Pdf, report: dict[str, Any], case: CaseFile) -> None:
     pdf.add_page()
     pdf.para("ANNEX", size=14, style="B", colour=NAVY)
     n += 1
-    pdf.section(n, "Police systems checked for the target")
+    pdf.section(n, "Police systems checked for the targets" if group else "Police systems checked for the target")
     for t in target.get("targets") or []:
         if len(target.get("targets") or []) > 1:
             _sub(pdf, t["name"])
@@ -943,14 +982,139 @@ def _brief_report(pdf: _Pdf, report: dict[str, Any], case: CaseFile) -> None:
         pdf.para("No case document was read.", colour=GREY)
 
 
-def _network_section(pdf: _Pdf, n: int, network: dict[str, Any]) -> int:
+def _added_sections(pdf: _Pdf, n: int, sections: list[dict[str, Any]], src: Any) -> int:
+    """Sections the Section writer chose for this case: a heading, why it is there, a table and/or points.
+    Column widths follow what the columns hold."""
+    for s in sections:
+        n += 1
+        pdf.section(n, s["heading"][:80])
+        pdf.para("Added by Sherlock for this case" + (f": {s['why']}" if s.get("why") else ".")
+                 + " Every row is taken from the records named; check it there before acting on it.",
+                 size=8, colour=GREY, style="I")
+        columns, rows = s.get("columns") or [], s.get("rows") or []
+        if columns and rows:
+            shown = [[src.text(c) for c in r[:len(columns)]] for r in rows]       # sized by what is printed
+            longest = [max([len(str(c))] + [len(str(r[i])) for r in shown if i < len(r)]) for i, c in enumerate(columns)]
+            word = [max(len(w) for x in [c, *(r[i] for r in shown if i < len(r))] for w in [*str(x).split(), ""])
+                    for i, c in enumerate(columns)]
+            share = [max(min(max(x, 12), 60), w + 3) for x, w in zip(longest, word, strict=True)]
+            total = pdf.w - 32
+            widths = [total * x / sum(share) for x in share]
+            _table(pdf, columns, shown, tuple(widths))
+        if s.get("points"):
+            _points(pdf, [src.text(x) for x in s["points"]])
+    return n
+
+
+def _targets_table(pdf: _Pdf, group: dict[str, Any], target: dict[str, Any], part_of: Callable[[str], str]) -> None:
+    """Several targets side by side: who each is, how to reach them, their record."""
+    parts = {t["name"]: " - ".join(x for x in (t.get("role_in_case"), t.get("status_in_case")) if x) or _plainly(part_of(t["name"]))
+             for t in target.get("targets") or []}
+    pdf.para("Each target as the records hold them: identity, every phone and address on record, and their criminal "
+             "record. 'Group' is the group the ties below join them into.", size=8.5, colour=GREY)
+    _table(pdf, ["Target", "CNIC / father", "Phones", "Addresses", "Criminal record", "Group"],
+           [[t["name"] + (f"\n{parts.get(t['name'])}" if parts.get(t["name"]) else ""),
+             f"{t['cnic']}\nfather: {t['father']}", "\n".join(t["phones"]) or "-", "\n".join(t["addresses"]) or "-",
+             t["record"], str(t["group"]) if t.get("group") else "none"] for t in group["targets"]],
+           (30, 28, 26, 52, 30, 12))
+    owned = [f"{p['number']} ({t['name']}) is registered to {p['registered_to']}" for t in target.get("targets") or []
+             for p in t.get("phones") or [] if p.get("registered_to")]
+    if owned:
+        pdf.para("SIMs registered on another person's CNIC (common - a relative's or a friend's - and not a lead by "
+                 "itself): " + "; ".join(owned) + ".", size=7.5, colour=GREY, style="I")
+
+
+def _day(when: Any) -> str:
+    """2026-07-28T04:00:00 -> 28-07-2026 04:00; anything else as it is."""
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?", str(when or ""))
+    if not m:
+        return str(when or "")
+    clock = f" {m.group(4)}:{m.group(5)}" if m.group(4) and f"{m.group(4)}:{m.group(5)}" != "00:00" else ""
+    return f"{m.group(3)}-{m.group(2)}-{m.group(1)}{clock}"
+
+
+def _nocharges(text: Any) -> str:
+    """A tie without its charge list: "Co-accused in FIR 99/25" - the charges are in the record section."""
+    return re.sub(r"\s*\(charges:.*?\)", "", str(text or ""))
+
+
+_TIE_KIND = {"stated": "stated by a record", "matched": "found by comparing records", "common contact": "a common contact",
+             "same person?": "if the same person"}
+
+
+def _group_section(pdf: _Pdf, n: int, group: dict[str, Any]) -> int:
+    """Several targets searched together: the groups the records tie them into, each tie, names on a record that
+    may be a target, the people tied to two or more targets, and each target's contacts to investigate."""
+    n += 1
+    pdf.section(n, "How the targets are connected")
+    pdf.para(f"{len(group['targets'])} targets were searched together. This is how the records tie them to each other "
+             "and who connects them - a reason to investigate, not a finding against anyone.", size=8.5, colour=GREY)
+    _sub(pdf, "The groups the records tie together")
+    lines = [f"Group {i + 1} - {', '.join(g['members'])}: " + "; ".join(g["why"]) for i, g in enumerate(group["groups"])]
+    if group.get("alone"):
+        lines.append(f"Nothing on record ties these to the other targets: {', '.join(group['alone'])}. Check their "
+                     "call records against the others' numbers, and their addresses and associates.")
+    _points(pdf, lines or ["The records tie none of the targets to another."])
+    if group.get("bridges"):
+        _points(pdf, group["bridges"], colour=(176, 96, 16))
+    if group.get("ties"):
+        _sub(pdf, "Ties between the targets")
+        same: dict[tuple[str, ...], dict[str, Any]] = {}
+        for r in group["ties"]:          # the pairs tied the same way, in one row: "co-accused in FIR 99/25" once
+            key = (*(_nocharges(h) for h in r["how"] if not h.startswith("the same complainant")), "|", *r["kinds"])
+            row = same.setdefault(key, {"who": [], "how": [_nocharges(h) for h in r["how"]], "kinds": r["kinds"]})
+            row["who"] += [x for x in (r["a"], r["b"]) if x not in row["who"]]
+            row["how"] += [_nocharges(h) for h in r["how"] if _nocharges(h) not in row["how"]]
+        _table(pdf, ["Targets", "How the records tie them", "Found as"],
+               [["\n".join(r["who"]), "\n".join(r["how"]), ", ".join(_TIE_KIND.get(k, k) for k in r["kinds"])]
+                for r in same.values()], (44, 104, 30))
+    if group.get("same_person"):
+        _sub(pdf, "Names on a record that may be a target")
+        pdf.para("A person a record names without a CNIC, whose name sounds the same as a target's. Confirm from the "
+                 "record's own particulars (father's name, address, CNIC, photo) before treating them as the same "
+                 "person.", size=8, colour=GREY)
+        _table(pdf, ["Target", "Name on the record", "CNIC on the record", "Where", "Would tie them to"],
+               [[s["target"], s["name_in_record"], s["cnic_in_record"], "; ".join(s["where"]), ", ".join(s["tied_to"])]
+                for s in group["same_person"]], (32, 34, 26, 46, 40))
+    if group.get("common"):
+        _sub(pdf, "Common connections - people tied to two or more targets")
+        pdf.para("Directly, or one step on through a contact of the target. Check each: who they are to the targets, "
+                 "their numbers against the targets' call records, their address.", size=8, colour=GREY)
+        _table(pdf, ["Person", "CNIC", "Phones", "Address", "Tied to, and how", "Criminal record"],
+               [[c["name"], c["cnic"], "\n".join(c["phones"]) or "-", c["address"] or "-",
+                 "\n".join(f"{x['target']}: {_nocharges(x['how'])}" for x in c["tied_to"]),
+                 c["record"] or "-"] for c in group["common"]], (28, 26, 24, 30, 46, 24))
+    _sub(pdf, "Contacts of each target to investigate")
+    pdf.para("Everyone the records tie to each target directly, with their numbers and address - those tied to other "
+             "targets and those with a criminal record first. A SIM owner, a tenancy witness or a guarantor is listed "
+             "for contact, not as a lead.", size=8, colour=GREY)
+    none = []
+    for c in group["contacts"]:
+        if not c["rows"]:
+            none.append(c["target"])
+            continue
+        _label(pdf, f"{len(c['rows']) + c['more']} contact(s) of {c['target']}", indent=16)
+        _table(pdf, ["Person", "CNIC", "Phones", "Address", "How connected", "Criminal record"],
+               [[r["name"], r["cnic"], "\n".join(r["phones"]) or "-", r["address"] or "-",
+                 _nocharges(r["how"]) + ("" if r["stated"] else " (found by comparing records)")
+                 + (f"\nAlso tied to: {', '.join(r['also_tied_to'])}" if r["also_tied_to"] else ""),
+                 r["record"] or "-"] for r in c["rows"]], (30, 26, 24, 34, 40, 24))
+        if c["more"]:
+            pdf.para(f"{c['more']} more contact(s) of {c['target']} on the case board.", size=7.5, colour=GREY, style="I")
+    if none:
+        _points(pdf, [f"No contact on record (outside the targets): {', '.join(none)}."], colour=GREY)
+    return n
+
+
+def _network_section(pdf: _Pdf, n: int, network: dict[str, Any], many: bool = False) -> int:
     """The target's network up to two steps: the picture, then who is connected, how and through whom."""
     first, second = network.get("first") or [], network.get("second") or []
     if not first:
         return n
     n += 1
     pdf.add_page()
-    pdf.section(n, "The target's network: step 1 and step 2" if second else "The target's network: step 1")
+    whose = "The targets' network" if many else "The target's network"
+    pdf.section(n, f"{whose}: step 1 and step 2" if second else f"{whose}: step 1")
     pdf.para(f"Ring 1 - step 1 ({len(first)}): everyone the records tie to the target directly. " + (
         f"Ring 2 - step 2 ({len(second)}): one step further, only the people who matter - involved in this case, with a "
         "criminal record, or tied to two or more of the direct connections. " if second else
@@ -987,10 +1151,15 @@ def _network_section(pdf: _Pdf, n: int, network: dict[str, Any]) -> int:
                  f"through them: {', '.join(x['people'])}."
                  + (f" The other {others} are tied to the target in other ways too, or are named in this case, and "
                     "are shown below." if others > 0 else ""), size=8.5)
-    _sub(pdf, f"Step 1 - direct connections ({len(first)})")
-    _table(pdf, ["Person", "Connected to", "How the records connect them", "In this case", "Criminal record"],
-           [[r["name"], ", ".join(r["to"]), how(r), r.get("part") or "-", r.get("record") or ("yes" if r["criminal"] else "-")]
-            for r in first], (32, 26, 62, 20, 38))
+    if many:
+        # Each target's direct contacts, with their numbers and address, are in "How the targets are connected".
+        pdf.para(f"Step 1 - the {len(first)} direct connections drawn above are listed, with their CNIC, phones and "
+                 "address, under each target in 'How the targets are connected'.", size=8.5)
+    else:
+        _sub(pdf, f"Step 1 - direct connections ({len(first)})")
+        _table(pdf, ["Person", "Connected to", "How the records connect them", "In this case", "Criminal record"],
+               [[r["name"], ", ".join(r["to"]), how(r), r.get("part") or "-", r.get("record") or ("yes" if r["criminal"] else "-")]
+                for r in first], (32, 26, 62, 20, 38))
     if second:
         _sub(pdf, f"Step 2 - one step further, the people who matter ({len(second)})")
         _table(pdf, ["Person", "Reached through", "How the records connect them", "In this case", "Criminal record"],
@@ -1493,7 +1662,9 @@ def _cover(pdf: _Pdf, report: dict[str, Any], images: Any) -> None:
     pdf.cell(0, 12, pdf.t(report.get("title") or "Case Intelligence Report"))
     pdf.set_xy(16, 45)
     pdf.font(13, "", (214, 222, 235))
-    pdf.multi_cell(pdf.w - 32, 7, pdf.t(report.get("subject") or ""), new_x="LMARGIN", new_y="NEXT")
+    many = report.get("targets") or []
+    pdf.multi_cell(pdf.w - 32, 7, pdf.t(f"{len(many)} targets searched together" if len(many) > 3
+                                        else report.get("subject") or ""), new_x="LMARGIN", new_y="NEXT")
     pdf.set_xy(16, 92)
     pdf.badge("CONFIDENTIAL — FOR OFFICIAL USE ONLY", RED, x=16, y=92)
     pdf.set_xy(16, 99)
@@ -1539,6 +1710,14 @@ def _cover(pdf: _Pdf, report: dict[str, Any], images: Any) -> None:
                           if p["name"] == target.get("name") or _same(p["name"], target.get("name"))), "-")),
                 ("Case position", glance.get("Case position") or "-"),
                 ("Investigating officer", glance.get("Investigating officer") or "-")]
+        group = parts.get("group") or {}
+        if group.get("targets"):
+            # Several targets: how many, and what the records join them into.
+            joined = [f"{len(g['members'])} targets" for g in group.get("groups") or []]
+            if group.get("alone"):
+                joined.append(f"{len(group['alone'])} with no tie")
+            rows[2] = ("Targets", f"{len(group['targets'])} searched together")
+            rows.insert(3, ("Groups the records tie together", "; ".join(joined) or "none"))
         record = ((parts.get("record") or {}).get("targets") or [{}])[0]
         if not glance and record:
             # Before the case is described the cover gives the target's record.
