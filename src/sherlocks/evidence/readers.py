@@ -148,14 +148,22 @@ _READER_SYSTEM = (
 )
 
 
-def ai_text(kind: str, doc: dict[str, Any]) -> str:
-    """The part of a document worth the model's reading."""
+FREE_LINES = ("First information", "Case diary", "Investigation result", "Offence", "Place")
+
+
+def free_text(kind: str, doc: dict[str, Any]) -> str:
+    """The part of a document worth the model's reading, whole: an FIR file's own words (the first information,
+    every case diary, the investigation result) - its header is facts by rule already; any other document all."""
     text = doc.get("text") or ""
     if kind == "fir":
-        keep = [line for line in text.splitlines()
-                if line.startswith(("First information", "Case diary", "Investigation result", "Offence", "Place"))]
+        keep = [line for line in text.splitlines() if line.startswith(FREE_LINES)]
         text = "\n".join(keep) or text
-    return text[:_AI_TEXT]
+    return text
+
+
+def ai_text(kind: str, doc: dict[str, Any]) -> str:
+    """What the one-call reader reads (a model with no plain-text calls): the free text, cut."""
+    return free_text(kind, doc)[:_AI_TEXT]
 
 
 def ai_read(case: CaseFile, doc_id: str, llm: Any) -> dict[str, Any]:
@@ -240,7 +248,7 @@ def link_people(case: CaseFile, doc_id: str, graph: dict[str, Any]) -> list[dict
     low = f" {name_key(text)} "
     joined = {}
     words = low.split()
-    for size in (2, 3, 4, 5):                      # "میر جواد علی" is "میرجواد علی": the same name
+    for size in (2, 3, 4, 5):                      # "میر دانش علی" is "میردانش علی": the same name
         for i in range(len(words) - size + 1):
             joined.setdefault("".join(words[i:i + size]), " ".join(words[i:i + size]))
     for key, pid in names.items():

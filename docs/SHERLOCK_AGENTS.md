@@ -145,15 +145,15 @@ from a message read as a question - a wrong one hides FIRs from the answer.
 **Who a document is about.** `readers.link_people` ties a document to a person by CNIC,
 phone, plate or name. A phone that is a target's links the target only (a SIM in a
 relative's or a stranger's name is not tied by it - before, one holder was kept at random);
-a name written as one word or two ("میرجواد" / "میر جواد") is the same name; a laboratory or
+a name written as one word or two ("میردانش" / "میر دانش") is the same name; a laboratory or
 medical report is about whom its FIR's file names by an identifier. Boards from before this
 are pruned (`prune_phone_links`) and linked again once, when opened. An FIR file that names
 a person by CNIC or phone is one of that person's FIRs (`case_queries._firs`, "named in the
 FIR file"). O1 is given the reports on the people asked about up front (`reports_on_them`,
 scanned page-header lines left out) and this case's FIR text; the Answer checker reads
 those first, so a true finding is not sent back as unsupported. `network.resolve`: a match
-on the distinctive words of a name must carry the officer's other words too ("Mir Jawad" is
-not Mir Shakeel because "Jawad" is a common name), and sound keys squeeze a doubled letter. An Urdu name is also
+on the distinctive words of a name must carry the officer's other words too ("Mir Danish" is
+not Mir Shakeel because "Danish" is a common name), and sound keys squeeze a doubled letter. An Urdu name is also
 tried with its Arabic article silent ("Abdur Rehman" is عبدالرحمن, "Shamsuddin" شمس الدین).
 
 **O4 Case reader - the board read whole before any answer** (`team/case_reader.py`). An
@@ -327,6 +327,56 @@ against the whole case material: answered (moved to "Already answered by the rec
 and its record), partly (the question stays, with what the records give and what is missing) or open.
 An answer whose numbers or names are not in the material is not taken.
 
+**Which case, again, and the laboratory asked again** (`team/case_rematch.py`, from the case team's agenda). The
+Case matcher can only compare the officer's words with the FIRs read so far: a FIR file read a minute later (the
+kidnapping FIR of a person now found dead) was never compared, and the case stayed "a new matter". So whenever a FIR
+file arrives that the matcher has not seen and the case is tied to no FIR, the officer's own description is matched
+again; a match ties the case to that FIR and the officer is told in the chat. A laboratory system that answered with
+an error (HTTP 500, a timeout) is asked again - three tries, five minutes apart - and the officer is told when the
+reports come in.
+
+**CDRs: the archive and the CDR analyst.**
+
+* **CDR archive** (`evidence/cdr_archive.py`): the iCOP archive of every CDR officers have already
+  extracted, searched by a mobile number wherever it appears - the subscriber (A party) or a contact
+  (B party). Each file found is downloaded (only from the archive's own host) and read like an upload,
+  so the CDR team analyses it and its findings become facts with their rows; the document records the
+  archive's details (whose CDR, A or B party, FIR, who extracted it), is filed under the person whose
+  number it is, and is never read twice. **Searched automatically** (the case team's agenda, in a
+  thread of its own): every number of every target, then every number of each person tied directly to
+  a target - never a police officer there on duty, nor the complainant or a witness of an FIR in which the
+  target is accused (the other side); in the target's own FIRs (a victim's, a complainant's) the family who filed
+  or witnessed are searched. All numbers are searched first, then each CDR found is
+  read; a number that joins the case later is searched on the next sweep. **Live in the chat**: one line
+  for the search (how many numbers of whom, how far, whose CDR was found), one line a CDR found ("found
+  the CDR of X - processing", animated, then "done" with its findings). What was searched and found is
+  written on the board (`Search of the iCOP CDR archive`: one fact a CDR found, one a person with none).
+  In chat the toolbox's `cdr_archive` searches any number of the case; files found are read in the
+  background. Every search goes through the guard and is logged; archive searches have limits of their
+  own (`archive_searches_per_case` 300, `archive_searches_per_hour` 200), apart from the NADRA, SIM and
+  CRO calls. Settings: `ICOP_CDR_ARCHIVE_URL`, `ICOP_CDR_ARCHIVE_KEY` in `.env`.
+* **R8 CDR analyst** (`team/cdr_analyst.py`): any question about the call records is COMPUTED, never
+  read. The model is given what the records are - the CDR files on the board, the fields of a record,
+  the case's numbers and the fixed analytics - never the records, and writes a few lines of Python.
+  The code runs over every record of every CDR on the board in the **sandbox**
+  (`evidence/cdr_sandbox.py`): parsed and checked first (only a few standard modules; no `open`,
+  `exec`, `eval`, `getattr`, `__import__` or `_private` attribute), then run in its own Python process
+  with no environment, a temporary folder, and limits on CPU, memory, file size and processes; a
+  failed run goes back to the model once with its error. The code is kept on the board with its
+  question. In chat the reader marks a question about call records (`call_records`), and the analyst
+  runs before the draft (its own budget, `cdr_budget_s`); the officer agent is told the CDRs' records
+  are not in what it was given and answers only from the computed result.
+* **Fixed analytics** (`evidence/cdr_tools.py`, standard library only, loaded into the sandbox as it
+  is): files, involving, of, top_contacts, between, common_contacts, window, on_day, daily, by_hour,
+  night (across midnight), silences, devices (IMEI / IMSI changes), places, near, together (the same
+  tower within minutes), first_last, before_after, km, norm - each returning the file and rows its
+  results rest on.
+* **Reading CDRs** (`cdr.read_events`): call type as kind (call, SMS, data) and way (in, out),
+  duration in seconds, IMSI, coordinates from a combined "longitude and latitude" column or written
+  after the tower's address.
+* **No invented numbers**: the answer checker fails a reply that gives a phone number found in no
+  record, no document and nothing the drafter was given.
+
 Also in the brief: police on the case in their own table (who registered, investigated and
 sent exhibits - ranks such as P/ASI, SIP, PI/IO are read as police everywhere, so an officer
 in someone's old FIR never enters their circle); family the case's records name join the
@@ -369,8 +419,8 @@ B"). A link's label is fixed when the graph is built: older runs need a new sear
 
 **Who a name means** (`network.resolve`): every name the records give a person counts, not
 only the one shown - the exact name first, then a word of it, then the same name in the
-other script, and a look-alike spelling only last ("hasnain" is not "Hassan" when someone
-on the graph is called Hasnain).
+other script, and a look-alike spelling only last ("hassam" is not "Hassan" when someone
+on the graph is called Hassam).
 
 ## The graph: whose name, which address
 
@@ -599,6 +649,8 @@ topic key, how often and in which turns it was asked, its status (`open`, `answe
 | Same topic, same question | topic keys (`incident:when`, `roles:main`, `cdr_owner:D3`); free-form questions get one from their words |
 | Answered anywhere closes it | the ledger, the board, or anywhere in the chat - said in passing, the answer is taken from that turn |
 | "Don't know" counts | never asked again |
+| Never what the records answer | "who is the victim" is not asked when the incident's FIR file names the complainant, and never offers a target or a suspect as the answer; "what ties A and B" only for two targets the records do not tie |
+| A group is a group | when the officer says the targets act together ("they are one gang", "all are suspects" - a plain yes/no the recorder asks the model, `recorder.targets_together`), every target is recorded as a suspect and neither "who is the main suspect" nor "what ties them" is asked |
 | Muted | "ye mat poocho" / "don't ask that" |
 | Max two asks | never in two replies in a row; one per reply; none while the officer is busy asking something else |
 | Checked twice | when proposed, and again just before it is asked |

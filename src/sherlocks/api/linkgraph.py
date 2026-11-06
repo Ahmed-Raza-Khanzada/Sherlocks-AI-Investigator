@@ -540,6 +540,16 @@ def build_router(settings: Settings, manager: Callable[[], RunManager],
             raise HTTPException(status_code=404, detail="Run not found")
         return index
 
+    @router.get("/runs/{run_id}/changes")
+    def changes(run_id: str, _: None = Depends(auth)) -> dict:
+        """``{case, graph, busy}``: the versions of the case board and the graph, and whether background work on
+        them is still going on. Cheap - a viewer of a finished run polls it and fetches ``/case`` or the run again
+        only when a version has moved."""
+        got = manager().changes(run_id)
+        if got is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return got
+
     # The per-run forms below predate /analyze and are kept for existing callers.
 
     @router.get("/runs/{run_id}/persons/{pid}/brief")

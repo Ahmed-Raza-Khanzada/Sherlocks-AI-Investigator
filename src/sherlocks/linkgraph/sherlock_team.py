@@ -265,8 +265,27 @@ def _first_part(answer: str) -> str:
     return first[:300]
 
 
+_PHONE = re.compile(r"(?<!\d)(?:\+?92[\s-]?|0)3\d{2}[\s-]?\d{7}(?!\d)")
+
+
+def numbers_not_on_record(answer: str, case: CaseFile, net: PersonNetwork, given: Any = None) -> list[str]:
+    """Mobile numbers in a reply that no record holds - not what the drafter was given, not a document or fact
+    of the case, not a number on the graph. A number the model made up."""
+    from sherlocks.linkgraph.normalize import mobile11
+
+    found = [m for m in (mobile11(x.group(0)) for x in _PHONE.finditer(answer or "")) if m]
+    if not found:
+        return []
+    held = {mobile11(p) for pid in net.people for p in net.data(pid).get("phones") or []}
+    text = " ".join([json.dumps(given, ensure_ascii=False, default=str) if given is not None else "",
+                     *(str(d.get("text") or "") for d in case.documents.values()),
+                     *(str(f.get("statement") or "") for f in case.facts.values())])
+    digits = re.sub(r"[\s-]", "", text)
+    return [n for n in dict.fromkeys(found) if n not in held and n not in digits and n[1:] not in digits]
+
+
 def validate(case: CaseFile, net: PersonNetwork, final: dict[str, Any], llm: Any = None,
-             given: Any = None) -> dict[str, Any]:
+             given: Any = None, drafted_from: Any = None) -> dict[str, Any]:
     """The Answer checker: ``{ok, issues, checked, rules}`` for a draft answer.
 
     Code first - answered what was asked, correct numbers, real and current sources,
@@ -289,6 +308,10 @@ def validate(case: CaseFile, net: PersonNetwork, final: dict[str, Any], llm: Any
     if quotes:
         issues.append(f"Quotes text not found in its source: \"{quotes[0][:60]}\".")
         rules["sourced"] = False
+    invented = numbers_not_on_record(answer, case, net, [given, drafted_from])
+    if invented:
+        issues.append(f"Gives the number {invented[0]}, which is in no record of the case - never invent a number.")
+        rules["correct"] = rules["sourced"] = False
     query, facts = final.get("query") or {}, final.get("facts")
     if facts is not None and facts.get("asked_role"):
         # Asked about one role ("FIR on him" = accused): yes or no for that role, first.

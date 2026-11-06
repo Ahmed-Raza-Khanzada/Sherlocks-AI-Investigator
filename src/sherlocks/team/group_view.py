@@ -8,7 +8,7 @@ Code only, from the link graph, for any kind of case (robbery, snatching, murder
   other) or found by comparing records (the same phone, numbers in sequence - SIMs issued together - the
   same address or village);
 * **possibly the same person** - a target whose name sounds the same as a person a record names without a
-  CNIC (an FIR lists "Muhammad Shahid Nasir" with no CNIC): if it is them, they are tied to that record;
+  CNIC (an FIR lists "Kamran Aslam Sheikh" with no CNIC): if it is them, they are tied to that record;
 * **common connections** - people tied to two or more targets, directly or one step on;
 * **groups** - the targets the ties join together, each with what joins them, and the targets nothing on
   record ties to the others;
@@ -104,17 +104,19 @@ def _contact(net: Any, pid: str, how: str, stated: bool, others: list[str]) -> d
             "also_tied_to": others}
 
 
-def build(case: Any, net: Any, scope: dict[str, Any]) -> dict[str, Any] | None:
-    """The targets side by side and how they connect - ``None`` when there are fewer than two targets."""
+def build(case: Any, net: Any, scope: dict[str, Any], least: int = 2) -> dict[str, Any] | None:
+    """The targets side by side and how they connect - ``None`` when there are fewer than ``least`` targets (the case
+    board asks with ``least=1``: one target's direct connections)."""
     from sherlocks.linkgraph.normalize import dashed_cnic, sounds_like
-    from sherlocks.team.case_scope import _NOT_CIRCLE, father_of
+    from sherlocks.team.case_scope import _NOT_CIRCLE, father_of, is_officer
     from sherlocks.team.network_view import record_of
 
     targets = [p for p in scope.get("targets") or [] if p in net.G]
-    if len(targets) < 2:
+    if len(targets) < max(1, least):
         return None
     tset = set(targets)
     involved = set(scope.get("pids") or [])
+    suspected = {p for p, r in (getattr(case, "roles", None) or {}).items() if r in ("main suspect", "suspect")}
     ok = _people_ok(net, involved)
     name = {t: _clean(net.name(t)) or net.name(t) for t in targets}
 
@@ -204,16 +206,18 @@ def build(case: Any, net: Any, scope: dict[str, Any]) -> dict[str, Any] | None:
         tied = {**{t: f"through {via}" for t, via in r["through"].items()}, **r["direct"]}
         if len(tied) < 2:
             continue
-        row = _contact(net, o, "", True, [])
-        row["tied_to"] = [{"target": name[t], "how": how} for t, how in tied.items()]
-        row["direct"] = len(r["direct"])
-        common.append(row)
         if len(r["direct"]) >= 2:
             ts = list(r["direct"])
             for i, a in enumerate(ts):
                 for b in ts[i + 1:]:
                     tie(a, b, f"the same complainant against both: {net.name(o)}" if o in complainants
                         else f"both tied to {net.name(o)}", "common contact")
+        if (o in complainants or is_officer(net, o)) and o not in suspected:
+            continue                # a tie between the targets (above), not a contact to investigate
+        row = _contact(net, o, "", True, [])
+        row["tied_to"] = [{"target": name[t], "how": how} for t, how in tied.items()]
+        row["direct"] = len(r["direct"])
+        common.append(row)
     common.sort(key=lambda r: (-r["direct"], -len(r["tied_to"]), not r["criminal"]))
 
     # Groups: the targets the ties join.
@@ -249,24 +253,39 @@ def build(case: Any, net: Any, scope: dict[str, Any]) -> dict[str, Any] | None:
 
     # Each target, and the contacts to investigate.
     rows, contacts = [], []
+    def named_only(t: str, o: str, labels: list[str]) -> bool:
+        """Named with the targets as the complainant, a witness, the victim or the investigator of an FIR, or a police
+        officer: not someone to look for them through - unless the officer suspects them."""
+        if o in suspected:
+            return False
+        # With one target (often the victim) the complainant and witnesses are the family: they stay connections.
+        return is_officer(net, o) or (len(targets) > 1 and (o in complainants or any(_NOT_THROUGH.search(h) for h in labels)))
+
     for t in targets:
         d = net.data(t)
-        mine = []
+        mine, named = [], []
         for o in net.G.neighbors(t):
             if o in tset or not ok(t, o):
                 continue
             labels = _labels(net, t, o)
+            if named_only(t, o, labels):
+                # Their part in the FIR (complainant, witness), from any target's tie - "Both on FIR Roster" says none.
+                part = next((h for x in targets if net.G.has_edge(x, o) for h in _labels(net, x, o) if _NOT_THROUGH.search(h)),
+                            labels[0] if labels else "named in a record")
+                named.append(f"{net.name(o)} ({part})")
+                continue
             others = [name[x] for x in targets if x != t and net.G.has_edge(x, o)]
             mine.append(_contact(net, o, father_of(net, t, o) or (labels[0] if labels else "-"),
                                  bool(net.G[t][o].get("stated")), others))
         weak = re.compile(_NOT_CIRCLE.pattern, re.IGNORECASE)
         mine.sort(key=lambda r: (not r["also_tied_to"], not r["criminal"], bool(weak.search(r["how"])), not r["stated"]))
-        contacts.append({"target": name[t], "rows": mine[:MOST_CONTACTS], "more": max(0, len(mine) - MOST_CONTACTS)})
+        contacts.append({"target": name[t], "pid": t, "rows": mine[:MOST_CONTACTS], "more": max(0, len(mine) - MOST_CONTACTS),
+                         "named": named[:MOST_CONTACTS]})
         rows.append({"pid": t, "name": name[t], "cnic": dashed_cnic(d.get("cnic")) or "-", "father": d.get("father_name") or "-",
                      "phones": [str(p) for p in d.get("phones") or []], "addresses": [str(a) for a in d.get("addresses") or []][:3],
                      "record": record_of(net, t) or "-", "contacts": len(mine),
                      "group": next((i + 1 for i, g in enumerate(joined) if name[t] in g["members"]), None)})
-    return {"targets": rows, "ties": sorted(ties.values(), key=lambda r: ("stated" not in r["kinds"], r["a"], r["b"])),
+    return {"targets": rows, "targets_pid": targets, "ties": sorted(ties.values(), key=lambda r: ("stated" not in r["kinds"], r["a"], r["b"])),
             "same_person": same, "common": common[:MOST_COMMON], "groups": joined, "alone": alone, "contacts": contacts,
             "bridges": _bridges(same, joined, alone)}
 
@@ -304,3 +323,36 @@ def lines(group: dict[str, Any] | None, ref: str | None = None) -> list[str]:
             for s in group["same_person"]]
     out += [f"{c['name']} is tied to " + "; ".join(f"{x['target']} ({x['how']})" for x in c["tied_to"]) for c in group["common"][:8]]
     return [out[0], *(f"{x} [{ref}]" for x in out[1:])] if ref else out
+
+
+MOST_ON_BOARD = 12
+
+
+def board(case: Any, net: Any) -> dict[str, Any] | None:
+    """How the people connect, for the case board: each target's direct connections with how the records tie them
+    (those named only as complainant, witness or police apart); with several targets, also the groups the records
+    join them into, the ties between them and the people tied to two or more of them. Kept short."""
+    from sherlocks.team import case_scope
+
+    group = build(case, net, case_scope.build(case, net), least=1)
+    if not group:
+        return None
+    return {
+        "targets": len(group["targets"]),
+        "groups": [{"members": g["members"], "why": g["why"][:3],
+                    "pids": [p for p in group["targets_pid"] if _clean(net.name(p)) in g["members"] or net.name(p) in g["members"]]}
+                   for g in group["groups"]],
+        "alone": group["alone"] if len(group["targets"]) > 1 else [],
+        "ties": [{"a": r["a"], "b": r["b"], "how": [_short(h) for h in r["how"][:3]], "stated": "stated" in r["kinds"],
+                  "maybe": set(r["kinds"]) == {"same person?"}} for r in group["ties"][:MOST_ON_BOARD]],
+        "common": [{"name": c["name"], "pid": c["pid"], "tied_to": [f"{x['target']}: {_short(x['how'])}" for x in c["tied_to"]][:4],
+                    "record": c["record"] or ""} for c in group["common"][:8]],
+        "people": [{"target": c["target"], "pid": c.get("pid"), "more": c["more"], "named": c.get("named") or [],
+                    "rows": [{"name": r["name"], "pid": r["pid"], "how": _short(r["how"]), "record": r["record"] or "",
+                              "also": r["also_tied_to"], "stated": r["stated"]} for r in c["rows"][:MOST_ON_BOARD]]}
+                   for c in group["contacts"]]}
+
+
+def _short(text: Any) -> str:
+    text = re.sub(r"\s*\(charges:.*?\)", "", str(text or "")).strip()
+    return text if len(text) <= 120 else text[:117].rstrip() + "…"

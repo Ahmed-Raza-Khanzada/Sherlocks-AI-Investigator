@@ -109,19 +109,36 @@ def check_system(system: str, officer: dict[str, Any] | None) -> None:
         raise GuardError(f"The officer's account may not use {system.upper()} - ask an officer with access.")
 
 
-def check_limits(case: Any, settings: Any) -> None:
+# Systems with limits of their own (settings: in all, per hour): a search of the police's own CDR archive is
+# counted apart, so searching every number of a gang never uses up the NADRA, SIM and CRO calls of the case.
+OWN_LIMITS = {"cdr_archive": ("archive_searches_per_case", "archive_searches_per_hour"),
+              # A target's CDR contacts searched like a target: counted apart, so they never use up the chat's calls.
+              "cdr_contact_search": ("cdr_contact_searches_per_case", "cdr_contact_searches_per_hour")}
+
+
+def check_limits(case: Any, settings: Any, system: str | None = None) -> None:
     if case is None or settings is None:
         return
     cfg = settings.evidence
-    calls = [c for c in case.calls if c.get("status") != "refused"]
-    if len(calls) >= cfg.case_live_calls:
-        raise GuardError(f"This case has used its {cfg.case_live_calls} live calls - answer from what is known.")
+    own = OWN_LIMITS.get(system or "")
+    if own:
+        most, per_hour = getattr(cfg, own[0], 300), getattr(cfg, own[1], 200)
+        what = f"{system.replace('_', ' ')} searches"
+    else:
+        most, per_hour, what = cfg.case_live_calls, cfg.case_live_calls_per_hour, "live calls"
+
+    def counted(c: dict[str, Any]) -> bool:
+        return c.get("system") == system if own else c.get("system") not in OWN_LIMITS
+
+    calls = [c for c in case.calls if c.get("status") != "refused" and counted(c)]
+    if len(calls) >= most:
+        raise GuardError(f"This case has used its {most} {what} - answer from what is known.")
     hour_ago = (datetime.now(UTC) - timedelta(hours=1)).isoformat(timespec="seconds")
     recent = [c for c in calls if str(c.get("at") or "") >= hour_ago]
-    if len(recent) >= cfg.case_live_calls_per_hour:
-        raise GuardError(f"{cfg.case_live_calls_per_hour} live calls in the last hour on this case - wait before more.")
-    if len(recent) >= max(5, int(cfg.case_live_calls_per_hour * 0.8)):
-        logger.warning("Case %s: %d live calls in the last hour - flagged for admins", case.run_id, len(recent))
+    if len(recent) >= per_hour:
+        raise GuardError(f"{per_hour} {what} in the last hour on this case - wait before more.")
+    if len(recent) >= max(5, int(per_hour * 0.8)):
+        logger.warning("Case %s: %d %s in the last hour - flagged for admins", case.run_id, len(recent), what)
 
 
 def log_call(case: Any, *, system: str, identifier: str | None, agent: str, reason: str, officer: dict[str, Any] | None,

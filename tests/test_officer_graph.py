@@ -100,6 +100,32 @@ def test_o1_names_the_lookups_he_needs_and_the_api_agent_fetches_them_at_run_tim
     assert case.calls and case.calls[-1]["agent"] == "O1 Officer agent"         # audited, under the officer's team
 
 
+def test_when_the_board_does_not_hold_it_and_o1_names_no_lookup_the_api_agent_calls_the_police_systems():
+    backend, case = _Backend({"evs": {"name": "Muhammad Danish Saleem", "cnic": "9999900000777",
+                                      "organisation": "Karachi Port Trust", "designation": "Clerk"}}), CaseFile()
+
+    def draft(prompt):
+        if not json.loads(prompt)["given"]["looked_up_now"]:
+            return {"first_line": "Danish's work is not on record.", "answered": False, "lookups": []}
+        return {"first_line": "Danish is a Clerk at Karachi Port Trust.", "answered": True,
+                "sections": [{"name": "Identity", "body": "• Karachi Port Trust, Clerk [EVS]"}]}
+
+    def plan(prompt):
+        data = json.loads(prompt)
+        assert "api_router" in data["LIVE_TOOLS"] and "board" not in data["LIVE_TOOLS"]     # only the live tools
+        assert any(p["name"] == "Muhammad Danish Saleem" for p in data["PEOPLE"])
+        return {"lookups": [{"tool": "api_router", "args": {"who": "Muhammad Danish Saleem", "topic": "work"},
+                             "why": "his employer"}]}
+
+    llm = Model(_Reading=_reading(topics=["work"]), _Draft=draft, _Plan=plan, _Check=OK)
+    events = list(run_turn(_graph(), "what does Danish do?", case=case, llm=llm, backend=backend, live_calls=3))
+    final = events[-1]
+    assert "evs" in backend.asked and llm.asked.count("_Plan") == 1 and llm.asked.count("_Draft") == 2
+    assert "Karachi Port Trust" in final["answer"]
+    assert any(e.get("agent") == "API agent" and "calling api_router" in e.get("text", "") for e in events
+               if e["type"] == "agent")
+
+
 def test_every_section_of_the_shape_is_filled_or_marked_never_dropped():
     case = CaseFile()
     llm = Model(_Reading=_reading(), _Check=OK,
@@ -378,8 +404,8 @@ def _hotel_target():
     stay = {"hotel": "Hotel Sample", "district": "Larkana", "room": "206", "check_in": "2024-12-25 18:03:00",
             "check_out": "2024-12-26 00:00:00"}
     return {"nodes": [
-        person("p1", "محمد حسنین", seed=True, cnic="9999900000111", stays=[stay], flags=["police_officer"],
-               names=["محمد حسنین", "MUHAMMAD HASNAIN AZAM", "Muhammad Hasnain"],
+        person("p1", "محمد حسام", seed=True, cnic="9999900000111", stays=[stay], flags=["police_officer"],
+               names=["محمد حسام", "MUHAMMAD HASSAM AZHAR", "Muhammad Hassam"],
                records=[{"system": "hotel_eye", "node": "s:hotel_eye:p1", "summary": "1 Hotel Eye stay(s) in 1 profile(s)"}],
                lookups={"hotel_eye": {"status": "success"}, "cro": {"status": "no_record"}, "nadra": {"status": "error"}}),
         person("p10", "Hassan", cnic="9999900000222"),
@@ -393,8 +419,8 @@ def test_a_name_means_the_person_some_record_calls_that_never_a_look_alike():
     from sherlocks.linkgraph.network import PersonNetwork
 
     net = PersonNetwork(_hotel_target())
-    assert net.resolve("hasnain") == "p1"                 # a word of another spelling of the target's name
-    assert net.resolve("Muhammad Hasnain") == "p1" and net.resolve("حسنین") == "p1"
+    assert net.resolve("hassam") == "p1"                 # a word of another spelling of the target's name
+    assert net.resolve("Muhammad Hassam") == "p1" and net.resolve("حسام") == "p1"
     assert net.resolve("Hassan") == "p10" and net.resolve("hasan") == "p10"     # the look-alike still finds its own person
     assert net.resolve("Hassaan") == "p10"                # a misspelling: only when nobody is really called that
 
@@ -409,7 +435,7 @@ def test_the_dossier_holds_what_every_system_returned_and_o1_is_told_what_each_s
     assert card["hotel_stays"][0]["hotel"] == "Hotel Sample" and card["police_officer"]
     assert card["records"][0]["system"] == "Hotel Eye" and "room 206" in card["records"][0]["fields"][0]
     assert card["checked_nothing_found"] == ["cro"] and card["could_not_be_checked"] == ["nadra"]
-    assert "MUHAMMAD HASNAIN AZAM" in card["also_recorded_as"]
+    assert "MUHAMMAD HASSAM AZHAR" in card["also_recorded_as"]
     assert set(SYSTEMS) - {"fir_roster"} <= set(MEANING)                  # every police system is explained
     seen = {}
 
@@ -418,8 +444,8 @@ def test_the_dossier_holds_what_every_system_returned_and_o1_is_told_what_each_s
         return {"first_line": "Yes: one stay at Hotel Sample, Larkana, 25-26 December 2024 [Hotel Eye].", "answered": True,
                 "sections": [{"name": "The basis", "body": "• Hotel Sample, room 206, check-in 2024-12-25 [Hotel Eye]"}]}
 
-    llm = Model(_Reading=_reading(people=["hasnain"], shape="yes_no", yes_no=True, type="hotels"), _Draft=draft, _Check=OK)
-    final = list(run_turn(graph, "is there any record of hasnain in hotel ?", case=CaseFile(), llm=llm))[-1]
+    llm = Model(_Reading=_reading(people=["hassam"], shape="yes_no", yes_no=True, type="hotels"), _Draft=draft, _Check=OK)
+    final = list(run_turn(graph, "is there any record of hassam in hotel ?", case=CaseFile(), llm=llm))[-1]
     assert final["query"]["people"] == ["p1"]                              # the target, not "Hassan"
     assert seen["dossiers"][0]["hotel_stays"] and "Hotel Eye" in seen["what_each_system_tells"]
     assert "stayed with them" in seen["what_each_system_tells"]["Hotel Eye"]
@@ -802,3 +828,17 @@ def test_the_hint_keeper_keeps_only_hints_that_rest_on_the_cases_records():
     assert hint_keeper.keep(case, "q", f"[{fact}]", "", Plain()) == []                  # already on the board
     assert hint_keeper.keep(case, "q", f"only the officer [{mine}]", "", Plain()) == []  # rests on no record
     assert hint_keeper.keep(case, "q", f"[{fact}]", "", object()) == []                  # no plain-text model
+
+
+def test_a_question_is_never_taken_as_the_place_of_the_incident():
+    from types import SimpleNamespace
+
+    from sherlocks.team.officer_graph import _answer_given
+
+    asked = "check in the FIR report what the IO says where the dead body was found"
+    none = SimpleNamespace(entries=[])
+    assert _answer_given(none, "incident:place", asked) is None                    # a request, no place in it
+    place = SimpleNamespace(entries=[SimpleNamespace(topic="incident_place", value="near the park, Block 4 Gulshan",
+                                                     where="Block 4 Gulshan")])
+    assert _answer_given(place, "incident:place", "it was near the park in Block 4 Gulshan") == "Block 4 Gulshan"
+    assert _answer_given(none, "free:abc", asked) == asked                          # other questions: as said

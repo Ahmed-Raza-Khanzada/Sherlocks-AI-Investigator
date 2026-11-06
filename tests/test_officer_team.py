@@ -69,6 +69,19 @@ def test_a_slow_draft_goes_out_as_a_follow_up():
     assert case.followups[0]["turn"] == 1 and saved
 
 
+def test_a_slow_draft_that_fails_still_tells_the_officer_and_the_reply_says_more_follows():
+    s = Settings()
+    s.chat.draft_budget_s = 0.2
+    case, graph = CaseFile(), _graph()
+    llm = _Llm({"_Reading": _READING, "_Check": {"consistent": True, "issues": []}}, delays={"_Draft": 0.6})
+    final = list(run_turn(graph, "How are Kamran and Sajid connected?", llm=llm, case=case, settings=s))[-1]
+    assert final["followup_pending"] and final["answer"].startswith("**This needs more time than usual")
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not case.followups:
+        time.sleep(0.05)
+    assert case.followups and "could not finish this answer" in case.followups[0]["text"]       # never silence
+
+
 def test_sherlocks_view_is_given_labelled_and_kept():
     s = Settings()
     case, graph = CaseFile(), _graph()

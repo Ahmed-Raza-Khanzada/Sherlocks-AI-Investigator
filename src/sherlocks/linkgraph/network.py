@@ -167,7 +167,7 @@ class PersonNetwork:
         from sherlocks.linkgraph.rarity import COMMON_NAME_TOKENS
 
         # Every name the records give a person - the one shown and the others ("also recorded
-        # as"): a target shown as محمد حسنین is also MUHAMMAD HASNAIN AZAM in another system.
+        # as"): a target shown as محمد حسام is also MUHAMMAD HASSAM AZHAR in another system.
         known = {pid: list(dict.fromkeys(k for k in (name_key(x) for x in self.all_names(pid)) if k))
                  for pid in self.people}
         asked = name_key(ref)
@@ -183,7 +183,7 @@ class PersonNetwork:
         hit = one([pid for pid, keys in known.items() if asked in keys])
         if hit:
             return hit
-        # 2. A distinctive word of a name ("hasnain" -> Muhammad Hasnain Azam): every word asked
+        # 2. A distinctive word of a name ("hassam" -> Muhammad Hassam Azhar): every word asked
         #    is a whole word of one of the person's names.
         words = [w for w in asked.split() if len(w) >= 3 and w not in COMMON_NAME_TOKENS] or asked.split()
         rest = [w for w in asked.split() if w not in words]
@@ -192,21 +192,21 @@ class PersonNetwork:
             return any(word in key.split() for key in known[pid]) or any(sounds_like(word, x) for x in self.all_names(pid))
 
         if words:
-            # The common words asked must be in the name too: "Mir Jawad" is not Mir Shakeel just because
-            # "jawad" is a common name - the word that tells two people apart is never dropped.
+            # The common words asked must be in the name too: "Mir Danish" is not Mir Shakeel just because
+            # "danish" is a common name - the word that tells two people apart is never dropped.
             hit = one([pid for pid, keys in known.items() if any(all(w in key.split() for w in words) for key in keys)
                        and all(carries(pid, w) for w in rest)])
             if hit:
                 return hit
         # 3. The same name in the other script ("afzal" for افضل). Among several who sound
-        #    alike, the one whose written name is closest ("hasan" is Hassan, not Hasnain).
+        #    alike, the one whose written name is closest ("hasan" is Hassan, not Hassam).
         alike = [pid for pid in self.people if any(sounds_like(ref, x) for x in self.all_names(pid))]
         if len(alike) == 1:
             return alike[0]
         if alike:
             return max(alike, key=lambda p: max(fuzz.ratio(asked, k) for k in known[p]))
         # 4. Only then a look-alike spelling ("Kamraan" for Kamran) - never before a real match:
-        #    "hasnain" is not "Hassan" when someone on the graph is called Hasnain.
+        #    "hassam" is not "Hassan" when someone on the graph is called Hassam.
         shown = {pid: keys[0] for pid, keys in known.items() if keys}
         close = process.extractOne(asked, shown, scorer=fuzz.WRatio, score_cutoff=80)
         return close[2] if close else None

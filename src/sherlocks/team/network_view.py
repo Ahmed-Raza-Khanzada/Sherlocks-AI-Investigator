@@ -42,10 +42,16 @@ def record_of(net: Any, pid: str) -> str:
     from sherlocks.linkgraph.case_queries import role_kind
     from sherlocks.linkgraph.offences import classify, labels, severity
 
-    rows = []
+    rows, seen = [], set()
     for f in net.data(pid).get("firs") or []:
         if role_kind([str(f.get("role") or "")]) != "accused" or not f.get("label"):
             continue
+        # One FIR once, however each register writes its year (99/25 in one, 99/2025 in another).
+        m = re.search(r"(\d+)\s*/\s*(\d{2,4})", str(f["label"]))
+        key = (m.group(1).lstrip("0"), m.group(2)[-2:]) if m else (str(f["label"]),)
+        if key in seen:
+            continue
+        seen.add(key)
         crimes = classify(str(f.get("offence") or ""))
         rows.append((severity(crimes), f"FIR {f['label']}" + (f" - {labels(crimes) or f.get('offence')}" if f.get("offence") else "")
                      + (" (serious)" if severity(crimes) >= 3 else "")))

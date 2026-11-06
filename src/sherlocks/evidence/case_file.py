@@ -59,7 +59,7 @@ _MAX_CHANGES = 3000
 
 KIND_LABELS = {"fir": "FIR document", "lab": "Forensic / medical report", "cro": "CRO dossier",
                "upload": "Uploaded file", "cdr": "CDR / tower analysis", "notes": "Officer's statements",
-               "graph": "Graph analysis"}
+               "graph": "Graph analysis", "cdr_profile": "Call records analysis"}
 NOTES_KEY = "notes:officer"
 # Roles the officer can give people on the case board.
 ROLES = ("main suspect", "suspect", "victim", "complainant", "witness", "informer", "cleared")
@@ -243,6 +243,21 @@ class CaseFile:
             uploads = self.dialog.setdefault("uploads", {})
             uploads[name] = {**(uploads.get(name) or {}), **info, "state": state, "at": _now()}
             self._bump("upload", name)
+
+    def set_connections(self, connections: dict[str, Any] | None) -> None:
+        """How the people of the case connect, for the case board - written when it changed."""
+        with self._lock:
+            if self.dialog.get("connections") == connections:
+                return
+            self.dialog["connections"] = connections
+            self._bump("connections", "connections")
+
+    def archive_status(self, **info: Any) -> None:
+        """Where the search of the CDR archive has got - searching, processing, done - for the officer's chat
+        (one line, updated in place)."""
+        with self._lock:
+            self.dialog["cdr_archive"] = {**(self.dialog.get("cdr_archive") or {}), **info, "at": _now()}
+            self._bump("archive", "cdr_archive")
 
     def release(self, key: str) -> None:
         with self._lock:
@@ -805,7 +820,7 @@ class CaseFile:
                 "version": self.version, "counts": self.counts(),
                 # A document's full reading (an inquiry's 160 steps) is fetched with the document; the index
                 # carries only how far its reading has got.
-                "documents": [{k: v for k, v in d.items() if k not in ("text", "data", "reading")} for d in self.documents.values()],
+                "documents": [{k: v for k, v in d.items() if k not in ("text", "data", "reading", "file_reading")} for d in self.documents.values()],
                 "facts": list(self.facts.values()), "links": list(self.links.values()),
                 "attempts": self.attempts[-60:], "report_status": self.report_status,
                 "incident": self.incident, "roles": dict(self.roles), "questions": list(self.questions),
@@ -821,7 +836,21 @@ class CaseFile:
                 "claims": len(self.claims), "critical_waiting": list(self.dialog.get("critical_waiting") or []),
                 "analysis": list(self.analysis.values()), "team_run": (self.dialog.get("team_runs") or [None])[-1],
                 "uploads": dict(self.dialog.get("uploads") or {}),
+                "cdr_archive": dict(self.dialog.get("cdr_archive") or {}) or None,
+                "cdr_contacts": dict(self.dialog.get("cdr_contacts") or {}) or None,
+                "connections": self.dialog.get("connections"),
             }
+
+    def busy(self) -> bool:
+        """Work on the board still going on in the background: the team, a file being read, the report, the CDR
+        archive or a CDR's contacts being searched. A viewer checks for changes more often while it is."""
+        with self._lock:
+            return bool(self.agenda or self.counts().get("pending")
+                        or any(u.get("state") not in ("done", "failed") for u in (self.dialog.get("uploads") or {}).values())
+                        or self.report_status == "building"
+                        or (self.dialog.get("cdr_archive") or {}).get("state") not in (None, "done")
+                        or (self.dialog.get("cdr_contacts") or {}).get("state") == "searching"
+                        or self.dialog.get("cdr_contacts_queue"))
 
     def document(self, doc_id: str) -> dict[str, Any] | None:
         with self._lock:

@@ -32,7 +32,7 @@ RUN pip install --upgrade pip \
        "PyYAML>=6.0" "python-dotenv>=1.0" "requests>=2.32" "httpx>=0.27" "fpdf2>=2.8" \
        "pypdf>=5.0" "matplotlib>=3.9" "networkx>=3.3" "rapidfuzz>=3.9" \
        "arabic-reshaper>=3.0" "python-bidi>=0.6" "Pillow>=10.0" "uharfbuzz>=0.40" "beautifulsoup4>=4.12" \
-       "langgraph>=1.0,<2"
+       "langgraph>=1.0,<2" "xlrd>=2.0"
 
 # OSINT: the OpenOSINT tool library and the pip-installable binaries it shells out to
 # (username search across sites, email-registration checks). phoneinfoga is a Go binary

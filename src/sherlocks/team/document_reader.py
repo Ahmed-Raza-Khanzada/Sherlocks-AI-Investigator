@@ -41,8 +41,9 @@ _LINE = re.compile(r"^\s*[-*•]?\s*\**(EVENT|FINDING|PERSON|EVIDENCE|LEAD|SAID|
 _PAGE = re.compile(r"\[page (\d+)\]")
 
 _PART_SYSTEM = (
-    "You read one part of a document given to a police investigation - an inquiry or commission report, a "
-    "medical or forensic report, a statement, a memo, a letter, an audit, bank records, a contract. Take out "
+    "You read one part of a document given to a police investigation - an FIR file with its case diaries, an "
+    "inquiry or commission report, a medical or forensic report, a criminal record dossier, a statement, a memo, a "
+    "letter, an audit, bank records, a contract. Take out "
     "everything an investigating officer "
     "needs from THIS part. Write ONLY lines that start with these labels, one item a line, fields separated by |:\n"
     "EVENT: date as written | time as written or blank | what happened - who did what, where | words copied from the text\n"
@@ -58,7 +59,9 @@ _PART_SYSTEM = (
     "budget, procedure or disciplinary action, or a criticism of how the investigation was run (that is a FINDING)\n"
     "SAID: who | what they said or told, by their account | words copied\n"
     "'Words copied' is a short phrase of 5 to 20 words copied EXACTLY from the text of this part, so the line can be "
-    "checked. Every dated step is an EVENT - a chronology table gives one EVENT per row. Plain English; names, "
+    "checked. Every dated step is an EVENT - a chronology table gives one EVENT per row, a case diary one EVENT per "
+    "step the IO took (a search, a raid, an arrest, a recovery, a statement recorded, a CDR or report asked for). "
+    "Whom anyone suspects or names, with their phone, vehicle or address, is a SAID and a LEAD. Plain English; names, "
     "numbers, ranks, dates and times exactly as written. Nothing the text does not say. No other text. "
     + DATA_NOT_INSTRUCTIONS)
 
@@ -145,21 +148,28 @@ def _read_part(llm: Any, title: str, number: int, total: int, pages: str, text: 
     try:
         answer = llm.generate_text(prompt=json.dumps({"document": title, "part": f"{number} of {total}", "pages": pages,
                                                       "text": text}, ensure_ascii=False),
-                                   system=_PART_SYSTEM, cache_kind="document_part", prompt_version="v4", max_tokens=3000)
+                                   system=_PART_SYSTEM, cache_kind="document_part", prompt_version="v5", max_tokens=3000)
     except Exception as exc:  # noqa: BLE001 - the other parts stand
         logger.info("Document reader: part %s of %s failed: %s", number, total, exc)
         return []
     return read_lines(answer)
 
 
-def read(case: Any, doc_id: str, llm: Any, *, say: Any = None) -> dict[str, Any] | None:
-    """Read the whole document; keep its facts, leads and reading. None without a model that writes text."""
+def read(case: Any, doc_id: str, llm: Any, *, say: Any = None, body: str | None = None, store: str = "reading",
+         leads: bool = True, workers: int = WORKERS) -> dict[str, Any] | None:
+    """Read the whole document; keep its facts, leads and reading. None without a model that writes text.
+
+    ``body`` is the text to read when not the document's whole text (an FIR file's narrative, case diaries and
+    investigation result - its header is already facts by rule). ``store`` is where the reading is kept: an
+    upload's in ``reading``, a police system's file in ``file_reading`` (the report treats a ``reading`` as an
+    officer's upload). With ``leads`` False the leads it raises stay facts of the document and do not go on the
+    board as leads (a past FIR's open angles are not this case's leads)."""
     if llm is None or not hasattr(llm, "generate_text"):
         return None
     doc = case.documents.get(doc_id)
     if doc is None:
         return None
-    body = re.sub(r"^Uploaded file:[^\n]*\n", "", doc.get("text") or "")
+    body = re.sub(r"^Uploaded file:[^\n]*\n", "", doc.get("text") or "") if body is None else body
     pieces = parts(body)[:MOST_PARTS]
     if not pieces:
         return None
@@ -176,7 +186,7 @@ def read(case: Any, doc_id: str, llm: Any, *, say: Any = None) -> dict[str, Any]
         return got
 
     try:
-        with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
             answers = list(pool.map(one, enumerate(pieces)))
     except Exception:
         status(case, doc_id, "failed", parts=len(pieces))
@@ -197,8 +207,8 @@ def read(case: Any, doc_id: str, llm: Any, *, say: Any = None) -> dict[str, Any]
                 key = (label, squash(" ".join(f[:3])).lower())
                 if key in seen:
                     continue
-                seen.add(key)
                 if label == "PERSON":
+                    seen.add(key)
                     if f[0] and len(f[0]) <= 80:
                         reading["people"].append({"name": f[0], "part": f[1], "says": f[2], "pages": pages})
                     continue
@@ -206,6 +216,7 @@ def read(case: Any, doc_id: str, llm: Any, *, say: Any = None) -> dict[str, Any]
                 quote = _copied(words, text)
                 if quote is None:
                     continue                                    # not read from this text: dropped
+                seen.add(key)
                 if label == "EVENT":
                     when = " ".join(x for x in (f[0], f[1]) if x and x.lower() not in ("blank", "-", "not stated"))
                     statement = f"{when}: {f[2]}" if when else f[2]
@@ -228,9 +239,11 @@ def read(case: Any, doc_id: str, llm: Any, *, say: Any = None) -> dict[str, Any]
                          "SAID": "said"}[label]].append(item)
                 if label == "LEAD":
                     words = set(re.findall(r"[a-z0-9]{3,}", f[0].lower()))
-                    twin = next((x for x in reading["leads"][:-1] if x.get("lead") and _alike(words, x["text"])), None)
+                    twin = next((x for x in reading["leads"][:-1] if _alike(words, x["text"])), None)
                     if twin is not None:                        # the same line of inquiry, said again
                         reading["leads"].pop()
+                        continue
+                    if not leads:
                         continue
                     reading["leads"][-1]["lead"] = case.set_lead(f"doc:{doc_id}:" + " ".join(re.findall(r"[a-z0-9]+", f[0].lower()))[:70], {
                         "hint": f[0][:300], "why": f"Raised by {doc['title']}"[:300], "next_step": f[0][:300],
@@ -243,7 +256,7 @@ def read(case: Any, doc_id: str, llm: Any, *, say: Any = None) -> dict[str, Any]
             people[key] = p
     reading["people"] = list(people.values())
     with case._lock:
-        doc["reading"] = reading
+        doc[store] = reading
         if reading["summary"]:
             doc["ai_summary"] = reading["summary"][:900]
     reading["answered"] = settle(case, doc_id, llm)
@@ -273,7 +286,7 @@ def settle(case: Any, doc_id: str, llm: Any) -> list[str]:
              and k.get("source") not in mine][:40]
     if not open_:
         return []
-    r = doc.get("reading") or {}
+    r = doc.get("reading") or doc.get("file_reading") or {}
     given = {"open_leads": [{"id": k["id"], "lead": k["hint"], "next_step": k.get("next_step") or ""} for k in open_],
              "document": outline(doc, most=60),
              "dated_steps": [f"{e['fact']}: {e['when']} {e['time']}: {e['what']}" for e in r.get("events") or []][:120]}
@@ -334,7 +347,7 @@ def _whole(case: Any, doc: dict[str, Any], reading: dict[str, Any], body: str, l
 
 def outline(doc: dict[str, Any], *, most: int = 40) -> dict[str, Any]:
     """The reading in short, for a model's prompt (the chat, the report's writers) - with fact ids."""
-    r = doc.get("reading") or {}
+    r = doc.get("reading") or doc.get("file_reading") or {}
     return {"id": doc["id"], "title": doc.get("title"), "what_it_is": r.get("kind") or "", "issued_by": r.get("issued_by") or "",
             "date": r.get("date") or "", "summary": r.get("summary") or doc.get("ai_summary") or "",
             "most_important": r.get("top") or [],

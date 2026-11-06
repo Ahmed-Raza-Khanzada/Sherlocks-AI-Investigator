@@ -66,7 +66,7 @@ NO_CASE = ("The investigating officer said there is no case: they are checking t
 # What wrote a stored report: a report kept from before a change to the report team is written again, not
 # re-drawn - its parts lack what the new layout reads (a case shown with no summary, under the wrong part).
 # Raise it whenever a part's content changes.
-REPORT_BUILD = "2026-11-02.3"
+REPORT_BUILD = "2026-11-03.1"
 MOST_LEADS = 12
 NOT_WEIGHED = "Not assessed: no case has been described yet, so no line of inquiry is weighed."
 MEDICAL, LAB, SCENE = ("mlo", "postmortem"), ("dna", "chemical", "forensic"), ("recovery_memo", "site_plan")
@@ -213,7 +213,8 @@ def _evidence(job: ReportRun) -> dict[str, Any]:
         stays = hotels(net, pid, case)
         mine = sorted((c for c in cards.values() if c["record"] == "system" and c.get("person") == pid),
                       key=lambda c: c["system"])
-        lines = [{"system": c["system"], "found": c.get("summary") or f"{len(c['fields'])} field(s)", "nothing": bool(c.get("nothing")),
+        lines = [{"system": c["system"], "found": "\n".join(c.get("details") or []) or c.get("summary")
+                  or f"{len(c['fields'])} field(s)", "nothing": bool(c.get("nothing")),
                   "source": ", ".join(x for x in (c.get("call"), c.get("checked")) if x) or "graph run",
                   "background": bool(c.get("background"))} for c in mine]
         if not mine:                                # before S10's first run: what the graph and the lookups say
@@ -222,8 +223,9 @@ def _evidence(job: ReportRun) -> dict[str, Any]:
                       "background": False} for s, status in sorted(searched(net, case, pid).items())]
         for m in stays.get("at_times") or []:
             lines.append({"system": "hotel_eye", "nothing": False, "source": "against each date", "background": False,
-                          "found": f"{m.get('what')}: " + ("; ".join(m.get("stays") or []) if m.get("stays")
-                                                           else ("date not on record" if not m.get("day") else "no stay covers it"))})
+                          "found": f"{m.get('what')}: " + ("; ".join(m.get("stays") or []) if m.get("stays") else (
+                              "its date is not on record, so no stay could be checked against it" if not m.get("day")
+                              else f"no hotel stay on {m.get('day')}"))})
         systems.append({"person": p["name"], "pid": pid, "lines": lines})
     by_topic: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
@@ -577,6 +579,21 @@ def _covered(points: list[str], tables: str) -> bool:
 # -- P12 Group writer ---------------------------------------------------------------------
 
 
+# The FIR register's words for where an accused stands, in English.
+_POSITION_WORDS = {"نامزد": "nominated", "مفرور": "absconding", "اشتہاری": "proclaimed offender", "گرفتار": "arrested",
+                   "ضمانت": "on bail", "رہا": "released", "چالان": "challaned", "بری": "acquitted", "جیل": "in jail"}
+
+
+def _position(text: Any) -> str:
+    """"نامزد)22-09-2026) مفرور)29-10-2026)" -> "nominated 22-09-2026, absconding 29-10-2026"."""
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    found = re.findall(r"([^\s()\d]+)\s*[()]*\s*(\d{1,2}-\d{1,2}-\d{2,4})?", raw)
+    out = [f"{_POSITION_WORDS.get(w, w)} {d}".strip() for w, d in found if w in _POSITION_WORDS]
+    return ", ".join(out) or raw[:60]
+
+
 def _graph_doc(case: Any) -> str | None:
     """The board's link-analysis document - what the ties between people rest on."""
     return next((d for d, doc in case.documents.items() if doc.get("kind") == "graph"), None)
@@ -693,9 +710,15 @@ def _glance(job: ReportRun) -> dict[str, Any] | None:
     named = _person_names(data)
     people = job.parts["case_story"]["people"]
 
+    standing = {str(m.get("name") or "").strip(): _position(m.get("position"))
+                 for key in ("nominated_suspects", "arrested_suspects") for m in data.get(key) or [] if isinstance(m, dict)}
+
     def status(name: str) -> str:
         p = next((p for p in people if p["name"] == name or name in p["name"] or p["name"] in name), None)
-        return f" ({_flat(p['status'])})" if p and p["status"] and p["status"] != "not on record" else ""
+        said = _flat(p["status"]) if p and p["status"] else ""
+        if said.lower() in ("", "not on record", "not stated", "unknown", "-"):
+            said = standing.get(name, "")        # where the FIR register says they stand: nominated, absconding...
+        return f" ({said})" if said else ""
 
     occurred, registered = data.get("occurred") or inc.get("date"), data.get("reported")
     delay = ""
@@ -725,7 +748,9 @@ def _glance(job: ReportRun) -> dict[str, Any] | None:
     rows = [
         ("FIR", (f"{scope['this_fir'] or inc.get('fir')}" + (f", PS {data.get('police_station') or inc.get('police_station')}"
                                                             if data.get("police_station") or inc.get("police_station") else ""))
-         if (scope["this_fir"] or inc.get("fir")) else "No FIR given - a new matter as the officer described it"),
+         if (scope["this_fir"] or inc.get("fir")) else
+         ("No FIR given - a new matter as the officer described it" if (case.dialog or {}).get("case_basis") == "new_matter"
+          else "Not tied to an FIR yet - the officer has not said which case this is")),
         ("Offence", offence),
         ("Occurred", str(occurred or "")),
         ("FIR registered", f"{registered}{delay}" if registered else ""),
@@ -749,7 +774,7 @@ def _glance(job: ReportRun) -> dict[str, Any] | None:
 
 
 _FAMILY = re.compile(r"\b(mother|father|brother|sister|wife|husband|son|daughter|uncle|aunt|cousin|nephew|niece|"
-                     r"grand\w*|\w+-in-law|parents?|spouse|fianc\w*)\b", re.IGNORECASE)
+                     r"grand\w*|\w+-in-law|parents?|spouse|fianc\w*|family|relatives?)\b", re.IGNORECASE)
 
 
 def _named(job: ReportRun) -> dict[str, str]:
@@ -803,6 +828,14 @@ def _case_story(job: ReportRun) -> dict[str, Any]:
         # Now that the case's people are known: the network again, with them, and the family they name.
         job.parts["network"] = network_view.build(job.case, job.net, job.scope, named=_named(job))
         _family_circle(job)
+    try:
+        from sherlocks.evidence import cdr_profile
+
+        calls = cdr_profile.for_report(job.case, job.net)                 # what the CDRs say about the people
+        if calls["own"] or calls["contact"]:
+            job.parts["calls"] = calls
+    except Exception:
+        logger.exception("Call records for the report failed")
     job.parts["glance"] = _glance(job)
     story = job.parts["case_story"]
     return {"written_by": story["by"], "events": len(story["events"]), "people": len(story["people"]),

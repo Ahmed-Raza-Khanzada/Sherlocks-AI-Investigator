@@ -47,7 +47,7 @@ TEAM = {"S1 Sherlock", "S2 Summarizer", "S4 Questioner", "Q1 Gatekeeper", "A4 Do
 # Entries that never wake the Sherlock team: its own output and bookkeeping.
 QUIET = {"turn", "desk", "view", "followup", "call", "report", "agenda", "dossier", "summary", "gaps", "hypothesis",
          "assessment", "attempt", "board", "claim", "contradiction", "lead", "entity", "register", "matrix",
-         "challenge", "presence", "analysis", "insight", "recorded"}
+         "challenge", "presence", "analysis", "insight", "recorded", "archive", "connections"}
 FACTS_TO_WAKE = 15
 DEBOUNCE_S = 2.0
 
@@ -296,14 +296,16 @@ class Board:
     """One case board's background work: its graph, agents and save, and its run state."""
 
     def __init__(self, run_id: str, case: Any, graph: Callable[[], dict[str, Any]], save: Callable[[], None],
-                 tools: Callable[[], Any] | None = None) -> None:
+                 tools: Callable[[], Any] | None = None, contacts: Callable[..., int] | None = None) -> None:
         self.run_id, self.case, self.graph, self.save, self.tools = run_id, case, graph, save, tools
+        self.contacts = contacts                 # numbers a CDR ties to the case, searched into the graph
         self.lock = threading.Lock()
         self.running = False
         self.again = False
         self.timer: threading.Timer | None = None
         self.last_seq = case.dialog.get("sherlock_seq", 0)
         self.batches: list[dict[str, Any]] = []
+        self.labs_retrying = False
 
 
 class Casework:
@@ -317,21 +319,29 @@ class Casework:
     # -- wiring -----------------------------------------------------------------------
 
     def attach(self, run_id: str, case: Any, graph: Callable[[], dict[str, Any]], save: Callable[[], None],
-               tools: Callable[[], Any] | None = None) -> Board:
+               tools: Callable[[], Any] | None = None, contacts: Callable[..., int] | None = None) -> Board:
         with self._lock:
             board = self.boards.get(run_id)
             if board is not None and board.case is case:
                 return board
-            board = Board(run_id, case, graph, save, tools)
+            board = Board(run_id, case, graph, save, tools, contacts)
             self.boards[run_id] = board
         case.listen(lambda change, b=board: self._heard(b, change))
-        if case.agenda:
-            self._schedule(board)                # work left from before a restart
+        from sherlocks.team import case_rematch
+
+        if case.agenda or case_rematch.waiting(case):
+            self._schedule(board)                # work left from before a restart: an agenda, a re-match, a lab retry
         return board
 
     def _heard(self, board: Board, change: dict[str, Any]) -> None:
         if change.get("agent") in TEAM:
             return                               # never woken by its own writes
+        if change["entry"] == "turn":
+            from sherlocks.team import case_rematch
+
+            if case_rematch.waiting(board.case):
+                self._schedule(board)            # a question asked: a re-match or a lab retry is waiting
+                return
         if change["entry"] == "batch":
             board.batches.append(change)
         elif change["entry"] == "agenda" and change.get("id") == "sherlock" and any(
@@ -402,6 +412,62 @@ class Casework:
         graph = board.graph()
         net = PersonNetwork(graph)
         radius = getattr(getattr(self.settings, "evidence", None), "cdr_radius_km", 2.0)
+        if board.tools:
+            # The numbers of the targets and of the people tied to them, not searched yet, searched in the CDR
+            # archive - in a thread of its own, so the chat shows each CDR found while the team works on.
+            from sherlocks.evidence import cdr_archive
+
+            try:
+                if cdr_archive.Archive().ready and cdr_archive.to_search(case, graph) and cdr_archive.live(board.tools()):
+                    threading.Thread(target=self._archive_sweep, args=(board, graph), daemon=True,
+                                     name=f"cdr-archive-{board.run_id}").start()
+            except Exception:
+                logger.exception("CDR archive sweep on %s failed", board.run_id)
+        from sherlocks.evidence import cdr_followup
+        from sherlocks.team import case_rematch, recorder
+
+        try:
+            # Each CDR read: whose it is (the target's own, or someone else's he is in), its contacts, places and
+            # profile on the board, and the numbers behind it searched like a target, in a thread of their own.
+            if cdr_followup.follow(case, graph, contacts=board.contacts, tools=board.tools, settings=self.settings):
+                board.save()
+        except Exception:
+            logger.exception("CDR follow-up on %s failed", board.run_id)
+
+        try:
+            recorder.repair_incident(case)       # a whole message kept as the case's place, by an older version
+        except Exception:
+            logger.exception("Incident repair on %s failed", board.run_id)
+        try:
+            # A FIR file read after the officer described the case: is it this case? (one model call, only then)
+            if case_rematch.rematch(case, net, self.llm() if self.llm else None):
+                graph = board.graph()
+                net = PersonNetwork(graph)
+        except Exception:
+            logger.exception("Case re-match on %s failed", board.run_id)
+        if board.tools and case_rematch.lab_retries(case) and not getattr(board, "labs_retrying", False):
+            # The laboratory system failed on an FIR earlier: asked again, in a thread of its own.
+            board.labs_retrying = True
+
+            def labs() -> None:
+                try:
+                    if case_rematch.retry_labs(case, board.tools().agents):
+                        board.save()
+                except Exception:
+                    logger.exception("Lab retry on %s failed", board.run_id)
+                finally:
+                    board.labs_retrying = False
+
+            threading.Thread(target=labs, daemon=True, name=f"labs-{board.run_id[:8]}").start()
+        elif board.tools and case_rematch.lab_retries(case, due_only=False) and board.timer is None:
+            self._schedule(board, case_rematch.LAB_WAIT_S + 5)     # come back when the next try is due
+        try:
+            # How the people connect, on the board: kept current with the graph (rules, no model).
+            from sherlocks.team import group_view
+
+            case.set_connections(json.loads(json.dumps(group_view.board(case, net), default=str)))
+        except Exception:
+            logger.exception("Connections for the board of %s failed", board.run_id)
         for item in list(case.agenda):
             task = item["task"]
             if task == "sherlock":
@@ -423,6 +489,15 @@ class Casework:
             case.done(task)
             done.append(task)
         return done
+
+    def _archive_sweep(self, board: Board, graph: dict[str, Any]) -> None:
+        from sherlocks.evidence import cdr_archive
+
+        try:
+            if cdr_archive.sweep(board.case, graph, board.tools()) is not None:
+                board.save()
+        except Exception:
+            logger.exception("CDR archive sweep on %s failed", board.run_id)
 
     def work(self, board: Board, *, force: bool = False) -> dict[str, Any] | None:
         """One Sherlock team run: the agenda, then the team's graph (S10 -> S5 -> S6, S7, S8 ->

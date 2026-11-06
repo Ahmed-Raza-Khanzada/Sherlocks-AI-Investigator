@@ -190,6 +190,36 @@ def load_sheet(content: bytes) -> tuple[list[str], list[list[Any]], str, list[in
     return headers, rows, best_name, numbers
 
 
+def as_xlsx(content: bytes) -> bytes:
+    """An old-format Excel workbook (.xls) as an .xlsx one, every sheet and cell value kept; anything else as it is."""
+    if content[:8] != b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+        return content
+    import io
+
+    import xlrd
+    from openpyxl import Workbook
+
+    book = xlrd.open_workbook(file_contents=content)
+    out = Workbook()
+    out.remove(out.active)
+    for sheet in book.sheets():
+        ws = out.create_sheet(sheet.name[:31] or "Sheet")
+        for r in range(sheet.nrows):
+            row = []
+            for c in range(sheet.ncols):
+                cell = sheet.cell(r, c)
+                if cell.ctype == xlrd.XL_CELL_DATE:
+                    row.append(xlrd.xldate.xldate_as_datetime(cell.value, book.datemode))
+                elif cell.ctype == xlrd.XL_CELL_NUMBER and float(cell.value).is_integer():
+                    row.append(int(cell.value))
+                else:
+                    row.append(cell.value)
+            ws.append(row)
+    buf = io.BytesIO()
+    out.save(buf)
+    return buf.getvalue()
+
+
 def load_table(content: bytes) -> tuple[list[str], list[list[Any]], str]:
     """The biggest sheet of a workbook: header row (found within the first rows), data rows."""
     headers, rows, name, _numbers = load_sheet(content)
@@ -263,6 +293,93 @@ def _fmt(when: datetime | None) -> str:
     return when.strftime("%Y-%m-%d %H:%M") if when else "-"
 
 
+def _pair(value: Any, header: str) -> tuple[float | None, float | None]:
+    """(lat, lon) from one cell that holds both ("67.0811, 24.8607"). A value outside -90..90 is the longitude;
+    otherwise the header's own order decides ("Longitude and Latitude" gives the longitude first)."""
+    found = [float(x) for x in re.findall(r"-?\d+(?:\.\d+)?", str(value or ""))]
+    if len(found) != 2:
+        return None, None
+    x, y = found
+    if abs(x) > 90 >= abs(y):
+        return y, x
+    if abs(y) > 90 >= abs(x):
+        return x, y
+    h = header.lower()
+    lon_first = "lon" in h and h.find("lon") < h.find("lat") if "lat" in h else False
+    return (y, x) if lon_first else (x, y)
+
+
+def _way(raw: str) -> tuple[str, str]:
+    """("call" | "sms" | "data" | "", "in" | "out" | "") from an operator's call type ("Outgoing SMS", "MTC", "MOC")."""
+    t = raw.lower()
+    kind = "sms" if "sms" in t else "data" if re.search(r"\b(gprs|data|internet)\b", t) else "call" if t else ""
+    way = ("in" if re.search(r"\b(in|incoming|mtc|mt|terminat|received)", t)
+           else "out" if re.search(r"\b(out|outgoing|moc|mo|originat|dialled|sent)", t) else "")
+    return kind, way
+
+
+def _seconds(value: Any) -> int | None:
+    """A duration in seconds: 74, "74", "00:01:14", "1:14"."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if re.fullmatch(r"\d+(?:\.\d+)?", text):
+        return int(float(text))
+    parts = text.split(":")
+    if 2 <= len(parts) <= 3 and all(p.strip().isdigit() for p in parts):
+        total = 0
+        for p in parts:
+            total = total * 60 + int(p)
+        return total
+    return None
+
+
+_AT_END = re.compile(r"\s*[|;,]\s*(-?\d{1,3}\.\d{3,})\s*[|;,]\s*(-?\d{1,3}\.\d{3,})\s*$")
+
+
+def read_events(content: bytes, llm: Any = None) -> dict[str, Any]:
+    """R1 Intake: every record of a CDR / tower dump as one clean event - ``{kind: cdr | tower_dump | table |
+    empty, headers, sheet, cols, rows, events}``. An event: a, b, when, row (the sheet row), dir (as written),
+    kind (call | sms | data), way (in | out), duration (seconds), site, addr, lat, lon, imei, imsi."""
+    headers, rows, sheet, numbers = load_sheet(content)
+    if not rows:
+        return {"kind": "empty", "headers": headers, "sheet": sheet, "cols": {}, "rows": 0, "events": []}
+    cols = map_columns(headers, rows, llm)
+    if not ({"a_party", "b_party"} & set(cols)):
+        return {"kind": "table", "headers": headers, "sheet": sheet, "cols": {}, "rows": len(rows), "events": []}
+    both = "lat" in cols and "lon" not in cols or ("lat" in cols and cols.get("lat") == cols.get("lon"))
+
+    def cell(r: list[Any], role: str) -> Any:
+        return r[cols[role]] if role in cols and cols[role] < len(r) else None
+
+    events = []
+    for r, number in zip(rows, numbers, strict=False):
+        raw = str(cell(r, "direction")).strip() if cell(r, "direction") is not None else ""
+        kind, way = _way(raw)
+        if both:
+            lat, lon = _pair(cell(r, "lat"), headers[cols["lat"]])
+        else:
+            lat, lon = _float(cell(r, "lat")), _float(cell(r, "lon"))
+        addr = str(cell(r, "address")).strip() if cell(r, "address") is not None else ""
+        tail = _AT_END.search(addr)
+        if tail and (lat is None or lon is None):
+            # Some operators write the tower's coordinates after its address: "... KARACHI (4G)|24.8543|67.0232".
+            lat, lon = _pair(f"{tail.group(1)} {tail.group(2)}", "lat lon")
+            addr = addr[:tail.start()].strip()
+        events.append({
+            "a": _number(cell(r, "a_party")), "b": _number(cell(r, "b_party")), "when": _when(r, cols), "row": number,
+            "dir": raw, "kind": kind, "way": way, "duration": _seconds(cell(r, "duration")),
+            "site": str(cell(r, "site")).strip() if cell(r, "site") is not None else "",
+            "addr": addr, "lat": lat, "lon": lon,
+            "imei": re.sub(r"\D", "", str(cell(r, "imei") or ""))[:15],
+            "imsi": re.sub(r"\D", "", str(cell(r, "imsi") or ""))[:15],
+        })
+    a_counts = Counter(e["a"] for e in events if e["a"])
+    distinct_a = len(a_counts)
+    kind = "tower_dump" if distinct_a > 25 and distinct_a > len(events) * 0.05 else "cdr"
+    return {"kind": kind, "headers": headers, "sheet": sheet, "cols": cols, "rows": len(events), "events": events}
+
+
 def analyse(content: bytes, *, phones_on_graph: dict[str, str], incident: dict[str, Any] | None = None,
             llm: Any = None, owner_hint: str | None = None, radius_km: float = 2.0,
             keep_events: bool = False) -> dict[str, Any]:
@@ -273,30 +390,16 @@ def analyse(content: bytes, *, phones_on_graph: dict[str, str], incident: dict[s
     from sherlocks.evidence import cdr_team
     from sherlocks.evidence.cdr_team import finding
 
-    headers, rows, sheet, numbers = load_sheet(content)
-    if not rows:
+    read = read_events(content, llm)
+    headers, sheet, cols, events = read["headers"], read["sheet"], read["cols"], read["events"]
+    if read["kind"] == "empty":
         return {"kind": "empty", "lines": ["The workbook has no data rows."], "rows": 0, "findings": []}
-    cols = map_columns(headers, rows, llm)
-    if not ({"a_party", "b_party"} & set(cols)):
-        return {"kind": "table", "lines": [f"Sheet {sheet}: {len(rows)} rows, columns: {', '.join(headers[:30])}."],
-                "rows": len(rows), "columns": {}, "findings": [], "sheet": sheet}
-
-    events = []
-    for r, number in zip(rows, numbers, strict=False):
-        a = _number(r[cols["a_party"]]) if "a_party" in cols else None
-        b = _number(r[cols["b_party"]]) if "b_party" in cols else None
-        events.append({
-            "a": a, "b": b, "when": _when(r, cols), "row": number,
-            "dir": str(r[cols["direction"]]).strip() if "direction" in cols and r[cols["direction"]] is not None else "",
-            "site": str(r[cols["site"]]).strip() if "site" in cols and r[cols["site"]] is not None else "",
-            "addr": str(r[cols["address"]]).strip() if "address" in cols and r[cols["address"]] is not None else "",
-            "lat": _float(r[cols["lat"]]) if "lat" in cols else None,
-            "lon": _float(r[cols["lon"]]) if "lon" in cols else None,
-            "imei": re.sub(r"\D", "", str(r[cols["imei"]] or ""))[:15] if "imei" in cols else "",
-        })
+    if read["kind"] == "table":
+        return {"kind": "table", "lines": [f"Sheet {sheet}: {read['rows']} rows, columns: {', '.join(headers[:30])}."],
+                "rows": read["rows"], "columns": {}, "findings": [], "sheet": sheet}
     a_counts = Counter(e["a"] for e in events if e["a"])
     distinct_a = len(a_counts)
-    kind = "tower_dump" if distinct_a > 25 and distinct_a > len(events) * 0.05 else "cdr"
+    kind = read["kind"]
     times = sorted(e["when"] for e in events if e["when"])
     lines: list[str] = []
     findings: list[dict[str, Any]] = []

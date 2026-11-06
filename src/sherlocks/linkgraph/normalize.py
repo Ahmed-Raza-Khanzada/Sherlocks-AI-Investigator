@@ -225,7 +225,7 @@ def _squeeze(key: str) -> str:
 def sounds_like(query: str, name: str) -> bool:
     """Does ``query`` (any script, one or more words) sound like ``name`` - each query
     word, in order, starting at a word of the name? "altaf" ~ "محمد الطاف"; two words
-    written as one also match ("Mir Jawad" ~ "میرجواد علی")."""
+    written as one also match ("Mir Danish" ~ "میردانش علی")."""
     q = _squeeze("".join(sound_keys(query)))
     if not q:
         return False

@@ -85,6 +85,9 @@ class _Reading(Typed):
                           "(e.g. 'investigating officer', 'date of occurrence', 'place of occurrence', 'witnesses', "
                           "'weapon used', 'court', 'sections', 'complainant'), or '' when the officer wants a whole "
                           "picture (a summary, an explanation, a list).")
+    call_records: bool = Field(default=False, description="True when the answer is in phone call records (CDR): "
+                               "calls, SMS, contacts, how often or how long, times and days of use, towers or places, "
+                               "handsets (IMEI) or SIMs, who called whom.")
     uses_pronoun: bool = False
     language: Literal["en", "roman", "ur"] | None = Field(
         default=None, description="The language the officer wrote in: en (English), roman (Urdu in Latin letters), "
@@ -228,7 +231,7 @@ def model_reading(message: str, case: Any, llm: Any) -> dict[str, Any] | None:
         out, _ = llm.generate_structured(prompt=f"Message to read: {message}\n\nSherlock last asked: {asked}\n"
                                                 f"Earlier conversation (only to tell who 'he / ye / wo' is): {recent}",
                                          schema=_Reading, system=_READER_SYSTEM,
-                                         cache_kind="question_reader", prompt_version="v21", max_tokens=600)
+                                         cache_kind="question_reader", prompt_version="v22", max_tokens=600)
         return out.model_dump()
     except Exception as exc:  # noqa: BLE001 - the rules read it instead
         logger.info("Question reader model failed: %s", exc)
@@ -378,7 +381,7 @@ def from_reading(message: str, net: Any, case: Any, focus: list[str], reading: d
             "topics": [t for t in reading.get("topics") or [] if t in _PERSON_TOPICS or t == "complaints"],
             "shape": _shape(reading, people, asks_for if one_fact(asks_for, kind, depth) else "",
                             [m.group(0) for m in FIR_NO.finditer(message)]),
-            "wants_view": bool(reading.get("wants_view"))}
+            "wants_view": bool(reading.get("wants_view")), "call_records": bool(reading.get("call_records"))}
 
 
 def _shape(reading: dict[str, Any], people: list[str], asks_for: str, firs: list[str] | None = None) -> str:

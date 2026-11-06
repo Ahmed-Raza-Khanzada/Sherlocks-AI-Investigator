@@ -57,6 +57,20 @@ _RELATION_VALUE = (
 )
 
 
+def police_on_duty(data: dict[str, Any]) -> bool:
+    """A person the records give a police rank ("Pc-Altaf Hussain", "Imtiaz Ali انسپکٹر", "ASI Nasir") or flag as a
+    police officer - and who is accused in none of their FIRs (an officer accused of a crime is searched)."""
+    from sherlocks.linkgraph.case_queries import role_kind
+    from sherlocks.team.case_scope import _RANK, _RANK_AFTER
+
+    if any(role_kind([str(f.get("role") or "")]) == "accused" for f in data.get("firs") or []):
+        return False
+    if "police_officer" in (data.get("flags") or []):
+        return True
+    return any(_RANK.match(str(n or "")) or _RANK_AFTER.search(str(n or ""))
+               for n in [data.get("name"), *(data.get("names") or [])] if n)
+
+
 class Cancelled(Exception):
     pass
 
@@ -505,6 +519,10 @@ class Expansion:
                     continue
                 if not data["searchable"]:
                     builder.set_search_status(pid, "not_searchable")
+                elif not data.get("seed") and police_on_duty(data):
+                    # A police officer named in an FIR is there on duty (witness, investigator): not searched -
+                    # their own record names hundreds of cases that are not the targets'.
+                    builder.set_search_status(pid, "police_officer")
                 elif len(self._searched) + len(todo) >= max_persons:
                     builder.set_search_status(pid, "budget")
                 else:

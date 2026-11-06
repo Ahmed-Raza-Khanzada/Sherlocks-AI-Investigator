@@ -119,12 +119,12 @@ def test_story_dates_read_as_dates():
 
 
 def test_the_same_facts_under_a_new_heading_are_a_repeat():
-    shown = {"Forensic and medical findings": ["LAB-331061 blood: traces of bupivacaine",
-                                               "LAB-331061 shirt posterior defect 6.99 mm"],
+    shown = {"Forensic and medical findings": ["LAB-000101 blood: traces of a sedative",
+                                               "LAB-000101 shirt posterior defect 5.00 mm"],
              "The targets": ["Kamran Aslam 03990000101"]}
     material = {**MATERIAL, "reports": shown["Forensic and medical findings"]}
     text = ("SECTION: Samples and laboratory results | why\nTABLE: Sample | Result | Report\n"
-            "ROW: Blood | traces of bupivacaine | LAB-331061\nROW: Shirt | posterior defect 6.99 mm | LAB-331061\n"
+            "ROW: Blood | traces of a sedative | LAB-000101\nROW: Shirt | posterior defect 5.00 mm | LAB-000101\n"
             "SECTION: Vehicles on record | why\nTABLE: Vehicle | Holder\nROW: Corolla LEA-1234 | Kamran Aslam\n"
             "ROW: Kamran Aslam's phone | 03990000101\n"
             "SECTION: Cars again | why\nTABLE: Car | Holder\nROW: Corolla LEA-1234 | Kamran Aslam\n")
@@ -139,9 +139,9 @@ def test_the_writer_passes_what_the_report_shows_to_the_repeat_check():
     class Model:
         def generate_text(self, **_):
             return ("SECTION: Samples and laboratory results | why\nTABLE: Sample | Result | Report\n"
-                    "ROW: Blood | traces of bupivacaine | LAB-331061\n")
+                    "ROW: Blood | traces of a sedative | LAB-000101\n")
 
-    shown = {"Forensic and medical findings": ["LAB-331061 blood: traces of bupivacaine"]}
+    shown = {"Forensic and medical findings": ["LAB-000101 blood: traces of a sedative"]}
     out = section_writer.write({"reports": shown["Forensic and medical findings"]}, ["Forensic and medical findings"],
                                set(), Model(), holds={}, shown=shown)
     assert out == {"sections": [], "dropped": 1}

@@ -21,7 +21,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from sherlocks.evidence.board_store import BoardStore, MemoryBoardStore, PostgresBoardStore, merge_posted
+from sherlocks.evidence.board_store import (
+    BoardStore,
+    MemoryBoardStore,
+    PostgresBoardStore,
+    merge_posted,
+)
 from sherlocks.evidence.case_file import CaseFile
 from sherlocks.linkgraph.backends import LookupBackend, build_backend
 from sherlocks.linkgraph.cache import MemoryProviderCache, PostgresProviderCache, ProviderCache
@@ -198,6 +203,35 @@ class PostgresRunStore:
             return []
 
 
+class _GraphVersions:
+    """The run store, noting each run's graph version as it is saved or loaded - so a viewer of a finished run can
+    ask cheaply whether its graph changed (a chat lookup, a CDR's contacts searched) without loading it."""
+
+    def __init__(self, store: RunStore) -> None:
+        self.inner = store
+        self.versions: dict[str, int] = {}
+
+    def _note(self, run: dict[str, Any] | None) -> None:
+        graph = (run or {}).get("graph")
+        if isinstance(graph, dict) and graph.get("version") is not None:
+            self.versions[run["id"]] = int(graph["version"])
+
+    def save(self, run: dict[str, Any]) -> None:
+        self._note(run)
+        self.inner.save(run)
+
+    def load(self, run_id: str) -> dict[str, Any] | None:
+        run = self.inner.load(run_id)
+        self._note(run)
+        return run
+
+    def list(self, limit: int) -> list[dict[str, Any]]:
+        return self.inner.list(limit)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.inner, name)
+
+
 def _row_dict(row: Any, *, graph: bool) -> dict[str, Any]:
     out = {
         "id": row.id, "seed_label": row.seed_label, "backend": row.backend, "params": row.params,
@@ -227,7 +261,7 @@ class RunManager:
     ) -> None:
         self.settings = settings
         ttl = settings.linkgraph.cache_ttl_hours * 3600
-        self.store = store or PostgresRunStore(settings)
+        self.store = _GraphVersions(store or PostgresRunStore(settings))
         self.boards = boards or PostgresBoardStore(settings)
         self._open_boards: OrderedDict[str, CaseFile] = OrderedDict()
         self._boards_lock = threading.RLock()
@@ -438,7 +472,7 @@ class RunManager:
                 case.run_id = run_id
                 if not case.dialog.get("relinked"):
                     # Boards linked before 2026-10-21 tied a document to one holder of a phone number (not the
-                    # target), missed a name written as one word ("میرجواد") and left lab reports unlinked:
+                    # target), missed a name written as one word ("میردانش") and left lab reports unlinked:
                     # every document is linked again, once.
                     from sherlocks.evidence.readers import link_people, prune_phone_links
 
@@ -483,7 +517,81 @@ class RunManager:
             return _Tools(graph(), case, agents, backend, self.settings.evidence.background_live_calls,
                           officer=case.dialog.get("officer"), team="Sherlock team", reason="background casework")
 
-        self.casework.attach(run_id, case, graph, save, tools)
+        def contacts(people: list[dict[str, Any]], after: Callable[[int, int], None] | None = None) -> int:
+            return self.expand_contacts(run_id, case, people, after=after)
+
+        self.casework.attach(run_id, case, graph, save, tools, contacts=contacts)
+
+    def expand_contacts(self, run_id: str, case: CaseFile, people: list[dict[str, Any]], *,
+                        after: Callable[[int, int], None] | None = None) -> int:
+        """Search ``people`` - numbers a CDR ties to the case, ``{number, of, label, reasons, rank, doc}`` - like a
+        target into the run's graph, one at a time, most-contacted first: each joins the graph tied to ``of`` (the
+        person whose CDR it is, or who is in it), then is searched in every system (the owner of the number first).
+        The people found are added one step out and not searched in turn. The graph is saved after each one, so the
+        chat and the board see them as they come. Returns how many were searched."""
+        from sherlocks.evidence.guard import GuardError, check_limits, log_call
+        from sherlocks.linkgraph.models import PersonRef
+
+        handle = self._runs.get(run_id)
+        run: dict[str, Any] | None = None
+        if handle is not None:
+            builder, params, kind = handle.builder, handle.params, handle.backend
+        else:
+            run = self.store.load(run_id)
+            if not run:
+                return 0
+            builder = GraphBuilder.restore(run.get("graph") or {})
+            params = GraphRunParams.model_validate(run.get("params") or {})
+            kind = self.backend_kind(run.get("backend"))
+
+        def emit(level: str, message: str) -> None:
+            if handle is not None:
+                handle.emit(level, message)
+            logger.info("Contacts of %s: %s", run_id, message)
+
+        expansion = Expansion(backend=self.backend(kind), cache=self.cache, images=self.images, settings=self.settings,
+                              params=params, builder=builder, emit=emit, evidence=None)
+
+        def save() -> None:
+            if handle is not None:
+                self.store.save(handle.to_dict())
+            elif run is not None:
+                run["graph"] = {**builder.snapshot(), "case": case.to_dict()}
+                self.store.save(run)
+            self.save_board(run_id, case)
+
+        searched = 0
+        for i, p in enumerate(people, 1):
+            of = builder.canonical(str(p.get("of") or ""))
+            if of not in builder.nodes:
+                continue
+            pid, _ = builder.upsert_person(PersonRef(phones=[p["number"]]), depth=1,
+                                           via={"system": "cdr_contact", "relation": p.get("label") or "", "from": of})
+            pid = builder.canonical(pid)
+            if pid != of:
+                builder.add_direct_strong(of, pid, label=p["label"], reasons=p.get("reasons") or [], system="cdr_contact")
+                builder.nodes[pid].data.setdefault("cdr_contact", {"of": of, "rank": p.get("rank"), "doc": p.get("doc")})
+            data = builder.person(pid)
+            if pid != of and not data.get("seed") and data.get("search_status") not in ("searched", "searching"):
+                try:
+                    check_limits(case, self.settings, "cdr_contact_search")
+                except GuardError as exc:
+                    emit("warn", f"Contact searches stopped: {exc}")
+                    save()
+                    break
+                log_call(case, system="cdr_contact_search", identifier=p["number"], agent="CDR contact search",
+                         reason=p.get("label") or "", officer=case.dialog.get("officer"), status="called")
+                try:
+                    expansion.search_person(pid, 1)
+                    searched += 1
+                except Cancelled:
+                    break
+                except Exception:
+                    logger.exception("Contact search of %s on %s failed", p["number"], run_id)
+            save()
+            if after is not None:
+                after(i, len(people))
+        return searched
 
     def _graph_analyst(self, handle: RunHandle) -> None:
         from sherlocks.evidence.graph_analyst import analyse, link_co_accused
@@ -491,7 +599,7 @@ class RunManager:
         try:
             link_co_accused(handle.builder, handle.case)      # accused in the same FIR: linked
             analyse(handle.case, handle.builder.snapshot())
-        except Exception:  # noqa: BLE001 - the run goes on without it
+        except Exception:
             logger.exception("Graph analyst on %s failed", handle.id)
 
     def save_board(self, run_id: str, case: CaseFile) -> bool:
@@ -735,6 +843,8 @@ class RunManager:
         read_any = any(d["kind"] not in ("graph", "notes") for d in case.documents.values())
         if run_id and not read_any and not (handle is not None and handle.status in ("queued", "running")):
             reading = self.read_documents(run_id)
+        elif run_id and read_any and not (handle is not None and handle.status in ("queued", "running")):
+            self.read_in_full(run_id)
 
         def events() -> Any:
             if officer and officer.get("user"):
@@ -852,9 +962,13 @@ class RunManager:
         doc_id, line = case.officer_note(
             f"Incident location: {where}" + (f", date {inc['date']}" if inc.get("date") else "")
             + (f" {inc['time']}" if inc.get("time") else "") + (f", FIR {inc['fir']}" if inc.get("fir") else ""), source="map")
-        case.add_fact(doc_id, f"Stated by the officer: the incident took place at {where}"
-                      + (f" on {inc['date']}" if inc.get("date") else ""), line, kind="officer_incident_place", by="officer",
-                      topic="incident:place")
+        if where:
+            case.add_fact(doc_id, f"Stated by the officer: the incident took place at {where}"
+                          + (f" on {inc['date']}" if inc.get("date") else ""), line, kind="officer_incident_place",
+                          by="officer", topic="incident:place")
+        elif inc.get("date"):                   # a date with no place: no "took place at None"
+            case.add_fact(doc_id, f"Stated by the officer: the incident took place on {inc['date']}", line,
+                          kind="officer_incident_time", by="officer", topic="incident:date")
         if inc.get("lat") is not None:
             case.close_question("incident:place", where or "")
             case.close_question("incident:pin", where or "")
@@ -976,11 +1090,11 @@ class RunManager:
         def work() -> None:
             try:
                 for owner, no, year, ps, sid in list(firs.values())[: self.settings.evidence.max_documents]:
-                    agents._fir_task(owner, no, year, ps, None, sid)  # noqa: SLF001
+                    agents._fir_task(owner, no, year, ps, None, sid)
                 for cro_no, owner in cros.items():
-                    agents._cro_task(owner, cro_no)  # noqa: SLF001
+                    agents._cro_task(owner, cro_no)
                 agents.drain(timeout=600)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("Reading the documents of %s failed", run_id)
             finally:
                 session["save"]()
@@ -989,9 +1103,53 @@ class RunManager:
         self._jobs.submit(work)
         return len(firs) + len(cros)
 
+    def read_in_full(self, run_id: str) -> int:
+        """The police systems' files of a run read before the full reader existed (an FIR file read for its first
+        9,000 characters, its case diaries left out): read again in full, once, in the background. Returns how
+        many were queued."""
+        session = self._session(run_id)
+        if session is None or not self.settings.evidence.enabled:
+            return 0
+        case, agents = session["case"], session["agents"]
+        llm = agents.llm() if agents.enabled else None
+        if llm is None or not hasattr(llm, "generate_text"):
+            return 0
+        done = set(case.dialog.get("read_in_full") or [])
+        todo = [d["id"] for d in list(case.documents.values()) if d["kind"] in ("fir", "lab", "cro")
+                and not d.get("file_reading") and d["id"] not in done and (d.get("text") or "").strip()]
+        if not todo:
+            return 0
+        case.dialog["read_in_full"] = sorted(done | set(todo))
+
+        def work() -> None:
+            try:
+                for doc_id in todo:
+                    agents._read_with_ai(doc_id)
+                    session["save"]()
+            except Exception:
+                logger.exception("Reading the files of %s in full failed", run_id)
+            finally:
+                session["save"]()
+
+        session["save"]()
+        self._jobs.submit(work)
+        return len(todo)
+
     def case_index(self, run_id: str) -> dict[str, Any] | None:
         session = self._session(run_id)
         return session["case"].index() if session else None
+
+    def changes(self, run_id: str) -> dict[str, Any] | None:
+        """The versions of a run's case board and graph, and whether work on them is still going on - cheap, for
+        a viewer to poll after the run has finished and fetch the board or graph again only when one has changed.
+        ``graph`` is None when this process has not seen the stored graph yet."""
+        handle = self._runs.get(run_id)
+        if handle is not None:
+            return {"case": handle.case.version, "graph": handle.builder.version, "busy": handle.case.busy()}
+        case = self.board(run_id)
+        if case is None:
+            return None
+        return {"case": case.version, "graph": self.store.versions.get(run_id), "busy": case.busy()}
 
     def cancel(self, run_id: str) -> bool:
         handle = self._runs.get(run_id)

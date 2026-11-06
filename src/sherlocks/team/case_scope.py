@@ -173,12 +173,26 @@ _RANK = re.compile(r"^\W*(?:p\s*/\s*)?(?:asi|a\.s\.i\.?|si|s\.i\.?|sip|psi|pi|io
                    r"(?=[\s./:-]|$)", re.IGNORECASE)
 
 
+# The rank written after the name ("Imtiaz Ali انسپکٹر", "Nasir ASI").
+_RANK_AFTER = re.compile(r"[\s\-/(](?:inspector|insp\.?|asi|a\.s\.i\.?|s\.?i\.?p|sho|dsp|constable|head constable|"
+                         r"سب انسپکٹر|انسپکٹر|اے ایس آئی|ایس آئی|کانسٹیبل|ہیڈ کانسٹیبل|ایس ایچ او|ڈی ایس پی)\W*$",
+                         re.IGNORECASE)
+
+
+# The role a FIR's roster gives its investigating officer (linkgraph/extractors.py), on the tie it makes.
+_ON_DUTY = re.compile(r"^Investigating officer (?:in|of) FIR\b")
+
+
 def is_officer(net: Any, pid: str) -> bool:
     """A police officer: flagged so by a police system, or recorded under a rank ("P/ASI-Imran Saleem", "SIP
     Nadeem") - an officer named in someone's FIR is there on duty, not as their associate."""
     if "police_officer" in (net.data(pid).get("flags") or []):
         return True
-    return any(_RANK.match(str(n or "")) for n in [net.name(pid), *(net.all_names(pid) or [])])
+    labels = [str(getattr(link, "label", "") or "") for o in (net.G.neighbors(pid) if pid in net.G else ())
+              for link in net.G[pid][o].get("links") or []]
+    if labels and all(_ON_DUTY.match(x) for x in labels):
+        return True                 # on the case only as an FIR's investigating officer (the tie's label is both ends')
+    return any(_RANK.match(str(n or "")) or _RANK_AFTER.search(str(n or "")) for n in [net.name(pid), *(net.all_names(pid) or [])])
 
 
 def father_of(net: Any, pid: str, other: str) -> str:

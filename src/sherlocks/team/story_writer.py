@@ -41,7 +41,9 @@ class _Event(Typed):
 class _Person(Typed):
     name: str = Field(description="The person's name as the records give it.")
     part: str = Field(description="Their part in THIS case: victim, complainant, accused, co-accused, witness, "
-                                  "investigating officer, or as the records say.")
+                                  "investigating officer, or as the records say. Family of the victim or the accused "
+                                  "with the relation the records give: 'mother of the victim', 'brother of the "
+                                  "accused' - never only 'family'.")
     status: str = Field(description="Only as the records say: arrested (with the date), in custody, absconding, on "
                                     "bail, not arrested, deceased - or 'not on record'.")
     did: str = Field(description="One line: what they did or said in this case, per the records.")
@@ -243,7 +245,7 @@ def write(case: Any, scope: dict[str, Any], llm: Any = None, net: Any = None) ->
     with ThreadPoolExecutor(max_workers=2) as pool:
         told = pool.submit(ask, llm, _Story, dumps(given), system=_SYSTEM, kind="report_story", version="v5",
                            max_tokens=6000)
-        cast = pool.submit(ask, llm, _Cast, dumps(given), system=_CAST_SYSTEM, kind="report_cast", version="v2",
+        cast = pool.submit(ask, llm, _Cast, dumps(given), system=_CAST_SYSTEM, kind="report_cast", version="v3",
                            max_tokens=4000)
         out, cast = told.result(), cast.result()
     story, by = (out.model_dump(), "model") if out is not None else (_templates(case, scope, given), "templates")
@@ -299,4 +301,30 @@ def write(case: Any, scope: dict[str, Any], llm: Any = None, net: Any = None) ->
                 in_short = [x.replace(old, shown) for x in in_short]
                 for q in people:
                     q["part"], q["did"] = q["part"].replace(old, shown), q["did"].replace(old, shown)
-    return {"in_short": in_short, "events": events[:MOST_EVENTS], "people": people[:30], "by": by}
+    return {"in_short": in_short, "events": events[:MOST_EVENTS], "people": one_each(people)[:30], "by": by}
+
+
+_HONORIFIC = re.compile(r"^(?:mian|mr|ms|mrs|haji|hafiz|syed|sayed|chaudhry|ch|malik|rana|میاں|حاجی|حافظ|سید|چوہدری|ملک|رانا)\.?\s+",
+                        re.IGNORECASE)
+
+
+def one_each(people: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One row a person: the same name with or without a title ("Mian Muhammad Ashfaq" and "Muhammad Ashfaq"), or
+    with the same words, is one person - their parts joined, the first row kept."""
+    from sherlocks.linkgraph.normalize import name_key
+
+    def key(name: str) -> str:
+        return name_key(_HONORIFIC.sub("", str(name or "").strip())) or str(name or "").strip().lower()
+
+    out: list[dict[str, Any]] = []
+    for p in people:
+        same = next((q for q in out if key(q["name"]) == key(p["name"])), None)
+        if same is None:
+            out.append(p)
+            continue
+        if p["part"] not in ("-", "") and p["part"].lower() not in same["part"].lower():
+            same["part"] = f"{same['part']}; {p['part']}"
+        if same["status"] == "not on record" and p["status"] != "not on record":
+            same["status"] = p["status"]
+        same["sources"] = list(dict.fromkeys([*same["sources"], *p["sources"]]))
+    return out

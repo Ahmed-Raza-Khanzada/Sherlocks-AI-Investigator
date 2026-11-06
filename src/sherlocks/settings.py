@@ -87,7 +87,7 @@ class LlmSettings(BaseModel):
     base_url: str | None = None
     model: str | None = None
     api_key: str | None = "EMPTY"
-    timeout_seconds: int = 60
+    timeout_seconds: int = 180
     max_attempts: int = 2
     temperature: float = 0.0
     max_tokens: int = 800
@@ -245,13 +245,16 @@ class ChatSettings(BaseModel):
 
     # Raised 2026-10-21: with the whole board read first, a draft on the office model takes 20-40 s, and a
     # step over budget fell back to the rule answer - a slower right answer beats a fast wrong one.
-    reply_budget_s: float = 120.0     # the whole reply, never longer
-    draft_budget_s: float = 75.0      # O1 understanding + drafting (one model call)
-    tools_budget_s: float = 20.0      # toolbox / live calls, together, in parallel
-    view_budget_s: float = 45.0       # Sherlock's quick view (one model call, no tools)
-    investigate_budget_s: float = 45.0  # the investigator's tool loop in a reply
-    check_budget_s: float = 20.0      # the Answer checker's model check
-    revise_budget_s: float = 25.0     # O1 fixing a draft once
+    # Raised 2026-11-05: the chat calls the police systems when the board does not hold it (a draft, the live
+    # calls, a second draft, the check) - on the office model that does not fit in two minutes.
+    reply_budget_s: float = 300.0     # the whole reply, never longer
+    draft_budget_s: float = 120.0     # O1 understanding + drafting (one model call)
+    tools_budget_s: float = 90.0      # toolbox / live calls, together, in parallel (an FIR file is read in full)
+    cdr_budget_s: float = 120.0       # the CDR analyst: code written, run and fixed once
+    view_budget_s: float = 60.0       # Sherlock's quick view (one model call, no tools)
+    investigate_budget_s: float = 90.0  # the investigator's tool loop in a reply
+    check_budget_s: float = 45.0      # the Answer checker's model check
+    revise_budget_s: float = 60.0     # O1 fixing a draft once
     pack_chars: int = 14000           # the context pack, all parts together
     recent_turns: int = 4             # chat turns given word for word; older ones summarised
 
@@ -275,7 +278,7 @@ class EvidenceSettings(BaseModel):
     # The AI reader writes facts from narratives, case diaries and report text, each
     # with a verbatim quote that is checked against the document.
     ai_reader: bool = True
-    ai_reader_calls_per_run: int = 30
+    ai_reader_calls_per_run: int = 80          # documents the model reads in full in one run
     # Write the case report (assessments, linkages) as soon as the graph finishes or is stopped.
     auto_report: bool = True
     # The chat may call police systems itself (FIR document, lab reports, CRO dossier,
@@ -285,6 +288,19 @@ class EvidenceSettings(BaseModel):
     # limit the calls stop and the officer is told; near the hourly limit admins are warned.
     case_live_calls: int = 120
     case_live_calls_per_hour: int = 40
+    # Searches of the police's own CDR archive (iCOP), counted apart from the live calls above: the targets'
+    # numbers and those of the people tied to them are all searched, in all and per hour.
+    archive_searches_per_case: int = 300
+    archive_searches_per_hour: int = 200
+    # A CDR of the target (he is the A party): his most-contacted numbers searched like a target (owner, then
+    # every system), apart from the live-call limits above; at most this many of his CDRs per case; and the first
+    # few of those numbers searched in the CDR archive. The subscriber of a CDR the target is only a contact in is
+    # searched the same way, once.
+    cdr_contacts_searched: int = 50
+    cdr_target_cdrs_per_case: int = 3
+    cdr_contacts_in_archive: int = 5
+    cdr_contact_searches_per_case: int = 200
+    cdr_contact_searches_per_hour: int = 80
     # Live calls the Sherlock team may make in one background run.
     background_live_calls: int = 4
     # Background runs of the Sherlock team per case (the report and the officer can always

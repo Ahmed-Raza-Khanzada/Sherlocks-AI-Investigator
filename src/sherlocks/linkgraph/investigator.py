@@ -50,13 +50,14 @@ logger = logging.getLogger(__name__)
 
 MAX_STEPS = 6
 MAX_STEPS_WITH_EVIDENCE = 9
-_LIVE_TOOLS = {"fetch_fir", "fetch_lab_reports", "fetch_cro", "lookup", "cdr_lookup", "api_router"}
+_LIVE_TOOLS = {"fetch_fir", "fetch_lab_reports", "fetch_cro", "lookup", "cdr_lookup", "api_router", "cdr_archive"}
 # Which agent of the team a tool belongs to (shown with each step).
 AGENT_OF = {"fetch_fir": "API agent", "fetch_lab_reports": "API agent", "fetch_cro": "API agent",
             "lookup": "API agent", "cdr_lookup": "API agent", "evidence": "Document agent",
             "read_document": "Document agent", "search_evidence": "Document agent", "incident": "Case board",
             "uploads": "CDR agent", "board": "Board reader", "dossier": "A4 Dossier agent", "chat_memory": "Chat memory",
-            "cdr_query": "CDR query", "api_router": "API router", "statements": "Statements",
+            "cdr_query": "CDR query", "api_router": "API router", "cdr_archive": "CDR archive",
+            "cdr_analysis": "R8 CDR analyst", "statements": "Statements",
             "presence": "Presence matrix", "evidence_register": "Evidence register", "contradictions": "S6 Contradiction finder",
             "case_leads": "S8 Lead spotter", "hypotheses": "S1 Sherlock"}
 _RESULT_CHARS = 3500
@@ -65,6 +66,35 @@ _RESULT_CHARS = 3500
 # --------------------------------------------------------------------------------------
 # Tools
 # --------------------------------------------------------------------------------------
+
+
+def doc_text(doc: dict[str, Any], chars: int) -> str:
+    """A document's own words, for a model to read. An FIR file longer than ``chars`` keeps its header and then
+    its first information, case diaries and investigation result - cut from the front, the case diaries (the
+    IO's dated steps: whom the complainant suspected, the phone he gave, the CDR asked for) were never read."""
+    from sherlocks.evidence.readers import FREE_LINES, free_text
+
+    text = doc.get("text") or ""
+    if len(text) <= chars or doc.get("kind") != "fir":
+        return text[:chars]
+    free = free_text("fir", doc)
+    head = "\n".join(line for line in text.splitlines() if not line.startswith(FREE_LINES))
+    return (head[: max(1500, chars - len(free))] + "\n" + free)[:chars]
+
+
+def _read_in_full(doc: dict[str, Any], most: int = 40) -> dict[str, Any]:
+    """What the full reader took out of a police system's file, with fact ids: its dated steps, findings, what
+    people said and the angles it raises."""
+    r = doc.get("file_reading") or doc.get("reading")
+    if not r:
+        return {}
+    return {"read_in_full": {
+        "dated_steps": [f"{e['fact']}: {e['when']} {e['time']}: {e['what']}".replace("  ", " ") for e in r.get("events") or []][:most],
+        "findings": [f"{x['fact']}: {x['text']}" for x in r.get("findings") or []][:most // 2],
+        "said": [f"{x['fact']}: {x['who']} - {x['said']}" for x in r.get("said") or []][:most // 2],
+        "evidence": [f"{x['fact']}: {x['item']} - {x['what']}" for x in r.get("evidence") or []][:most // 2],
+        "raised_for_investigation": [f"{x['fact']}: {x['text']}" for x in r.get("leads") or []][:most // 2],
+        "people": [f"{p['name']} ({p['part']}): {p['says']}" for p in r.get("people") or []][:most // 2]}}
 
 
 class _Tools:
@@ -164,13 +194,15 @@ class _Tools:
         doc = self.case.document(doc_id) if self.case is not None else None
         if doc is None:
             raise ValueError(f"No document {doc_id!r}; use 'evidence' to list them")
+        # Its own words first: a result cut to fit loses the end, and the end must not be the case diaries.
         return {"id": doc["id"], "title": doc["title"], "source": doc["source"],
-                "summary": doc.get("ai_summary") or doc.get("summary"),
+                "summary": doc.get("ai_summary") or doc.get("summary"), "text": doc_text(doc, text_chars),
+                **_read_in_full(doc),
                 "facts": [{"id": f["id"], "fact": f["statement"], "quote": f["quote"][:220]} for f in doc["fact_rows"]
                           if not page_line(f, doc)][:20],
                 "people_found": [{"id": link["id"], "name": link["name"], "how": link["how"]} for link in doc["link_rows"]],
                 "people_named": doc.get("people", [])[:20], "pictures": len(doc.get("images") or []),
-                "unread_pages": doc.get("unread_pages"), "text": (doc.get("text") or "")[:text_chars]}
+                "unread_pages": doc.get("unread_pages")}
 
     def evidence(self, args: dict[str, str]) -> dict:
         if self.case is None:
@@ -193,7 +225,7 @@ class _Tools:
                                   if a["status"] != "hit"][-10:]}
 
     def read_document(self, args: dict[str, str]) -> dict:
-        return self._digest(str(args.get("id") or args.get("doc") or "").strip().upper(), text_chars=3500)
+        return self._digest(str(args.get("id") or args.get("doc") or "").strip().upper(), text_chars=9000)
 
     def search_evidence(self, args: dict[str, str]) -> dict:
         if self.case is None:
@@ -214,7 +246,7 @@ class _Tools:
         if self.live_left <= 0:
             raise ValueError("No live calls left for this question - answer from what is known, or suggest the call")
         try:
-            guard.check_limits(self.case, self.settings)
+            guard.check_limits(self.case, self.settings, system)
             guard.check_system(system, self.officer)
             guard.check_identifier(identifier, self.graph, self.case)
         except guard.GuardError:
@@ -259,7 +291,7 @@ class _Tools:
         found = self.agents.fetch_fir(no, year, ps_id)
         if "error" in found:
             return found
-        return self._digest(found["document"])
+        return self._digest(found["document"], text_chars=9000)
 
     def fetch_lab_reports(self, args: dict[str, str]) -> dict:
         if self.agents is None:
@@ -267,7 +299,8 @@ class _Tools:
         no, year, ps_id = self._fir_ref(args)
         self._spend("labs")
         found = self.agents.fetch_lab_reports(no, year, ps_id)
-        return {"documents": [self._digest(d, text_chars=1200) for d in found.get("documents") or []],
+        ids = found.get("documents") or []
+        return {"documents": [self._digest(d, text_chars=4000 if len(ids) <= 2 else 1500) for d in ids],
                 "message": found.get("message")}
 
     def fetch_cro(self, args: dict[str, str]) -> dict:
@@ -284,7 +317,7 @@ class _Tools:
             raise ValueError("No CRO number known; give cro_no")
         self._spend("safe")
         found = self.agents.fetch_cro(cro_no, pid)
-        return found if "error" in found else self._digest(found["document"])
+        return found if "error" in found else self._digest(found["document"], text_chars=6000)
 
     def lookup(self, args: dict[str, str]) -> dict:
         from sherlocks.linkgraph.extractors import extract_record
@@ -353,6 +386,12 @@ class _Tools:
                                 self.chat_memory),
                 "cdr_query": (("The CDR team's facts for a person or a number: calls, towers, distances, IMEIs, with row "
                               "references. args: who | number"), self.cdr_query),
+                "cdr_analysis": (("R8 CDR analyst: ANY question about the call records, COMPUTED by code over every record "
+                                 "of every CDR on the board - top contacts, calls between two numbers, who links two "
+                                 "people, common contacts, a day or a time window, night use, silences, handsets (IMEI) "
+                                 "and SIMs, towers and places, near a point, the same tower at the same time. Use it for "
+                                 "every count, list or comparison from CDRs. args: question (the officer's question, "
+                                 "with the numbers and dates in it)"), self.cdr_analysis),
             })
         if self.case is not None:
             tools.update({
@@ -374,6 +413,9 @@ class _Tools:
                                "ranking by evidence against, and the Skeptic's challenges. args: none"), self.hypotheses),
             })
         if self.backend is not None and self.live_left > 0:
+            tools["cdr_archive"] = (("LIVE: search the iCOP CDR archive for a mobile number - every CDR already "
+                                    "extracted where it is the subscriber (A party) or a contact (B party) - and read "
+                                    "each file onto the case board for analysis. args: number | who"), self.cdr_archive)
             tools["api_router"] = (("LIVE: ask the police systems that hold a topic about one person - the catalog picks "
                                    "the systems (identity, work, vehicle, phone, address, family, record, complaint, "
                                    "hotel). args: who, topic"), self.api_router)
@@ -473,6 +515,38 @@ class _Tools:
         return {"numbers": sorted(numbers), "facts": [{"id": f["id"], "doc": f["doc"], "fact": f["statement"],
                                                        "tier": f.get("tier"), "rows": f.get("rows")} for f in facts[:30]],
                 "note": None if facts else "No CDR on the board covers this - ask the officer for one."}
+
+    def cdr_archive(self, args: dict[str, str]) -> dict:
+        from sherlocks.evidence import cdr_archive
+
+        numbers = [args.get("number")] if args.get("number") else list(self.net.data(self._who(args)).get("phones") or [])
+        if not numbers:
+            raise ValueError("Give a number, or a person with a phone on record")
+        # Searched now; each file found is read onto the board in the background (the chat shows its progress).
+        out = [cdr_archive.fetch(self, n, reason=self.reason, wait=False) for n in numbers[:3]]
+        reading = any(f.get("status") == "found" for o in out for f in o["files"])
+        return {"searched": [o["number"] for o in out], "results": out,
+                "next": ("The CDRs found are being read onto the case board now - say so; cdr_analysis can compute "
+                         "from them once read.") if reading else
+                        ("Ask cdr_analysis to compute from these CDRs." if any(o["files"] for o in out) else None)}
+
+    def cdr_analysis(self, args: dict[str, str]) -> dict:
+        from sherlocks.team import cdr_analyst
+
+        question = str(args.get("question") or self.reason or "").strip()
+        if not question:
+            raise ValueError("Give the question to compute")
+        llm = self.agents.llm() if self.agents is not None else None
+        if llm is None:
+            from sherlocks.agents.llm import build_llm
+            from sherlocks.settings import load_settings
+
+            llm = build_llm(load_settings())
+        done = cdr_analyst.answer(self.case, question, llm, net=self.net)
+        return {"question": done["question"], "ok": done["ok"], "computed_from": [
+            {"file": f["file"], "number": f["subject"], "records": f["records"], "from": f["first"], "to": f["last"]}
+            for f in done.get("files") or []], "result": done.get("result"), "error": done.get("error"),
+            "note": done.get("note") or "Computed by code over every record of these CDRs; cite the files and rows."}
 
     def api_router(self, args: dict[str, str]) -> dict:
         from sherlocks.linkgraph import api_router as router

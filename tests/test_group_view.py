@@ -75,12 +75,17 @@ def test_the_complainants_family_is_no_common_connection_and_one_target_is_no_gr
     case, net, scope = _gang()
     group = group_view.build(case, net, scope)
     names = {c["name"] for c in group["common"]}
-    # The complainant is tied to two targets (he named them both); his brother is not reached through him.
-    assert "Bilal Khan" in names
+    # The complainant against two targets ties them (the same complainant against both) - he is no contact to
+    # investigate them through, and his brother is not reached through him.
+    assert "Bilal Khan" not in names
+    ties = {frozenset((r["a"], r["b"])): r for r in group["ties"]}
+    assert any("same complainant against both: Bilal Khan" in h for h in ties[frozenset(("Kamran Aslam", "Imran Rashid"))]["how"])
     assert not any(x["how"].startswith("through Bilal Khan") for c in group["common"] for x in c["tied_to"])
     contacts = {c["target"]: c for c in group["contacts"]}
     first = contacts["Kamran Aslam"]["rows"][0]
     assert first["also_tied_to"] and first["cnic"] != "-"
+    assert any(x.startswith("Bilal Khan (Complainant") for x in contacts["Kamran Aslam"]["named"])
+    assert "Bilal Khan" not in {r["name"] for r in contacts["Kamran Aslam"]["rows"]}
     lines = group_view.lines(group)
     assert lines[0].startswith("From the police") and lines[1].startswith("Group 1:") and any("Tariq Hussain" in x for x in lines)
 

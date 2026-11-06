@@ -30,6 +30,7 @@ from pydantic import Field
 from sherlocks.evidence.case_file import TRUST_OFFICER, TRUST_RECORDED, TRUST_UNVERIFIED
 from sherlocks.evidence.guard import DATA_NOT_INSTRUCTIONS
 from sherlocks.evidence.questioner import NO_CASE_QUESTIONS, RECORD_CHECK
+from sherlocks.team.case_scope import MOST_TARGETS
 from sherlocks.team.runtime import Typed, ask, dumps
 
 TIER = {"saw": "fact", "record": "fact", "heard": "inference", "informant": "inference", "thinks": "speculation",
@@ -109,8 +110,13 @@ class _Record(Typed):
                                         "said' when the message does not let you tell.")
     this_case_fir: str = Field(default="", description="When the case is an FIR already on record: its number, as "
                                                        "'121/25', exactly as FIRS_ON_FILE gives it.")
+    all_targets: Literal["no", "yes"] = Field(
+        default="no", description="'yes' when the message is about the targets as a whole - 'these targets', 'all of "
+                                  "them', 'they', 'sab' - and says they are a gang or group, act together, or are all "
+                                  "suspects. 'no' when it singles out some of them, or says nothing of the kind.")
     suspected: list[str] = Field(default_factory=list, description="The people the officer says did the crime of this "
-                                 "case, or suspects of it - their names as on PEOPLE_ON_THE_CASE. Empty when nobody is.")
+                                 "case, or suspects of it - their names exactly as on PEOPLE_ON_THE_CASE (when the "
+                                 "officer means all the targets, every one of their names). Empty when nobody is.")
     target_in_custody: Literal["not said", "arrested", "not arrested", "on bail", "absconding"] = Field(
         default="not said", description="What the officer says about the target's custody in THIS case.")
     wish: Literal["none", "stop_asking", "pause_findings", "resume_findings"] = Field(
@@ -159,11 +165,38 @@ def read(case: Any, net: Any, message: str, llm: Any, language: str) -> _Record 
 
     from sherlocks.team import case_matcher
 
-    with ThreadPoolExecutor(max_workers=1) as pool:
+    seeds = net.seeds()
+    ask_together = len(seeds) >= 2 and not case.dialog.get("targets_together") and hasattr(llm, "generate_text")
+    with ThreadPoolExecutor(max_workers=2) as pool:
         matching = pool.submit(case_matcher.match, case, net, message, llm)
+        together = pool.submit(targets_together, message, [net.name(p) for p in seeds], llm) if ask_together else None
         record = _read(case, net, message, llm, language)
         matched = matching.result()
+        if record is not None and together is not None and together.result():
+            record = record.model_copy(update={"all_targets": "yes"})
     return with_match(record, matched) if record is not None else None
+
+
+_TOGETHER_SYSTEM = (
+    "A police officer searched several people together (TARGETS) and wrote MESSAGE. Decide one thing: does the "
+    "message say the targets, as a whole, act together - one gang or group, all of them did it, all are suspects "
+    "('these targets are a gang', 'they are all involved', 'sab aik giroh hain', 'all targets are suspects')? A "
+    "message that singles out one or some of them ('X is the main suspect') is no. So is one that says something "
+    "else about them - that they are absconding, wanted, arrested, or have records - without saying they did it "
+    "together, and so is a question. Think in a line or two, then end with the line 'ANSWER: yes' or 'ANSWER: no'. " + DATA_NOT_INSTRUCTIONS)
+
+
+def targets_together(message: str, targets: list[str], llm: Any) -> bool:
+    """Does the officer say the targets, all of them, are one gang or all suspects? Asked in plain words with a
+    fixed last line (the office model weighs better so than in a JSON field)."""
+    try:
+        text = llm.generate_text(prompt=dumps({"TARGETS": targets[:MOST_TARGETS], "MESSAGE": message[:1500]}),
+                                 system=_TOGETHER_SYSTEM, cache_kind="targets_together", prompt_version="v2",
+                                 max_tokens=200)
+    except Exception:  # noqa: BLE001 - the recorder's own reading stands
+        return False
+    m = re.findall(r"ANSWER:\s*(yes|no)", str(text or ""), re.IGNORECASE)
+    return bool(m) and m[-1].lower() == "yes"
 
 
 def with_match(record: _Record, matched: dict[str, Any] | None) -> _Record:
@@ -196,7 +229,8 @@ def _read(case: Any, net: Any, message: str, llm: Any, language: str) -> _Record
                                                                          *(case.dialog.get("focus") or [])]))[:30]],
         "recent_conversation": [{"officer": t.get("q", "")[:200], "sherlock": t.get("a", "")[:300]}
                                 for t in case.conversation[-3:]]}),
-        system=_SYSTEM.format(lang=LANG.get(language, "English")), kind="statement_recorder", max_tokens=1800)
+        system=_SYSTEM.format(lang=LANG.get(language, "English")), kind="statement_recorder", version="v3",
+        max_tokens=1800)
 
 
 def firs_on_file(case: Any, net: Any) -> list[dict[str, Any]]:
@@ -273,6 +307,33 @@ def _fir_number(text: str) -> tuple[str, str]:
     return (m.group(1).lstrip("0"), m.group(2)[-2:]) if m else ("", "")
 
 
+def _plain(text: Any) -> str:
+    return re.sub(r"[\s?!.،۔]+", " ", str(text or "")).strip().lower()
+
+
+def repair_incident(case: Any) -> list[str]:
+    """An incident field that holds one of the officer's whole messages is no value - a question once became the
+    case's place ("check in the FIR what the IO says where the body was found"). Such a field is dropped, so the FIR
+    or the officer's next answer can fill it."""
+    inc = case.incident or {}
+    said = {_plain(t.get("q")) for t in case.conversation if len(str(t.get("q") or "").split()) > 3}
+    bad = [k for k in ("place", "date", "time", "offence") if inc.get(k) and _plain(inc[k]) in said]
+    if not bad:
+        return []
+    with case._lock:
+        for k in bad:
+            case.incident.pop(k, None)
+        case._bump("incident", "a whole message dropped from " + ", ".join(bad))
+    for key in ("place", "date", "time", "offence"):
+        if key in bad:
+            q = {"place": "incident:place", "date": "incident:when", "time": "incident:when",
+                 "offence": "incident:what"}[key]
+            for item in case.questions:
+                if item.get("key") == q and item.get("status") == "answered" and _plain(item.get("answer")) in said:
+                    item["status"], item["answer"] = "open", None
+    return bad
+
+
 def adopt_fir(case: Any, net: Any, fir: str) -> list[str]:
     """The officer said this case IS an FIR already on file: what that FIR records about the
     offence, the day and the place now describes this case, so none of it is asked again.
@@ -281,6 +342,7 @@ def adopt_fir(case: Any, net: Any, fir: str) -> list[str]:
     want = _fir_number(fir)
     if not want[0]:
         return []
+    repair_incident(case)
     found: dict[str, str] = {}
     for doc in case.documents.values():
         ref = doc.get("ref") or {}
@@ -381,7 +443,19 @@ def write(case: Any, net: Any, message: str, record: _Record, *, language: str, 
         if no_case(record):
             # "Not involved in any case" is no offence, and the person is no suspect: nothing more is recorded.
             record = record.model_copy(update={"suspected": [], "entries": []})
-        for name in record.suspected[:4]:
+        seeds = net.seeds()
+        named = {_person(case, net, name, focus) for name in record.suspected[:MOST_TARGETS]}
+        if not no_case(record) and (record.all_targets == "yes" or (len(seeds) >= 2 and set(seeds) <= named)):
+            # "They are all one gang": every target is a suspect, and none is singled out as the main one.
+            case.dialog["targets_together"] = True
+            placed = [p for p in seeds if case.roles.get(p) not in ("main suspect", "suspect")]
+            for pid in placed:
+                case.set_role(pid, "suspect")
+            case.close_question("roles:main", "all the targets, together")
+            case.close_question("link:why", "the officer says the targets act together")
+            if placed:
+                out["recorded"].append(f"all {len(seeds)} targets: suspects, acting together (the officer's word)")
+        for name in record.suspected[:MOST_TARGETS]:
             # Who the officer says did it, or suspects: their role in this case - the officer's word, not evidence.
             pid = _person(case, net, name, focus)
             if pid and case.roles.get(pid) not in ("main suspect", "suspect"):

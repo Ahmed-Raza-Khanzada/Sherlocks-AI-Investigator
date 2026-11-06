@@ -50,7 +50,11 @@ _SYSTEM = ("You word the questions an investigation team puts to the investigati
            "short question in {lang} that would settle it. Ask for a FACT. Never assume anyone's guilt, never suggest "
            "the answer: 'Why was Imran's phone off that night?' is right; 'Why did Imran hide his phone?' is wrong. "
            "Name the people, the dates and the record numbers the item gives. Mark as a task anything the officer "
-           "cannot answer from memory. " + NEW_CASE + PLAIN + DATA_NOT_INSTRUCTIONS)
+           "cannot answer from memory. The officer is asked only what THEY can know - what they saw, were told, or hold "
+           "on file. Never ask them what a record says or shows ('What do the CDRs of X show?', 'What do the tenancy "
+           "records say?'): that is work for the team. When an item needs a record examined, ask whether they have it "
+           "or can get it, and say what it would settle: 'Do you have the CDR of Kamran's number 0300-1234567 for July? "
+           "Upload it and I will compare her calls with the family's.' " + NEW_CASE + PLAIN + DATA_NOT_INSTRUCTIONS)
 _IDENTITY_SYSTEM = ("The investigating officer was asked whether two records name the same person. Read the answer. "
                     + DATA_NOT_INSTRUCTIONS)
 
@@ -104,7 +108,8 @@ def run(case: Any, graph: dict[str, Any], net: Any, llm: Any) -> dict[str, int]:
     if todo and llm is not None:
         language = case.dialog.get("language") or "en"
         out = ask(llm, _Wording, dumps({"items": [{k: s[k] for k in ("source", "kind", "about", "draft")} for s in todo]}),
-                  system=_SYSTEM.format(lang=LANG.get(language, "English")), kind="questioner_wording", max_tokens=1500)
+                  system=_SYSTEM.format(lang=LANG.get(language, "English")), kind="questioner_wording", version="v2",
+                  max_tokens=1500)
         worded = {w.source: w for w in out.questions} if out is not None else {}
         desk = Gatekeeper(case, graph, llm)
         with case.acting("S4 Questioner"):

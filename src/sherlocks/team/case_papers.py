@@ -68,7 +68,11 @@ PAPERS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
 )
 
 # What the records themselves show happened - in any case: a death, a firearm, an exhumation.
-_DEATH = re.compile(r"dead body|deceased|post[- ]?mortem|\b302\b|corpse|killed|death|لاش|قتل", re.IGNORECASE)
+# A death is said by words only a death has: "death" or "killed" alone are also threats ("threatened to kill") and
+# the charge of a robbery that attempted to cause death (397); قتل is also اقدام قتل.
+_DEATH = re.compile(r"dead body|deceased|post[- ]?mortem|\b302\b|corpse|was killed|were killed|died|murdered|لاش|مقتول|"
+                    r"نعش|جاں بحق", re.IGNORECASE)
+_INJURY = re.compile(r"injur|wound|\bhurt\b|bleed|زخم|مضروب", re.IGNORECASE)
 _FIREARM = re.compile(r"gunshot|\bshot\b|shooting|firearm|pistol|bullet|casing|\b(?:13|23)-?e\b|فائر", re.IGNORECASE)
 _EXHUMED = re.compile(r"exhum", re.IGNORECASE)
 # The kind of case from its offence (the FIR's sections, read by ``offences.classify``).
@@ -107,9 +111,23 @@ def kinds(case: Any, scope: dict[str, Any], parts: dict[str, Any]) -> set[str]:
     for name, pattern in (("death", _DEATH), ("firearm", _FIREARM), ("exhumed", _EXHUMED)):
         if pattern.search(text):
             out.add(name)
-    if "firearm" in out and "death" not in out:
-        out.add("injury")
+    if "firearm" in out and "death" not in out and _INJURY.search(text):
+        out.add("injury")           # someone was hurt: the medical examination belongs to the file
     return out
+
+
+def archive_searched(case: Any) -> str:
+    """What the search of the iCOP CDR archive came to, in one line - so "not on the board" says it was looked for."""
+    status = (case.dialog or {}).get("cdr_archive") or {}
+    if not status.get("searched"):
+        return ""
+    found = status.get("all_found") or status.get("found") or []
+    status = {**status, "searched": status.get("all_numbers") or status["searched"]}
+    doc = f" [{status['doc']}]" if status.get("doc") else ""
+    if found:
+        names = ", ".join(dict.fromkeys(f"{f['name']}" for f in found))
+        return f"iCOP CDR archive searched for {status['searched']} number(s): CDR found for {names}{doc}"
+    return f"iCOP CDR archive searched for {status['searched']} number(s) of the targets and their contacts: none there{doc}"
 
 
 def check(case: Any, net: Any, scope: dict[str, Any], parts: dict[str, Any]) -> dict[str, Any]:
@@ -144,7 +162,8 @@ def check(case: Any, net: Any, scope: dict[str, Any], parts: dict[str, Any]) -> 
                          "where": "named in " + "; ".join(str(d.get("title") or d["id"]).replace("Upload: ", "")
                                                           for d in mentioned[:2]) + " - get a copy for the file"})
         else:
-            rows.append({"paper": paper, "status": "not on the board", "where": ""})
+            rows.append({"paper": paper, "status": "not on the board",
+                         "where": archive_searched(case) if paper.startswith("Call records") else ""})
     order = {"not on the board": 0, "mentioned, not on the board": 1, "on the board": 2}
     rows.sort(key=lambda r: order[r["status"]])
     return {"kinds": sorted(have - {"any"}), "papers": rows}

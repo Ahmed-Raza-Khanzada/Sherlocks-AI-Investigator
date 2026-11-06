@@ -94,3 +94,14 @@ def _no_real_web_search(monkeypatch):
 
     monkeypatch.setattr(requests.Session, "get", guarded)
     monkeypatch.setattr(websearch.FreeWebSearch, "_rested_until", {})
+
+
+@pytest.fixture(autouse=True)
+def _no_real_cdr_archive(monkeypatch):
+    """The iCOP CDR archive is a live police system: its address and key come from .env, and no test may reach
+    it. A test that needs it passes its own base and key, with a fake session."""
+    from sherlocks.linkgraph import ems
+
+    for key in ("ICOP_CDR_ARCHIVE_URL", "ICOP_CDR_ARCHIVE_KEY"):
+        monkeypatch.delenv(key, raising=False)
+        monkeypatch.delitem(ems._ENV_FILE, key, raising=False)

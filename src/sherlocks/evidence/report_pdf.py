@@ -135,15 +135,32 @@ class _Pdf(FPDF):
         latin = sum(1 for ch in text if ch.isascii() and ch.isalnum())
         self.text_shaping["direction"] = TextDirection.LTR if urdu and latin >= urdu else None
 
+    def _marked(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[tuple[Any, ...], dict[str, Any]]:
+        """Set left to right, a line that starts with Urdu broke the English after it in the same cell ("suspect"
+        under an Urdu name came out as other glyphs): each line then starts with a left-to-right mark."""
+        text = kwargs.get("text") if "text" in kwargs else (args[2] if len(args) > 2 else None)
+        if (not isinstance(text, str) or not self.shaped or not self.text_shaping
+                or self.text_shaping.get("direction") != TextDirection.LTR or not _ARABIC.search(text)):
+            return args, kwargs
+        text = "\n".join("\u200e" + line if line and _ARABIC.match(line) else line for line in text.split("\n"))
+        if "text" in kwargs:
+            return args, {**kwargs, "text": text}
+        return (*args[:2], text, *args[3:]), kwargs
+
     def multi_cell(self, *args: Any, **kwargs: Any) -> Any:
         self._reads(kwargs.get("text") if "text" in kwargs else (args[2] if len(args) > 2 else ""))
+        args, kwargs = self._marked(args, kwargs)
         return super().multi_cell(*args, **kwargs)
 
     def cell(self, *args: Any, **kwargs: Any) -> Any:
         self._reads(kwargs.get("text") if "text" in kwargs else (args[2] if len(args) > 2 else ""))
+        args, kwargs = self._marked(args, kwargs)
         return super().cell(*args, **kwargs)
 
     def font(self, size: float = 9.5, style: str = "", colour: tuple[int, int, int] = INK) -> None:
+        # Always set again: after a line drawn in the Urdu fallback font, "the same font" was skipped and the next
+        # English line was shaped with the fallback's glyphs ("As accused (1)" came out as "8 3 0: : ) 3NO").
+        self.font_family = ""
         self.set_font(self.sans, style, size)
         self.set_text_color(*colour)
 
@@ -823,6 +840,7 @@ def _brief_report(pdf: _Pdf, report: dict[str, Any], case: CaseFile) -> None:
     if not glance:
         n = _network_section(pdf, n, parts.get("network") or {})
         n = place(n, "network")
+        n = _calls_section(pdf, n, parts.get("calls") or {})
         n = _record_sections(pdf, n, record, said=said, reads=reads)
         n = place(n, "record")
         n = place(n, "story")
@@ -893,6 +911,7 @@ def _brief_report(pdf: _Pdf, report: dict[str, Any], case: CaseFile) -> None:
         # 9 - the network
         n = _network_section(pdf, n, parts.get("network") or {}, many=bool(group))
         n = place(n, "network")
+        n = _calls_section(pdf, n, parts.get("calls") or {})
         # 10 - the target's own record: earlier cases, hotel stays, tenancy, other reports and statements on them
         n += 1
         pdf.section(n, "Earlier cases of the " + ("victim" if victim else "targets" if group else "target"))
@@ -1092,6 +1111,9 @@ def _group_section(pdf: _Pdf, n: int, group: dict[str, Any]) -> int:
     for c in group["contacts"]:
         if not c["rows"]:
             none.append(c["target"])
+            if c.get("named"):
+                pdf.para(f"{c['target']} - named with them in their FIRs, not leads to find them: "
+                         + "; ".join(c["named"]), size=7.5, colour=GREY, style="I")
             continue
         _label(pdf, f"{len(c['rows']) + c['more']} contact(s) of {c['target']}", indent=16)
         _table(pdf, ["Person", "CNIC", "Phones", "Address", "How connected", "Criminal record"],
@@ -1101,8 +1123,79 @@ def _group_section(pdf: _Pdf, n: int, group: dict[str, Any]) -> int:
                  r["record"] or "-"] for r in c["rows"]], (30, 26, 24, 34, 40, 24))
         if c["more"]:
             pdf.para(f"{c['more']} more contact(s) of {c['target']} on the case board.", size=7.5, colour=GREY, style="I")
+        if c.get("named"):
+            # The complainant, the witnesses and the police of their FIRs: who they are, not where to look for them.
+            pdf.para("Named with them in their FIRs - complainant, witnesses, police - not leads to find them: "
+                     + "; ".join(c["named"]), size=7.5, colour=GREY, style="I")
     if none:
         _points(pdf, [f"No contact on record (outside the targets): {', '.join(none)}."], colour=GREY)
+    return n
+
+
+def _calls_section(pdf: _Pdf, n: int, calls: dict[str, Any], most: int = 60) -> int:
+    """Call records: the target's own CDR (his profile, every unique contact and place, who is behind each number),
+    and each CDR of someone else he is in (only their contact with him)."""
+    if not (calls.get("own") or calls.get("contact")):
+        return n
+
+    def clock(h: int) -> str:
+        return f"{h:02d}-{(h + 1) % 24:02d}"
+
+    def mins(sec: Any) -> str:
+        sec = int(sec or 0)
+        return f"{sec // 60}m {sec % 60}s" if sec >= 60 else f"{sec}s"
+
+    def day(x: Any) -> str:
+        return str(x or "")[:16]
+
+    n += 1
+    pdf.section(n, "Call records")
+    pdf.para("Computed from every record of each CDR. A tower is where the phone connected, not where the person was; "
+             "an owner is who the number is registered to.", size=8, colour=GREY)
+    for own in calls.get("own") or []:
+        p = own["profile"]
+        _sub(pdf, f"{own['name']} ({own['subject']}) - own CDR, {p['records']} records, {day(p['first'])} to {day(p['last'])}")
+        _points(pdf, [x for x in (
+            (f"{p['contacts']} unique contact numbers and {p['services']} service numbers; {p['places']} places; about "
+             f"{p['per_day']} records a day on {p['active_days']} day(s)."),
+            ("Most active hours: " + ", ".join(clock(h) for h in p["busiest_hours"])
+             + f"; {p['night']} records between 23:00 and 05:00; busiest days: {', '.join(p['weekdays'])}.")
+            if p.get("busiest_hours") else "",
+            f"Likely home area (night): {p['home']['place']} - {p['home']['night']} night records." if p.get("home") else "",
+            f"Likely day / work area: {p['work']['place']} - {p['work']['day']} daytime records." if p.get("work") else "",
+            ("Handsets: " + "; ".join(f"IMEI {d.get('imei') or '-'} / SIM {d.get('imsi') or '-'} ({d['records']}, "
+                                       f"{day(d.get('first'))} to {day(d.get('last'))})" for d in p.get("devices") or []))
+            if p.get("devices") else "",
+            ("Silences: " + "; ".join(f"{day(g['from'])} to {day(g['to'])} ({g['hours']} h)" for g in p.get("silences") or []))
+            if p.get("silences") else "",
+            ("Numbers in contact only around the incident date: " + ", ".join(p["only_around_incident"][:10]))
+            if p.get("only_around_incident") else "") if x])
+        people = [c for c in own["contacts"] if not c.get("service")]
+        _sub(pdf, f"Every unique contact ({len(people)}; the first {min(most, len(people))} shown - all are on the case board)")
+        _table(pdf, ["#", "Number", "Registered to / on the graph", "Records", "Calls out/in", "SMS out/in", "Talk",
+                     "First - last", "Usual hours", "Night"],
+               [[str(i), c["number"], c.get("owner") or "-", str(c["records"]), f"{c['calls_out']}/{c['calls_in']}",
+                 f"{c['sms_out']}/{c['sms_in']}", mins(c["talk_seconds"]), f"{day(c['first'])} - {day(c['last'])}",
+                 ", ".join(clock(h) for h in c.get("hours") or []) or "-", str(c["night"])]
+                for i, c in enumerate(people[:most], 1)], (7, 22, 27, 15, 15, 14, 13, 33, 20, 12))
+        where = own.get("places") or []
+        _sub(pdf, f"Every unique place ({len(where)}; the first {min(40, len(where))} shown - all are on the case board)")
+        _table(pdf, ["#", "Place (tower / site)", "Records", "Calls", "SMS", "Contacts", "Night", "Day", "First - last"],
+               [[str(i), str(x["place"])[:90], str(x["records"]), str(x["calls"]), str(x["sms"]), str(x["contacts"]),
+                 str(x["night"]), str(x["day"]), f"{day(x['first'])} - {day(x['last'])}"]
+                for i, x in enumerate(where[:40], 1)], (7, 64, 13, 11, 10, 14, 10, 10, 39))
+    for h in calls.get("contact") or []:
+        who = f"{h['subject']}" + (f" ({h['subject_name']})" if h.get("subject_name") else "")
+        _sub(pdf, f"{h.get('target_name') or 'Target'} ({h['other']}) in the CDR of {who}")
+        _points(pdf, [f"{h['records']} records: {h['calls']} calls, {h['sms']} SMS; {h['from_subject']} from {h['subject']}, "
+                      f"{h['to_subject']} from {h['other']}; talk {mins(h['talk_seconds'])}; {day(h['first'])} to "
+                      f"{day(h['last'])} on {h['days']} day(s)."
+                      + (f" Usual hours: {', '.join(clock(x) for x in h['hours'])}." if h.get("hours") else "")])
+        _table(pdf, ["When", "Kind", "Direction", "Length", f"Where {h['subject']} connected", "Row"],
+               [[day(e["when"]), str(e.get("kind") or "-"),
+                 {"out": f"{h['subject']} -> {h['other']}", "in": f"{h['other']} -> {h['subject']}"}.get(str(e.get("way")), "-"),
+                 mins(e.get("duration")) if e.get("duration") else "-", str(e.get("where") or "-")[:80], str(e.get("row"))]
+                for e in (h.get("events") or [])[:80]], (28, 12, 44, 14, 68, 12))
     return n
 
 
@@ -1228,7 +1321,7 @@ def _rankless(name: Any) -> str:
     from sherlocks.team.case_scope import _RANK
 
     text = str(name or "").strip()
-    while True:                                  # "PI/IO Mr. Shabbir Ahmed Laghari": every rank, then the title
+    while True:                                  # "PI/IO Mr. Kamran Aslam Sheikh": every rank, then the title
         m = _RANK.match(text) or re.match(r"^\W*(?:mr|ms|mrs)\.?(?=\s)", text, re.IGNORECASE)
         if not m or not m.end():
             return text.strip(" ./:-")

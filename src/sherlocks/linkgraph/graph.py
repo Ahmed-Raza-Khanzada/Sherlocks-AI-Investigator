@@ -91,6 +91,33 @@ class GraphBuilder:
         self.max_shared_owners = 6
         self._shared_phones: set[str] = set()
 
+    @classmethod
+    def restore(cls, snapshot: dict[str, Any]) -> GraphBuilder:
+        """A builder holding a saved graph again (``snapshot()``), so more people can be searched into it: its nodes
+        and edges, and the indexes that find a person by CNIC, phone, or name and father's name."""
+        builder = cls()
+        most = 0
+        for raw in snapshot.get("nodes") or []:
+            node = GraphNode.model_validate(raw)
+            builder.nodes[node.id] = node
+            m = re.fullmatch(r"p(\d+)", node.id)
+            most = max(most, int(m.group(1))) if m else most
+            if node.kind != "person":
+                continue
+            d = node.data
+            if d.get("cnic"):
+                builder._by_cnic.setdefault(d["cnic"], node.id)
+            for phone in d.get("phones") or []:
+                builder._phone_owners.setdefault(phone, set()).add(node.id)
+            if d.get("name") and d.get("father_name") and not d.get("cnic") and not d.get("phones"):
+                builder._by_name_father.setdefault((name_key(d["name"]), name_key(d["father_name"])), node.id)
+        for raw in snapshot.get("edges") or []:
+            edge = GraphEdge.model_validate({k: v for k, v in raw.items() if k != "relation"})
+            builder.edges[edge.id] = edge
+        builder._ids = itertools.count(most + 1)
+        builder.version = int(snapshot.get("version") or 0)
+        return builder
+
     # -- lookup ---------------------------------------------------------------------
 
     def canonical(self, pid: str) -> str:
@@ -102,14 +129,22 @@ class GraphBuilder:
         return self.nodes[self.canonical(pid)].data
 
     def person_ref(self, pid: str) -> PersonRef:
-        data = self.person(pid)
-        return PersonRef(name=data.get("name"), father_name=data.get("father_name"), cnic=data.get("cnic"),
-                         phones=list(data.get("phones") or []))
+        with self._lock:
+            data = self.person(pid)
+            return PersonRef(name=data.get("name"), father_name=data.get("father_name"), cnic=data.get("cnic"),
+                             phones=list(data.get("phones") or []))
 
+    # Readers take the lock too: the case's document readers add links from their own threads while the run
+    # reads the graph ("dictionary changed size during iteration" otherwise). The lock is re-entrant.
     def persons(self) -> list[GraphNode]:
-        return [n for n in self.nodes.values() if n.kind == "person"]
+        with self._lock:
+            return [n for n in self.nodes.values() if n.kind == "person"]
 
     def find_person(self, ref: PersonRef) -> str | None:
+        with self._lock:
+            return self._find_person(ref)
+
+    def _find_person(self, ref: PersonRef) -> str | None:
         if ref.cnic:
             if ref.cnic in self._by_cnic:
                 return self._by_cnic[ref.cnic]
@@ -463,9 +498,13 @@ class GraphBuilder:
 
     def connected_directly(self, a: str, b: str) -> bool:
         """Are ``a`` and ``b`` already joined by a strong path of length <= 2 (via one record)?"""
+        with self._lock:
+            return self._connected_directly(a, b)
+
+    def _connected_directly(self, a: str, b: str) -> bool:
         a, b = self.canonical(a), self.canonical(b)
         neighbours: dict[str, set[str]] = {}
-        for edge in self.edges.values():
+        for edge in list(self.edges.values()):
             if edge.kind == "weak":
                 continue
             neighbours.setdefault(edge.source, set()).add(edge.target)

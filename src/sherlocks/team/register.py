@@ -17,6 +17,7 @@ S10 collects and links; it never judges. What the facts mean is S6's and S1's wo
 from __future__ import annotations
 
 import itertools
+import re
 from datetime import datetime
 from typing import Any, Literal
 
@@ -201,12 +202,17 @@ def system_cards(case: Any, net: Any, graph: dict[str, Any]) -> int:
         name, ids = net.name(pid), {str(net.data(pid).get("cnic") or ""), *map(str, net.data(pid).get("phones") or [])}
         last_call = {c["system"]: c for c in case.calls if str(c.get("identifier") or "") in ids and c.get("status") != "refused"}
         seen = set()
-        for rec in net.data(pid).get("records") or []:
+        records = net.data(pid).get("records") or []
+        for rec in records:
             system = str(rec.get("system") or "")
             data = (nodes.get(rec.get("node")) or {}).get("data") or {}
             if not system or system in seen:
                 continue
             seen.add(system)
+            # What every record of this system holds for the person - what, where, when - not "record found".
+            details = list(dict.fromkeys(line for r in records if str(r.get("system") or "") == system
+                                         for line in digest((nodes.get(r.get("node")) or {}).get("data") or {},
+                                                            net.data(pid), name)))[:MOST_DETAILS]
             topic, label = topic_of.get(system, "other"), system_label(system)
             call = last_call.get(system) or {}
             ref = label + (f", {call['id']}" if call.get("id") else "")
@@ -224,6 +230,7 @@ def system_cards(case: Any, net: Any, graph: dict[str, Any]) -> int:
                                "quote": str(v)[:200], "page": None, "when": None, "where": "", "exhibit": "", "step": ""})
             card = {"record": "system", "system": system, "title": f"{label} record of {name}", "ref": ref, "person": pid,
                     "fields": fields, "summary": str(data.get("summary") or rec.get("summary") or "")[:300],
+                    "details": details,
                     "trust": 6 if system in ("caller_id", "osint") else 1, "background": system in ("cro", "arms", "watchlist"),
                     "call": call.get("id"), "checked": str(call.get("at") or "")[:10] or None, "pending": [],
                     "nothing": False}
@@ -238,6 +245,83 @@ def system_cards(case: Any, net: Any, graph: dict[str, Any]) -> int:
                         "nothing": True}
                 made += _keep(case, cards, f"sys:{pid}:{system}", card)
     return made
+
+
+MOST_DETAILS = 12
+_DETAIL_CHARS = 420
+_PROSE = 160                    # a longer value is prose: shortened, and put last in its line
+_DATE = re.compile(r"\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})\b")
+_IDENTITY = re.compile(r"^(?:accused\s*)?(?:name|cnic|father(?:'s)?\s*name|father|age|birth\s*date|date of birth|"
+                       r"caste|gender|accused name|accused cnic)$", re.IGNORECASE)
+
+
+def _plain(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value if value is not None else "")).strip()
+    text = re.sub(r"(\d{4}-\d{2}-\d{2})[ T]00:00(?::00)?(?:\.0+)?", r"\1", text)      # a date, not midnight
+    return "" if text.lower() in ("", "none", "null", "-", "—", "n/a", "nan", "[]", "{}") else text
+
+
+def _label(key: str) -> str:
+    text = re.sub(r"[_]+", " ", str(key)).strip()
+    return text[:1].upper() + text[1:]
+
+
+def digest(data: dict[str, Any], person: dict[str, Any], name: str) -> list[str]:
+    """What one system record holds for a person, as lines an officer reads: each row of a table the system
+    returned (every case in CFMS, every challan), each FIR with its police station, offence, role and status,
+    each hotel stay, each vehicle, and the record's own fields - without the fields that only repeat who the
+    person is (their name, CNIC, father's name, age)."""
+    own = {_plain(x).lower() for x in (name, person.get("name"), person.get("cnic"), person.get("father_name"),
+                                         *(person.get("names") or [])) if _plain(x)}
+
+    def keep(key: str, value: Any) -> str:
+        text = _plain(value)
+        if not text or text.lower() in own or _IDENTITY.match(_label(key)):
+            return ""
+        return text if len(text) <= _PROSE else text[:110].rstrip() + "…"
+
+    def row(pairs: list[tuple[str, Any]]) -> str:
+        kept = [(k, keep(k, v), len(_plain(v))) for k, v in pairs]
+        # When first (a date is the "when" of the row), prose last: a line cut short loses the prose, not the facts.
+        kept.sort(key=lambda x: (not _DATE.search(x[1]) if x[1] else True, x[2] > _PROSE))
+        line = " · ".join(f"{_label(k)}: {v}" for k, v, _ in kept if v)
+        return line if len(line) <= _DETAIL_CHARS else line[:_DETAIL_CHARS - 1].rstrip() + "…"
+
+    out: list[str] = []
+    raw = data.get("raw") if isinstance(data.get("raw"), dict) else {}
+    rows = raw.get("data") if isinstance(raw.get("data"), list) else []
+    rows = [r for r in rows if isinstance(r, dict)]
+    if len(rows) >= 2:
+        # A table: what every row shares is said once, then each row with what is its own.
+        keys = list(dict.fromkeys(k for r in rows for k in r))
+        same = [k for k in keys if len({_plain(r.get(k)) for r in rows}) == 1]
+        head = row([(k, rows[0].get(k)) for k in same])
+        if head:
+            out.append(f"{len(rows)} entries, all: {head}")
+        out += [f"• {line}" for line in (row([(k, r.get(k)) for k in keys if k not in same]) for r in rows) if line]
+    labels = [str(f.get("label") or "") for f in data.get("fields") or [] if _plain(f.get("value"))]
+
+    def listed(word: str) -> bool:
+        """The record's own fields already list these (``FIR 45/2023: ...``, ``Stay 1: ...``): not said twice."""
+        return len(rows) < 2 and any(re.match(rf"{word}\b(?!\s*count)", x, re.IGNORECASE) for x in labels)
+
+    for f in [] if listed("FIR") else data.get("firs") or []:
+        number = f.get("label") or "/".join(x for x in (str(f.get("fir_no") or ""), str(f.get("fir_year") or "")) if x)
+        ps = _plain(f.get("police_station") or f.get("ps"))
+        bits = [f"FIR {number}" if number else "", ps if ps.upper().startswith("PS") else f"PS {ps}" if ps else "",
+                _plain(f.get("offence")),
+                f"as {_plain(f.get('role'))}" if _plain(f.get("role")) else "", _plain(f.get("status"))]
+        out.append(" · ".join(b for b in bits if b))
+    for st in [] if listed("Stay") else data.get("stays") or []:
+        out.append(" · ".join(x for x in (f"Stayed at {_plain(st.get('hotel'))}", _plain(st.get("district")),
+                                          f"{_plain(st.get('check_in')) or '?'} to {_plain(st.get('check_out')) or '?'}")
+                              if x))
+    out += [f"Vehicle: {_plain(v)}" for v in ([] if listed("Vehicle") else data.get("vehicles") or []) if _plain(v)]
+    if len(rows) < 2:
+        line = row([(str(f.get("label") or ""), f.get("value")) for f in data.get("fields") or []])
+        if line:
+            out.insert(0, line)
+    return [x for x in dict.fromkeys(out) if x]
 
 
 def _keep(case: Any, cards: dict[str, Any], key: str, card: dict[str, Any]) -> int:

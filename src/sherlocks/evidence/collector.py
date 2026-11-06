@@ -29,7 +29,7 @@ from typing import Any
 from sherlocks.evidence.case_file import CaseFile
 from sherlocks.evidence.fir_document import station
 from sherlocks.evidence.pdf_reader import read_pdf
-from sherlocks.evidence.readers import ai_read, fir_facts, link_people, report_facts
+from sherlocks.evidence.readers import ai_read, fir_facts, free_text, link_people, report_facts
 from sherlocks.evidence.sources import (  # noqa: F401 - re-exported for callers
     EvidenceSource,
     lab_entries,
@@ -384,13 +384,30 @@ class CaseAgents:
                     self.emit("hit", f"🔗 {person['name']}: {person['how']} - {doc['title']} [{doc_id}]")
 
     def _read_with_ai(self, doc_id: str) -> None:
+        """The model reads the document. In full, part by part (``document_reader``): an FIR file's every case
+        diary and its investigation result, a report's every page - the one-call reader saw the first 9,000
+        characters and kept ten facts, so the diaries (whom the complainant suspected, the phone he gave) never
+        reached the board. The one-call reader is kept for a model with no plain-text calls."""
         llm = self.llm()
         if llm is None:
             return
         with self._lock:
-            if self.ai_calls >= self.cfg.ai_reader_calls_per_run:
+            if self.ai_calls >= self.cfg.ai_reader_calls_per_run:     # documents read by the model in this run
                 return
             self.ai_calls += 1
+        doc = self.case.documents[doc_id]
+        if hasattr(llm, "generate_text"):
+            from sherlocks.team import document_reader
+
+            try:
+                reading = document_reader.read(self.case, doc_id, llm, say=self.emit, body=free_text(doc["kind"], doc),
+                                               store="file_reading", leads=_of_this_case(self.case, doc), workers=2)
+            except Exception as exc:  # noqa: BLE001 - the one-call reader below still reads it
+                logger.info("Full reader failed on %s: %s", doc_id, exc)
+                reading = None
+            if reading is not None:
+                self._link(doc_id)
+                return
         try:
             result = ai_read(self.case, doc_id, llm)
         except Exception as exc:  # noqa: BLE001 - a model failure leaves the rule facts
@@ -432,6 +449,19 @@ class CaseAgents:
             last = next((a for a in reversed(self.case.attempts) if a["key"] == f"cro:{cro_no}"), None)
             return {"error": (last or {}).get("message") or "CRO dossier not available"}
         return {"document": doc_id}
+
+
+def _of_this_case(case: CaseFile, doc: dict[str, Any]) -> bool:
+    """Is this the FIR file (or a report) of the case being worked - the FIR the officer said is this case? Its open
+    angles are the case's leads; a past FIR's are facts of that FIR only."""
+    from sherlocks.team.case_reader import _number
+
+    if case.dialog.get("case_basis") != "fir_on_record":
+        return False
+    this = _number(str((case.incident or {}).get("fir") or ""))
+    ref = doc.get("ref") or {}
+    mine = _number(f"{ref['fir_no']}/{ref.get('fir_year') or ''}") if ref.get("fir_no") else _number(str(ref.get("fir") or ""))
+    return bool(this[0]) and mine == this
 
 
 def _fir_summary(doc: dict[str, Any]) -> str:

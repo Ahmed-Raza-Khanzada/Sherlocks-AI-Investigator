@@ -100,6 +100,7 @@ class Turn:
     dropped: list[str] = field(default_factory=list)
     given: dict[str, Any] = field(default_factory=dict)       # what O1 was given for his last draft
     deeper: bool = False
+    planned: bool = False                                     # the API agent was asked once this turn
     to_ask: dict[str, Any] | None = None
     finding: dict[str, Any] | None = None
     final: dict[str, Any] = field(default_factory=dict)
@@ -154,6 +155,8 @@ def _read(state: TurnState) -> dict[str, Any]:
     t.intent = t.ask["act"]
     # The script is a fact (Urdu letters or not); between English and Roman Urdu the model's reading decides.
     said = t.ask["reading"].get("language")
+    if said == "roman" and not roman_words(t.message):
+        said = "en"         # typos are not Urdu: "who is kamran aslam hwo herelates" has no Roman-Urdu word in it
     if t.language != "ur" and said in ("en", "roman"):
         t.language = said
     t.case.dialog["language"] = t.language
@@ -191,6 +194,13 @@ def _rules(state: TurnState) -> dict[str, Any]:
                          or f"{event.get('tool')}({event.get('args_text') or ''})")
         if event.get("type") == "final":
             t.final = event
+        if event.get("type") == "final" and "draft" in t.budget.late and event.get("answer"):
+            # The model's answer is still being written and follows: say so first, and keep what the board holds short.
+            lines = str(event["answer"]).split("\n")
+            bullets = [x for x in lines if x.lstrip().startswith(("•", "-", "*"))]
+            head = [x for x in lines if x.strip() and x not in bullets][:1]
+            event["answer"] = "\n".join([HOLDING[t.language], *head, *bullets[:5]]
+                                        + ([MORE_ON_BOARD[t.language].format(n=len(bullets) - 5)] if len(bullets) > 5 else []))
         if event.get("type") == "final" and t.announced:
             # The graph's own steps before the fallback count too (a slow draft, the model calls made).
             event["late"] = list(dict.fromkeys([*t.budget.late, *(event.get("late") or [])]))
@@ -256,8 +266,15 @@ def _record(state: TurnState) -> dict[str, Any]:
             _confirm_lookup(case, answered, reading.confirm == "yes")
             t.recorded.append(f"{answered['key'].split(':', 1)[1]}: {'may' if reading.confirm == 'yes' else 'not to'} be looked up")
         else:
-            with case.acting("O3 Statement recorder"):
-                t.recorded += _take_answer(case, net, t.message, answered)
+            given = _answer_given(reading, answered["key"], t.message)
+            if given is None:
+                # A question or a request ("check in the FIR what the IO says"), not a value for this field: the
+                # question stays open - the whole message once became the case's place.
+                t.intent = "statement"
+                t.agent("Statement recorder", f"not an answer to \"{answered['text'][:60]}\": no value given for it")
+            else:
+                with case.acting("O3 Statement recorder"):
+                    t.recorded += _take_answer(case, net, given, answered)
     else:
         t.intent = "statement"
     if wrote["wish"] == "stop_asking":
@@ -285,6 +302,31 @@ def _record(state: TurnState) -> dict[str, Any]:
     return {}
 
 
+# The recorder's entries that give the value an incident question asks for.
+_FIELD_TOPICS = {"incident:place": ("incident_place",), "incident:when": ("incident_date", "incident_time"),
+                 "incident:what": ("incident_offence",), "incident:fir": ("incident_fir",),
+                 "incident:vehicle": ("vehicle_or_weapon",)}
+
+
+def _answer_given(reading: Any, key: str, message: str) -> str | None:
+    """What the officer's message gives as the answer to the question ``key``: for a question about the incident
+    (its place, time, offence, FIR) only the value the recorder read out of the message - the place, not the whole
+    sentence; None when the message gives no such value (it asks something, or asks to look in a record). Any
+    other question takes the message as it is."""
+    topics = _FIELD_TOPICS.get(key)
+    if not topics:
+        return message
+    values = []
+    for e in reading.entries:
+        if e.topic not in topics:
+            continue
+        value = (e.where if e.topic == "incident_place" and e.where and len(e.where.split()) <= 15 else "") \
+            or e.value or ""
+        if value.strip() and len(value.split()) <= 15:
+            values.append(value.strip())
+    return " ".join(dict.fromkeys(values)) or None
+
+
 def _confirm_lookup(case: CaseFile, q: dict[str, Any], yes: bool) -> None:
     """The officer's yes / no to looking up an identifier (or a CDR's contacts) found in a document."""
     key = q["key"]
@@ -305,6 +347,171 @@ def _confirm_lookup(case: CaseFile, q: dict[str, Any], yes: bool) -> None:
 # -- O4 ------------------------------------------------------------------------------------
 
 
+def _people_of_the_case(case: Any) -> dict[str, Any] | None:
+    """Everyone the case connects to the target, as the latest report laid it out: the direct connections and how,
+    the people one step on who matter and through whom, and the people the case's own records name with their part."""
+    parts = ((case.report or {}).get("parts") or {})
+    network, story = parts.get("network") or {}, parts.get("case_story") or {}
+    if not (network.get("first") or story.get("people")):
+        return None
+    return {
+        "direct_connections": [{"name": r.get("name"), "how": r.get("how"), "part_in_this_case": r.get("part") or "",
+                                "criminal_record": r.get("record") or "", "to": r.get("to")}
+                               for r in network.get("first") or []],
+        "one_step_further": [{"name": r.get("name"), "how": r.get("how"), "through": r.get("through"),
+                              "part_in_this_case": r.get("part") or "", "criminal_record": r.get("record") or ""}
+                             for r in network.get("second") or []],
+        "named_in_the_case_records": [{"name": p.get("name"), "part": p.get("part"), "status": p.get("status"),
+                                       "did_or_said": str(p.get("did") or "")[:200], "sources": p.get("sources")}
+                                      for p in story.get("people") or []][:30],
+        "as_of": "the case report built at board version " + str((case.report or {}).get("report_board_version") or "?")}
+
+
+def roman_words(text: str) -> bool:
+    """Does the message have a Roman-Urdu word in it at all?"""
+    from sherlocks.linkgraph.conversation import _ROMAN
+
+    return any(w in _ROMAN for w in re.findall(r"[a-z]+", str(text or "").lower()))
+
+
+def _targets_together(case: Any, net: Any, every: bool = False) -> list[str]:
+    """The targets and their direct connections in plain lines, each citing the board's link-analysis record - with
+    one target (``every``), every direct connection."""
+    from sherlocks.team import case_scope, group_view
+    from sherlocks.team.report_graph import _graph_doc
+
+    try:
+        group = group_view.build(case, net, case_scope.build(case, net), least=1)
+        if not group:
+            return []
+        ref = _graph_doc(case)
+        out = group_view.lines(group, ref) if len(group["targets"]) > 1 else []
+        # Each target's contacts to look for them through - those tied to other targets or with a record first -
+        # and who is named with them only as complainant, witness or police (not a lead).
+        for c in group["contacts"]:
+            for r in c["rows"][:group_view.MOST_CONTACTS if every else 4]:
+                out.append(f"Direct connection of {c['target']}: {r['name']} - {r['how']}"
+                           + (f"; also tied to {', '.join(r['also_tied_to'])}" if r["also_tied_to"] else "")
+                           + (f"; phones {', '.join(r['phones'])}" if r["phones"] else "")
+                           + (f"; address {r['address']}" if r["address"] else "")
+                           + (f"; record: {r['record']}" if r["record"] else "") + (f" [{ref}]" if ref else ""))
+            if c.get("named"):
+                out.append(f"Also tied to {c['target']} as complainant, witness or police in an FIR (with how): "
+                           f"{'; '.join(c['named'][:12 if every else 6])}")
+            if every and c.get("more"):
+                out.append(f"{c['more']} more direct connection(s) of {c['target']} on the graph")
+        return out
+    except Exception:          # the answer goes on without it
+        logger.exception("Group view for the chat failed")
+        return []
+
+
+FILE_WAIT_S = 20.0
+
+
+def _wait_for_files(t: Any, most: float = FILE_WAIT_S) -> None:
+    """An FIR file or report being fetched right now (the background found the FIR a moment ago) is waited for,
+    up to ``most`` seconds: answered without it, the reply said the FIR's story was not on record."""
+    def fetching() -> list[str]:
+        return [k for k in list(t.case.pending) if k.startswith(("fir:", "labs:", "labpdf:"))]
+
+    if not fetching():
+        return
+    t.agent("Case briefer", f"waiting for {len(fetching())} document(s) being fetched")
+    end = time.monotonic() + most
+    while fetching() and time.monotonic() < end:
+        time.sleep(0.5)
+
+
+ARCHIVE_WAIT_S = 30.0
+
+
+def _no_number(graph: dict[str, Any]) -> list[str] | None:
+    from sherlocks.evidence import cdr_archive
+
+    try:
+        return cdr_archive.without_a_number(graph)[:12] or None
+    except Exception:
+        logger.exception("CDR archive: people with no number")
+        return None
+
+
+def _search_archive_again(t: Any) -> None:
+    """Asked about the call records: the numbers of the targets, of the people tied to them and the ones the officer
+    wrote, not searched in the CDR archive lately, are searched now (officers keep extracting CDRs into it) - waited
+    for up to ``ARCHIVE_WAIT_S``; each CDR found is then read onto the board in the background."""
+    import threading
+
+    from sherlocks.evidence import cdr_archive
+    from sherlocks.linkgraph.investigator import _Tools
+
+    if t.case is None or (t.agents is None and t.backend is None):
+        return
+    try:
+        if not (cdr_archive.Archive().ready and cdr_archive.live(t.tools)):
+            return
+        todo = cdr_archive.to_search(t.case, t.graph, again_after_h=cdr_archive.AGAIN_AFTER_H)
+    except Exception:
+        logger.exception("CDR archive: which numbers to search")
+        return
+    if not todo:
+        return
+    tools = _Tools(t.graph, t.case, t.agents, t.backend, len(todo), officer=t.officer, team="CDR archive",
+                   reason=f"officer asked: {t.message[:120]}")
+    searched = threading.Event()
+
+    def run() -> None:
+        try:
+            cdr_archive.sweep(t.case, t.graph, tools, again_after_h=cdr_archive.AGAIN_AFTER_H, searched=searched)
+        except Exception:
+            logger.exception("CDR archive search from the chat failed")
+            searched.set()
+
+    t.agent("CDR archive", f"searching the iCOP CDR archive now for {len(todo)} number(s) of "
+                           f"{len({x['pid'] or x['number'] for x in todo})} person(s)")
+    threading.Thread(target=run, daemon=True, name="cdr-archive-chat").start()
+    if not searched.wait(ARCHIVE_WAIT_S):
+        t.agent("CDR archive", "still searching - the answer says what was searched so far")
+
+
+def _call_records(t: Any) -> None:
+    """What the CDRs on the board say about the people of the case, computed over every record: the target's own
+    CDR (profile, top contacts with who is behind each number, places) and each CDR he is only a contact in (the
+    contact history). The full tables are on the case board."""
+    from sherlocks.evidence import cdr_profile
+
+    try:
+        calls = cdr_profile.for_report(t.case, t.net)
+    except Exception:
+        logger.exception("Call records for the chat")
+        return
+    if not (calls["own"] or calls["contact"]):
+        return
+    keep = ("number", "owner", "records", "calls_out", "calls_in", "sms_out", "sms_in", "talk_seconds", "first", "last",
+            "days", "night", "hours", "where", "rows")
+    t.sources["call_records_analysed"] = {
+        "targets_own_cdrs": [{
+            "whose": f"{o['name']} ({o['subject']})", "record": o["doc"],
+            "profile": {k: o["profile"].get(k) for k in ("records", "first", "last", "active_days", "per_day", "contacts",
+                                                         "services", "busiest_hours", "night", "weekdays", "home", "work",
+                                                         "devices", "silences", "longest", "only_around_incident")},
+            "top_contacts": [{k: c.get(k) for k in keep} for c in o["contacts"] if not c.get("service")][:25],
+            "top_places": [{k: x.get(k) for k in ("place", "records", "calls", "sms", "contacts", "night", "day", "first",
+                                                  "last", "rows")} for x in o["places"]][:12],
+            "all_contacts": len(o["contacts"]), "all_places": len(o["places"])} for o in calls["own"]],
+        "cdrs_the_target_is_a_contact_in": [{
+            "subscriber": h["subject"] + (f" ({h['subject_name']})" if h.get("subject_name") else ""),
+            "target": f"{h.get('target_name')} ({h['other']})", "record": h["doc"],
+            **{k: h.get(k) for k in ("records", "calls", "sms", "from_subject", "to_subject", "talk_seconds", "first",
+                                     "last", "days", "hours", "longest")},
+            "every_contact": (h.get("events") or [])[:40]} for h in calls["contact"]],
+        "note": "Computed in code over every record. 'owner' is who the number is registered to, as the graph holds it "
+                "(empty: not known yet). A tower is where the phone connected, not where the person was. Every unique "
+                "contact and place is on the case board (the 'Call records' documents)."}
+    t.agent("CDR team", f"call records analysed: {len(calls['own'])} own CDR(s) of the target, "
+                        f"{len(calls['contact'])} CDR(s) he is a contact in")
+
+
 def _brief(state: TurnState) -> dict[str, Any]:
     from sherlocks.linkgraph import briefer, case_queries, quick_view
     from sherlocks.linkgraph import officer as chain
@@ -315,6 +522,13 @@ def _brief(state: TurnState) -> dict[str, Any]:
     case, net, q = t.case, t.net, t.ask
     t.query = q
     t.status("understand")
+    from sherlocks.team import case_rematch
+
+    if case_rematch.unmatched(case):
+        # A FIR file read after the officer described the case: is it this case? Asked once, before answering.
+        fir = t.budget.run("rematch", lambda: case_rematch.rematch(case, net, t.llm), 30.0, fallback=None)
+        if fir:
+            t.agent("Case matcher", f"this case is FIR {fir} (read after the officer described the case)")
     t.names = ", ".join(net.name(p) for p in q["people"]) or "the whole case"
     shape = q.get("shape") or "other"
     t.agent("Question reader", f"{q['depth']} {shape} answer ({q['type'].replace('_', ' ')}) - about {t.names}"
@@ -359,10 +573,61 @@ def _brief(state: TurnState) -> dict[str, Any]:
             continue
         t.sources[tool] = _call(t, tool, {arg: who} if arg and who else {})
     if shape == "fir" or q.get("firs"):
-        # The FIR file itself: what was read from it, and its text.
+        # The FIR file itself, in its own words - its first information, every case diary and its investigation
+        # result, and what the full reader took out of it - so the answer is read from the document even when
+        # the board's facts missed something. A file still being fetched is waited for, a little.
+        _wait_for_files(t)
         named = [d for d in (case_queries.fir_document(case, f) for f in q.get("firs") or []) if d]
-        for doc in (named or [d for d in case.documents.values() if d["kind"] == "fir"])[:2]:
-            t.sources[f"FIR file {doc['id']}"] = t.tools._digest(doc["id"], text_chars=3500)
+        theirs = [case.documents[d["id"]] for p in (q["people"] or net.seeds())
+                  for d in case.for_person(p)["documents"] if (case.documents.get(d["id"]) or {}).get("kind") == "fir"]
+        files = list({d["id"]: d for d in (named or theirs or [d for d in case.documents.values() if d["kind"] == "fir"])}.values())[:2]
+        for doc in files:
+            t.sources[f"FIR file {doc['id']}"] = t.tools._digest(doc["id"], text_chars=12000 if len(files) == 1 else 7000)
+    if q.get("call_records") or shape == "phone":
+        _search_archive_again(t)
+    searched = (case.dialog or {}).get("cdr_archive") or {}
+    if (q.get("call_records") or shape == "phone") and searched.get("searched"):
+        # What the search of the CDR archive came to, in one place: how many numbers of whom, whose CDR it has.
+        t.sources["cdr_archive_search"] = {
+            "state": searched.get("state"), "numbers_searched": searched.get("all_numbers") or searched.get("searched"),
+            "targets": searched.get("all_targets") or searched.get("targets"),
+            "people_tied_to_them": searched.get("all_contacts") or searched.get("contacts"),
+            "cdr_found_for": [f"{f['name']} ({f['number']})" for f in searched.get("all_found") or searched.get("found") or []]
+            or "nobody",
+            "numbers_the_officer_gave": searched.get("all_given") or 0,
+            "tied_to_them_with_no_number_on_record": _no_number(t.graph),
+            "files_read_onto_the_board": searched.get("read") or 0, "record": searched.get("doc"),
+            "last_searched": searched.get("last_searched") or searched.get("finished"),
+            "now": searched.get("state"),
+            "note": "Searched by calling the archive: every number of the targets, of the people tied to them and the "
+                    "numbers the officer gave; searched again when asked if the last search is old. A number not in the "
+                    "archive has no CDR extracted by any officer yet - the CDR must be requested from the operator. "
+                    "Say when it was last searched. A person with no number on record could not be searched - say so."}
+    if q.get("call_records") or shape == "phone":
+        _call_records(t)
+    if q.get("call_records") and "cdr_analysis" in t.registry and officer_agent._cdrs(case):
+        # A question about the call records: computed over every record before the draft, never read from text.
+        t.status("think", "cdr_analysis", _asked(t)[:80])
+        t.sources["cdr_analysis"] = t.budget.run("cdr", lambda: _call(t, "cdr_analysis", {"question": _asked(t)}),
+                                                 t.cfg.cdr_budget_s, fallback={"error": "the computation did not finish "
+                                                                                       "in time - ask again"})
+        t.agent("R8 CDR analyst", "computed over the CDRs on the board" if isinstance(t.sources["cdr_analysis"], dict)
+                and not t.sources["cdr_analysis"].get("error") else "could not compute it")
+    seeds = net.seeds()
+    together = len(seeds) >= 2 and (shape in ("link", "what_next", "phone") or q.get("scope") == "connection"
+                                    or q.get("whole_picture") or len(set(q["people"]) & set(seeds)) >= 2)
+    circle = seeds and (shape in ("link", "count", "what_next") or q.get("scope") == "connection"
+                        or q.get("type") in ("associates", "connection"))
+    if circle:
+        people = _people_of_the_case(case)
+        if people:
+            t.sources["people_of_the_case"] = people
+    if together or circle:
+        # How the records tie the targets to each other (several searched together) and each target's direct
+        # connections with how they are related - every one of them, not the few the board's facts name.
+        group = _targets_together(case, net, every=len(seeds) == 1)
+        if group:
+            t.sources["how_the_targets_connect" if len(seeds) >= 2 else "direct_connections_of_the_target"] = group
     if len(q["people"]) >= 2 and (shape == "link" or q.get("scope") == "connection"):
         # How two people are connected: the routes between them and what they share.
         pair = {"a": net.name(q["people"][0]), "b": net.name(q["people"][1])}
@@ -389,12 +654,27 @@ def _call(t: Turn, tool: str, args: dict[str, str]) -> Any:
 
     try:
         with t.case.batch("O1 Officer agent", "research"):       # what it brings onto the board is one event
-            return _trim(t.registry[tool][1]({k: str(v) for k, v in args.items() if v not in (None, "")}))
+            got = t.registry[tool][1]({k: str(v) for k, v in args.items() if v not in (None, "")})
+            # A computed CDR answer is a table the officer asked for, a document is read whole: both keep more room.
+            return _trim(got, 9000 if tool == "cdr_analysis" else 12000 if tool == "read_document" or tool.startswith("fetch_")
+                         else 2500)
     except Exception as exc:  # noqa: BLE001
         return {"error": str(exc)}
 
 
 # -- O1 ------------------------------------------------------------------------------------
+
+
+HOLDING = {"en": "**This needs more time than usual - my full answer will follow here in a moment.** Meanwhile, from the "
+                  "case board:",
+           "roman": "**Is mein mamool se zyada waqt lag raha hai - poora jawab thori der mein yahin aayega.** Tab tak case "
+                    "board se:",
+           "ur": "**اس میں معمول سے زیادہ وقت لگ رہا ہے - مکمل جواب تھوڑی دیر میں یہیں آئے گا۔** تب تک کیس بورڈ سے:"}
+MORE_ON_BOARD = {"en": "(+{n} more on the case board)", "roman": "(+{n} mazeed case board par)", "ur": "(+{n} مزید کیس بورڈ پر)"}
+NOT_FINISHED = {"en": "I could not finish this answer in time - please ask it again.",
+                "roman": "Main yeh jawab waqt par mukammal nahi kar saka - baraye meharbani dobara poochein.",
+                "ur": "میں یہ جواب وقت پر مکمل نہیں کر سکا - براہ کرم دوبارہ پوچھیں۔"}
+VERIFY = {"en": "Please verify:", "roman": "Baraye meharbani tasdeeq karein:", "ur": "براہ کرم تصدیق کریں:"}
 
 
 def _draft(state: TurnState) -> dict[str, Any]:
@@ -414,17 +694,28 @@ def _draft(state: TurnState) -> dict[str, Any]:
         patterns=officer_agent.graph_patterns(t.tools, t.net, q.get("people") or []))
 
     def late(d: dict[str, Any] | None) -> None:
-        if officer_agent.filled(d):
-            d = officer_agent.normalise(d, t.case.known_ids(), officer_agent.systems_in(data))
-            text = shapes.render(shapes.fill_missing(d, q.get("shape") or "other"), q.get("shape") or "other", t.language,
-                                 depth=q.get("depth") or "detailed")
-            if validate(t.case, t.net, {"answer": text})["ok"]:
-                t.follow(FOLLOW_HEAD[t.language] + "\n" + present(text, language=t.language, case=t.case,
-                                                                  answer_first=False), "draft")
+        # The officer was told a fuller answer follows: one always does - the answer, with what the checker found
+        # flagged as in any reply, or a line saying it could not be finished. Never silence.
+        if not officer_agent.filled(d):
+            t.follow(FOLLOW_HEAD[t.language] + "\n" + NOT_FINISHED[t.language], "draft")
+            return
+        d = officer_agent.normalise(d, t.case.known_ids(), officer_agent.systems_in(data))
+        text = shapes.render(shapes.fill_missing(d, q.get("shape") or "other"), q.get("shape") or "other", t.language,
+                             depth=q.get("depth") or "detailed")
+        check = validate(t.case, t.net, {"answer": text}, drafted_from=data)
+        flagged = "" if check["ok"] else "\n⚠ " + VERIFY[t.language] + " " + " · ".join(check["issues"][:3])
+        t.follow(FOLLOW_HEAD[t.language] + "\n" + present(text, language=t.language, case=t.case, answer_first=False)
+                 + flagged, "draft")
+
+    def drafted() -> dict[str, Any] | None:
+        try:
+            return officer_agent.draft(t.llm, t.language, data)
+        except Exception as exc:  # noqa: BLE001 - a failed late draft still tells the officer
+            logger.info("Officer agent draft failed: %s", exc)
+            return None
 
     t.given = data
-    got = t.budget.run("draft", lambda: officer_agent.draft(t.llm, t.language, data), t.cfg.draft_budget_s,
-                       fallback=None, on_late=late)
+    got = t.budget.run("draft", drafted, t.cfg.draft_budget_s, fallback=None, on_late=late)
     t.rounds += 1
     if got is None and t.draft is not None and (officer_agent.filled(t.draft) or t.draft.get("answered")):
         # The draft after the lookups is late: the first draft already answered, so it goes
@@ -440,12 +731,45 @@ def _draft(state: TurnState) -> dict[str, Any]:
         return {}
     t.draft = officer_agent.normalise(got, t.case.known_ids(), officer_agent.systems_in(data))
     wanted = [c for c in (t.draft.get("lookups") or []) if c["tool"] in t.registry][:officer_agent.MAX_LOOKUPS]
+    if not wanted and not last and not t.planned and officer_agent.needs_live(t.draft) \
+            and t.budget.left() > t.cfg.draft_budget_s:
+        wanted = _plan_live(t)                         # the board did not hold it: the API agent picks the calls
     t.draft["lookups"] = wanted
     more = bool(wanted) and got is not None and not last and t.budget.left() > 4.0
     t.agent("Officer agent", ("answered from the board" if t.draft.get("answered") else "the board does not hold it all")
             + (f"; needs: {', '.join(c['tool'] for c in wanted)}" if more else ""))
     t.route = "lookup" if more else "desk"
     return {}
+
+
+PLAN_BUDGET_S = 30.0
+
+
+def _plan_live(t: Any) -> list[dict[str, Any]]:
+    """The draft could not answer all of it from the board and named no lookup: the API agent picks the live calls
+    to the police systems that would bring what is missing (one short model call), from the people and FIRs of
+    this case."""
+    from sherlocks.linkgraph.investigator import _LIVE_TOOLS
+
+    live = {name: desc for name, (desc, _) in t.registry.items() if name in _LIVE_TOOLS}
+    if not live or t.tools is None or t.tools.live_left <= 0 or t.llm is None:
+        return []
+    t.planned = True
+    net, q = t.net, t.query or {}
+    asked = [p for p in q.get("people") or [] if p in net.people]
+    around = [o for s in net.seeds() for o in net.G.neighbors(s)]
+    pids = list(dict.fromkeys([*asked, *net.seeds(), *around]))[:12]
+    people = [{"name": net.name(p), "phones": (net.data(p).get("phones") or [])[:3], "cnic": net.data(p).get("cnic"),
+               "role": t.case.roles.get(p) or ("target" if net.data(p).get("seed") else "")} for p in pids]
+    firs = list({str(f.get("label")): {"fir": f.get("label"), "ps_id": f.get("ps_id"), "role": f.get("role")}
+                 for p in pids for f in net.data(p).get("firs") or [] if f.get("label")}.values())
+    called = [{"tool": d["tool"], "args": d["args"]} for d in t.looked]
+    got = t.budget.run("plan", lambda: officer_agent.plan_live(t.llm, message=_asked(t), draft=t.draft, tools=live,
+                                                               people=people, firs=firs, called=called),
+                       PLAN_BUDGET_S, fallback=[]) or []
+    t.agent("API agent", ("the board does not hold it all - calling " + ", ".join(c["tool"] for c in got)) if got
+            else "the board does not hold it all; no police system would hold the rest")
+    return got
 
 
 def _lookup(state: TurnState) -> dict[str, Any]:
@@ -476,7 +800,8 @@ def _lookup(state: TurnState) -> dict[str, Any]:
         return [f.result() for f in [t.budget.submit(lambda c=c: one(c)) for c in calls]]
 
     def late(done: list[dict[str, Any]] | None) -> None:
-        useful = [d for d in done or [] if not (d["result"] or {}).get("error") and not (d["result"] or {}).get("empty")]
+        useful = [d for d in done or [] if not (isinstance(d["result"], dict) and (d["result"].get("error")
+                                                                             or d["result"].get("empty")))]
         if useful and t.on_late is not None:
             t.on_late()                                # what it brought is on the board for the next question
 
@@ -597,6 +922,16 @@ def _desk(state: TurnState) -> dict[str, Any]:
     on_incident = (q or {}).get("shape") == "incident" or bool((q or {}).get("this_case")) or any(
         r.startswith("incident ") for r in t.recorded)
     shown = [c for c in conflicts(case, net) if (c["topic"].startswith("incident") and on_incident) or c.get("person") in about]
+    # Each disagreement is told once; again only when the question is about that very thing (the incident, the person).
+    told_conflicts = set(case.dialog.get("conflicts_told") or [])
+
+    def conflict_key(c: dict[str, Any]) -> str:
+        return c["topic"] + "|" + "|".join(str(v.get("value")) for v in c["values"][:2])
+
+    asked_about = (q or {}).get("shape") == "incident" or any(c.get("person") in {net.name(p) for p in (q or {}).get("people") or []}
+                                                             for c in shown)
+    shown = [c for c in shown if asked_about or conflict_key(c) not in told_conflicts]
+    case.dialog["conflicts_told"] = sorted(told_conflicts | {conflict_key(c) for c in shown})
     if shown:
         t.lines += conflict_lines(shown, t.language)
         t.agent("Answer checker", f"{len(shown)} conflict(s) between sources shown, not hidden")
@@ -650,10 +985,10 @@ def _check(state: TurnState) -> dict[str, Any]:
     model = t.llm if t.intent == "question" and not t.not_found else None
     records = officer_agent.evidence_digest(t.given) if t.given else None
     asked = {**final, "facts": None} if (t.draft is not None and (t.facts or {}).get("empty")) else final
-    check = t.budget.run("check", lambda: validate(case, net, asked, model, given=records), t.cfg.check_budget_s,
+    check = t.budget.run("check", lambda: validate(case, net, asked, model, given=records, drafted_from=t.given), t.cfg.check_budget_s,
                          fallback=None)
     if check is None:                                  # the model check ran over: the rules alone decide
-        check = {**validate(case, net, asked, None), "checked": "rules (model check over budget)"}
+        check = {**validate(case, net, asked, None, drafted_from=t.given), "checked": "rules (model check over budget)"}
     if t.intent == "question" and t.draft is not None and not t.not_found:
         # Completeness: every section of the shape is filled or marked. One the draft dropped
         # was put back marked "not checked yet", and the check says so.
@@ -673,7 +1008,8 @@ def _check(state: TurnState) -> dict[str, Any]:
             final["answer"] = shapes.render(t.draft, shape, t.language, depth=(q or {}).get("depth") or "detailed")
             t.agent("Validator", "sent the reply back once: " + "; ".join(check["issues"]))
             again_asked = {**final, "facts": None} if (t.facts or {}).get("empty") else final
-            check = {**validate(case, net, again_asked, None), "revised": True, "first_issues": check["issues"]}
+            check = {**validate(case, net, again_asked, None, drafted_from=t.given), "revised": True,
+                     "first_issues": check["issues"]}
     if t.finding is not None and not validate(case, net, {"answer": t.finding["text"]})["ok"]:
         t.agent("Validator", f"finding {t.finding['ref']} held back: it cites an entry that is not on the board or is out of date")
         t.finding = None

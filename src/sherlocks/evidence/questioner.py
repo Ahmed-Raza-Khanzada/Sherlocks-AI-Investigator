@@ -6,7 +6,8 @@ the most useful first, never the same question twice:
 1. Where did the incident happen? (opens the map to pin it) - everything about who
    was near the scene depends on it.
 2. When? (date and time) - the crime day in every CDR.
-3. Who is the main suspect? - when there are several targets and no roles yet.
+3. Who is the main suspect? - when there are several targets, not all of them placed yet, and the officer has
+   not said they act together.
 4. Whose CDR is this file? - an uploaded CDR whose subscriber is not on the graph.
 5. Upload the main suspect's CDR? - once the incident is known and no CDR covers them.
 
@@ -16,6 +17,7 @@ Each question carries an ``action`` the portal turns into a button: ``pin_locati
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from sherlocks.evidence.case_file import CaseFile
@@ -55,6 +57,58 @@ def _options(graph: dict[str, Any], first: list[str] | None = None, limit: int =
     order = list(dict.fromkeys([*(first or []), *[p for p, n in people.items() if n["data"].get("seed")],
                                 *sorted(people, key=lambda p: -len(people[p]["data"].get("records") or []))]))
     return [{"id": pid, "label": people[pid].get("label") or pid} for pid in order if pid in people][:limit]
+
+
+_COMPLAINANT = re.compile(r"complain|victim|filed|مدعی|مقتول", re.IGNORECASE)
+
+
+def _not_victims(case: CaseFile, graph: dict[str, Any]) -> set[str]:
+    """Who cannot be the victim or complainant: the targets, everyone the officer suspects, police officers."""
+    out = {p for p, n in _people(graph).items() if n["data"].get("seed") or "police_officer" in (n["data"].get("flags") or [])}
+    return out | {p for p, r in case.roles.items() if r in ("main suspect", "suspect")}
+
+
+def _victim_options(case: CaseFile, graph: dict[str, Any]) -> list[dict[str, str]]:
+    """People who could be the victim or complainant: never a target or a suspect; first those the records
+    already show as a complainant or victim."""
+    people, skip = _people(graph), _not_victims(case, graph)
+    named = {end for e in graph.get("edges") or [] if _COMPLAINANT.search(str(e.get("label") or ""))
+             for end in (e.get("source"), e.get("target"))}
+    first = [p for p in people if p in named and p not in skip]
+    return [{"id": p, "label": people[p].get("label") or p} for p in first][:5]
+
+
+def _complainant_on_file(case: CaseFile) -> str | None:
+    """The complainant the FIR file of this incident names, when that file is on the board."""
+    fir = str((case.incident or {}).get("fir") or "").replace(" ", "")
+    if "/" not in fir:
+        return None
+    no, year = fir.split("/", 1)
+    for doc in case.documents.values():
+        ref = doc.get("ref") or {}
+        if doc.get("kind") == "fir" and str(ref.get("fir_no") or "").lstrip("0") == no.lstrip("0") \
+                and str(ref.get("fir_year") or "")[-2:] == year[-2:]:
+            name = ((doc.get("data") or {}).get("complainant") or {}).get("name") or next(
+                (p.get("name") for p in doc.get("people") or [] if p.get("role") == "complainant" and p.get("name")), None)
+            if name:
+                return str(name)
+    return None
+
+
+def _unlinked_pair(graph: dict[str, Any], seeds: list[str]) -> tuple[str, str] | None:
+    """Two targets the records do not tie - no link between them, and no record or person both are tied to.
+    None when the records tie every pair."""
+    near: dict[str, set[str]] = {}
+    for e in graph.get("edges") or []:
+        if e.get("kind") == "weak":
+            continue
+        near.setdefault(e.get("source"), set()).add(e.get("target"))
+        near.setdefault(e.get("target"), set()).add(e.get("source"))
+    for i, a in enumerate(seeds):
+        for b in seeds[i + 1:]:
+            if b not in near.get(a, set()) and not near.get(a, set()) & near.get(b, set()):
+                return a, b
+    return None
 
 
 def recent_crimes(graph: dict[str, Any], seeds: list[str], limit: int = 3) -> list[str]:
@@ -131,9 +185,12 @@ def gaps(case: CaseFile, graph: dict[str, Any]) -> list[dict[str, Any]]:
     if not inc.get("date") and not inc.get("date_as_recorded"):
         out.append({"key": "incident:when", "action": "text",
                     "text": "When did the incident happen - date and time? I need it to read the crime day in the CDRs."})
-    if len(seeds) >= 2 and "main suspect" not in roles and not inc.get("target_status"):
+    together = bool(case.dialog.get("targets_together"))
+    if (len(seeds) >= 2 and "main suspect" not in roles and not inc.get("target_status") and not together
+            and not all(p in case.roles for p in seeds)):
         # One target is the person the officer is investigating - asking who the main suspect is
-        # would ask back what they told us by entering him. With several targets it is a question.
+        # would ask back what they told us by entering him. With several targets it is a question - unless the
+        # officer has said they act together (a gang), or has already placed each of them.
         out.append({"key": "roles:main", "action": "choose_person", "options": _options(graph, seeds),
                     "text": "Who is the main suspect in this case?"})
     if not inc.get("fir"):
@@ -151,17 +208,25 @@ def gaps(case: CaseFile, graph: dict[str, Any]) -> list[dict[str, Any]]:
                         "options": _options(graph, seeds) + [{"id": "other", "label": "Someone not on the graph"}],
                         "text": f"Whose CDR is {doc['data'].get('name')} (subscriber {subject or 'unknown'})? "
                                 "It is not a number on the graph yet."})
-    if seeds and not roles & {"victim", "complainant"}:
-        out.append({"key": "roles:victim", "action": "choose_person",
-                    "options": _options(graph) + [{"id": "other", "label": "Someone not on the graph"}],
-                    "text": "Who is the victim or the complainant in this incident?"})
+    if seeds and not roles & {"victim", "complainant"} and not _complainant_on_file(case):
+        # Never asked when the incident's FIR file names the complainant; the targets and the suspects are
+        # never offered as the victim.
+        options = _victim_options(case, graph)
+        out.append({"key": "roles:victim", "action": "choose_person" if options else "text",
+                    **({"options": options + [{"id": "other", "label": "Someone not on the graph"}]} if options else {}),
+                    "text": "Who is the victim or the complainant in this incident?"
+                            + ("" if options else " Give the name (and CNIC or number if you have it).")})
     if not inc.get("vehicle_or_weapon"):
         out.append({"key": "incident:vehicle", "action": "text",
                     "text": "Was a vehicle or weapon used? A number plate or a description helps me search for it."})
-    if len(seeds) >= 2:
-        a, b = people[seeds[0]].get("label"), people[seeds[1]].get("label")
+    pair = _unlinked_pair(graph, seeds) if len(seeds) >= 2 and not together else None
+    if pair:
+        # Only for two targets the records do not tie - a pair already linked (co-accused, family, one phone)
+        # is not asked about.
+        a, b = people[pair[0]].get("label"), people[pair[1]].get("label")
         out.append({"key": "link:why", "action": "text",
-                    "text": f"What do you believe ties {a} and {b} together - family, business, a past crime?"})
+                    "text": f"The records show no tie between {a} and {b}. What do you believe ties them - family, "
+                            "business, a past crime?"})
     # A CNIC or number the agents wanted to look up that appears only in a document.
     confirmed = set(case.dialog.get("confirmed_ids") or []) | set(case.dialog.get("declined_ids") or [])
     for ident in (case.dialog.get("unconfirmed_ids") or [])[:2]:
@@ -175,6 +240,8 @@ def gaps(case: CaseFile, graph: dict[str, Any]) -> list[dict[str, Any]]:
         analysis = (doc.get("data") or {}).get("analysis") or {}
         if doc["kind"] != "cdr" or doc["id"] in decided or not analysis.get("top_contacts"):
             continue
+        if (doc.get("data") or {}).get("profiled") in ("own", "contact"):
+            continue          # a CDR of the target, or one he is in: its numbers are searched without asking (cdr_followup)
         on_graph = {p for n in people.values() for p in n["data"].get("phones") or []}
         unknown = [c for c in analysis["top_contacts"][:5] if c not in on_graph]
         if unknown:

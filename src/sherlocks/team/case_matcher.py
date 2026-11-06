@@ -39,7 +39,10 @@ _SYSTEM = (
     "same act, the same place - or says the case IS that FIR. A case grows over time: the same victim's case can "
     "move from one offence to a graver one (a missing or hurt person later found dead, a theft that turns out a "
     "robbery), so compare the people, the place and the time, and read each FIR's reports (its_reports) as well as "
-    "its first information - not only the section it was first registered under.\n"
+    "its first information - not only the section it was first registered under. The colleague's questions say what "
+    "the case is about too ('where was the body found', 'who saw the victim last'). A document the colleague "
+    "uploaded for this case (documents_uploaded: an inquiry, a post-mortem, a memo) that is about an FIR on file - "
+    "it names that FIR, or its victim and event - is the colleague telling you the case is that FIR.\n"
     "The messages may be in Urdu, Roman Urdu or English. Think it through in a few short sentences, then end with one "
     "last line exactly: ANSWER: no case | no event | new | same <FIR number as on file>. " + DATA_NOT_INSTRUCTIONS)
 
@@ -67,6 +70,21 @@ def read_answer(text: str, firs: list[dict[str, Any]]) -> dict[str, Any] | None:
     return {"says": "same", "fir": on_file, "why": why} if on_file else None
 
 
+def uploaded(case: Any, most: int = 4) -> list[dict[str, Any]]:
+    """What each document the officer uploaded is, as its full reading says: what it is, who issued it, when, what it
+    is about, its summary and the records it names - so the case can be matched to the FIR the document is about."""
+    out = []
+    for doc in case.documents.values():
+        r = doc.get("reading") or {}
+        if not r:
+            continue
+        out.append({"what": r.get("kind") or doc.get("title"), "issued_by": r.get("issued_by"), "date": r.get("date"),
+                    "about": r.get("about"), "summary": str(r.get("summary") or "")[:600],
+                    "records_it_names": [f"{e.get('item')}: {e.get('what')}" for e in r.get("evidence") or []
+                                         if re.search(r"\d{1,5}\s*/\s*\d{2,4}", str(e.get("item") or ""))][:4]})
+    return out[:most]
+
+
 def match(case: Any, net: Any, message: str, llm: Any) -> dict[str, Any] | None:
     """``{says: no case | no event | new | same, fir, why}``, or None when there is no answer."""
     from sherlocks.team.recorder import firs_on_file
@@ -76,10 +94,10 @@ def match(case: Any, net: Any, message: str, llm: Any) -> dict[str, Any] | None:
     firs = firs_on_file(case, net)
     given = {"message": message, "today": datetime.now(UTC).astimezone().date().isoformat(),
              "earlier_from_the_colleague": [t.get("q", "")[:200] for t in case.conversation[-2:]],
-             "firs_on_file": firs}
+             "documents_uploaded": uploaded(case), "firs_on_file": firs}
     try:
         text = llm.generate_text(prompt=json.dumps(given, ensure_ascii=False, default=str), system=_SYSTEM,
-                                 cache_kind="case_matcher", prompt_version="v3", max_tokens=900)
+                                 cache_kind="case_matcher", prompt_version="v4", max_tokens=900)
     except Exception as exc:  # noqa: BLE001 - the recorder's own reading stands
         logger.info("Case matcher failed: %s", exc)
         return None

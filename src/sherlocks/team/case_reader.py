@@ -27,6 +27,7 @@ from typing import Any
 
 MOST_FIRS = 12
 MOST_REPORTS = 6
+MOST_STEPS = 10           # an FIR's dated investigation steps given every turn (the rest: its FIR file)
 MOST_DOC_ITEMS = 30         # an uploaded document's findings, leads and people given to the chat
 MOST_DOC_STEPS = 80         # ... and its dated steps (an inquiry's chronology)
 
@@ -70,7 +71,8 @@ def read(case: Any, net: Any) -> dict[str, Any]:
     targets = []
     for pid in net.seeds():
         firs, under_fir = [], set()
-        for row in _firs(net, pid, case)[:MOST_FIRS]:
+        rows = _firs(net, pid, case)[:MOST_FIRS]
+        for row in rows:
             number = _number(row["label"])
             doc = case.documents.get(row.get("doc") or "") or {}
             data = doc.get("data") or {}
@@ -86,6 +88,10 @@ def read(case: Any, net: Any) -> dict[str, Any]:
                 # The record's own words: a summary can be wrong (who was last with him, when, how).
                 "first_information": str(data.get("narrative") or "")[:900] or (doc.get("text") or "")[:900],
                 "where_it_stands": _stands(data),
+                # The IO's dated steps, as the full reader took them out of every case diary.
+                "investigation_steps": [f"{e['fact']}: {e['when']}: {e['what']}"[:220]
+                                        for e in (doc.get("file_reading") or {}).get("events") or []
+                                        if case.usable(e["fact"])][:MOST_STEPS if len(rows) <= 3 or (bool(this[0]) and number == this) else 0],
                 "file": doc.get("id"),
                 "reports": reports})
         other = [{"id": d["id"], "title": d["title"], "says": (d.get("ai_summary") or d.get("summary") or "")[:300]}

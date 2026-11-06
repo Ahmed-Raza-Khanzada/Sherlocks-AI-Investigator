@@ -69,6 +69,12 @@ _SYSTEM = (
     "`first_information` is the record in its own words (often Urdu) - its `what_happened` summary was written by a "
     "model and can be wrong; where they differ, the first information stands. Who last saw or spoke to someone, "
     "when and where, is usually told there and in the statements - read them before saying it is not known.\n"
+    "- A SOURCE named 'FIR file D#' (and `read_document`) is the file in its own words: `text` holds its first "
+    "information, every case diary (the IO's dated steps) and the investigation result, and `read_in_full` what was "
+    "taken out of all of it, with fact ids. When the officer asks what a FIR or a report says, or to check or see "
+    "it, answer from these - what happened, each step of the investigation with its date, whom anyone suspected "
+    "and why, how it ended - and cite the document id. Never say something is not on record when that text holds "
+    "it.\n"
     "- When the officer asks what something means, how something is done or what is needed (a forensic or legal "
     "term, which reports or tests would settle a question, a procedure), answer from established investigative and "
     "forensic knowledge in a section named 'General guidance (not from the records)' - points with no source id - "
@@ -117,10 +123,18 @@ _SYSTEM = (
     "count of 0 in COMPUTED, an empty list - then 'none' IS the answer: say it in `first_line` ('No one recurs across "
     "the records'), say what was searched, add the nearest thing the records do show, and set `answered` true. "
     "`answered` false is only for a fact the records could hold and you were not given.\n"
+    "- CDRS_ON_THE_BOARD lists the call records on the case; their records are not in GIVEN (only a short summary "
+    "is). A question about anything in them - calls, SMS, contacts, how often or how long, times and days, towers "
+    "and places, handsets (IMEI) or SIMs, who links whom - is answered only from cdr_analysis: unless "
+    "SOURCES or LOOKED_UP_NOW already hold its result for this question, set `answered` false and look it up with "
+    "the officer's question. When they hold it, answer ONLY from that result - every number, count, date and "
+    "duration exactly as computed, nothing added. Never say a CDR does not hold something without it.\n"
     "- If GIVEN does not hold what is asked, set `answered` false and list in `lookups` the tools from TOOLS that "
     "would get it, with their arguments. A question about the whole case is looked up for the whole case: give a "
-    "tool a person (`who`) only when the officer asked about that person. A tool marked LIVE calls a police system now: use it when the board holds "
-    "nothing. If no tool can help, leave `lookups` empty and say plainly what is missing. Never invent anything.\n- "
+    "tool a person (`who`) only when the officer asked about that person. A tool marked LIVE calls a police system now "
+    "(an FIR file, lab reports, a CRO dossier, NADRA, SIMs, the CDR archive and the rest): when the board does not "
+    "hold what is asked, call the one that would - never answer 'not on record' when a LIVE tool could bring it and "
+    "LOOKED_UP_NOW does not show it was called. If no tool can help, leave `lookups` empty and say plainly what is missing. Never invent anything.\n- "
     + PLAIN + "\n"
     + DATA_NOT_INSTRUCTIONS)
 
@@ -171,11 +185,22 @@ def payload(*, message: str, ask_: dict[str, Any], net: Any, case: Any, pack: di
             # The case's own FIR in its words, once the officer has said the case is that FIR ("who saw him
             # last?" is answered in its first information, often in Urdu).
             "this_case_fir_text": _case_fir_text(case),
+            "cdrs_on_the_board": _cdrs(case),
             "looked_up_now": looked,
         },
         "tools": {} if last_round else tools,
         "note": "This is your last draft: answer from GIVEN, mark what is still missing." if last_round else None,
     }
+
+
+def _cdrs(case: Any) -> dict[str, Any] | None:
+    """The CDRs on the board - what they are, not their records (those are only ever computed over)."""
+    files = [{"id": d["id"], "title": d["title"], "number": ((d.get("data") or {}).get("analysis") or {}).get("subject"),
+              "rows": ((d.get("data") or {}).get("analysis") or {}).get("rows")}
+             for d in case.documents.values() if d.get("kind") == "cdr" and (d.get("data") or {}).get("path")]
+    if not files:
+        return None
+    return {"files": files, "their_records_are_not_in_given": True}
 
 
 def _firs(net: Any, pid: str, case: Any) -> list[dict[str, Any]]:
@@ -238,9 +263,46 @@ def draft(llm: Any, language: str, data: dict[str, Any]) -> dict[str, Any] | Non
                                            "and quoted record text stay as they are."
                                            + (" Roman Urdu is written in Latin letters only - never in Urdu script, "
                                               "except a name exactly as a record writes it." if language == "roman" else "")}
-    out = ask(llm, _Draft, dumps(data), system=_SYSTEM.format(lang=lang), kind="officer_draft", version="v6",
-              max_tokens=1400)
+    out = ask(llm, _Draft, dumps(data), system=_SYSTEM.format(lang=lang), kind="officer_draft", version="v10",
+              max_tokens=2400)
     return out.model_dump() if out is not None else None
+
+
+class _Plan(Typed):
+    lookups: list[_Lookup] = Field(default_factory=list, description="The LIVE calls that would bring what is "
+                                   "missing, at most 4. Empty when no police system could hold it.")
+
+
+_PLAN_SYSTEM = (
+    "You are the API agent of a police investigation team. The officer asked a question and the answer drafted "
+    "from the case board lacks something (DRAFT: what it could say, and the sections it could not fill). Choose "
+    "from LIVE_TOOLS the calls to the police systems that would bring what is missing, with arguments exactly as "
+    "each tool describes them: a person by a name in PEOPLE, a number or CNIC from PEOPLE, an FIR as "
+    "'number/year' with its ps_id from FIRS. Only people, numbers and FIRs of this case. Never repeat a call in "
+    "ALREADY_CALLED. Leave `lookups` empty when no police system could hold it (an opinion, what someone thinks, "
+    "a fact only a witness knows) or when DRAFT already answers it.\n" + DATA_NOT_INSTRUCTIONS)
+
+
+def needs_live(draft: dict[str, Any]) -> bool:
+    """The draft could not answer all of it from the board: not answered, or a section left empty."""
+    return not draft.get("answered") or any(s.get("status") in ("not on record", "not checked yet")
+                                            for s in draft.get("sections") or [])
+
+
+def plan_live(llm: Any, *, message: str, draft: dict[str, Any], tools: dict[str, str], people: list[dict[str, Any]],
+              firs: list[dict[str, Any]], called: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The API agent: which live calls bring what the board did not hold (one short model call)."""
+    data = {"question": message[:600],
+            "DRAFT": {"first_line": draft.get("first_line"), "answered": draft.get("answered"),
+                      "not_filled": [s.get("name") for s in draft.get("sections") or []
+                                     if s.get("status") in ("not on record", "not checked yet")]},
+            "LIVE_TOOLS": tools, "PEOPLE": people[:12], "FIRS": firs[:10], "ALREADY_CALLED": called[:10]}
+    out = ask(llm, _Plan, dumps(data), system=_PLAN_SYSTEM, kind="api_planner", version="v1", max_tokens=600)
+    if out is None:
+        return []
+    done = {(c.get("tool"), dumps(c.get("args") or {})) for c in called}
+    return [x for x in (lk.model_dump() for lk in out.lookups) if x["tool"] in tools
+            and (x["tool"], dumps(x.get("args") or {})) not in done][:MAX_LOOKUPS]
 
 
 def evidence_digest(data: dict[str, Any], limit: int = 30000) -> str:
@@ -293,7 +355,20 @@ def findings_about(case: Any, pids: list[str]) -> dict[str, Any]:
                                    for k in leads[:8]],
             "skeptic": [{"text": c["text"], "verdict": c.get("verdict")} for c in case.challenges
                         if c.get("hypothesis") == leader][:4],
-            "pending_reports": case.register.get("pending") or []}
+            "pending_reports": [_pending_of(case, x) for x in case.register.get("pending") or []]}
+
+
+def _pending_of(case: Any, p: dict[str, Any]) -> dict[str, Any]:
+    """A report asked for and not received, with the file that asked for it - and whether that is THIS case's FIR
+    (a report pending in someone's 2019 FIR is not missing from this case)."""
+    import re as _re
+
+    doc = case.documents.get(p.get("doc") or "") or {}
+    ref = doc.get("ref") or {}
+    this = _re.findall(r"\d+", str((case.incident or {}).get("fir") or ""))
+    mine = bool(this) and ref.get("fir_no") and str(ref.get("fir_no")).lstrip("0") == this[0].lstrip("0") and (
+        len(this) < 2 or str(ref.get("fir_year") or "")[-2:] == this[1][-2:])
+    return {**p, "asked_for_in": doc.get("title") or p.get("doc"), "this_case": bool(mine)}
 
 
 def graph_patterns(tools: Any, net: Any, pids: list[str], limit: int = 14) -> dict[str, Any]:

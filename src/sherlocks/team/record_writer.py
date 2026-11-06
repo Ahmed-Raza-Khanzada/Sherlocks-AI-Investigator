@@ -250,8 +250,12 @@ def _relation(net: Any, pid: str, name: str) -> str:
         return "not on the graph"
     if not net.G.has_edge(pid, other):
         return "no direct tie on record"
-    link = net.best_link(pid, other)
-    return plainly(link.sentence or link.label or "") or "tied in the records"
+    # Every way the records tie them, the most telling first; "Both on <register>" only says they share a register.
+    said = [plainly(x.sentence or x.label or "") for x in sorted(net.G[pid][other]["links"], key=lambda x: x.cost)]
+    real = [x for x in said if x and not x.lower().startswith("both on ")]
+    if real:
+        return real[0]
+    return "no relation on record (only named in the same register)" if said else "tied in the records"
 
 
 def past_cases(case: Any, net: Any, pid: str, skip: set[str], llm: Any = None) -> list[dict[str, Any]]:
@@ -606,8 +610,8 @@ def reports_on(case: Any, pid: str, cases: list[dict[str, Any]]) -> list[dict[st
     out = []
     for d in ids:
         doc = case.documents.get(d) or {}
-        if doc.get("kind") in ("fir", "graph", "notes", "cdr", "upload", "cro", None):
-            continue
+        if doc.get("kind") != "lab":
+            continue        # a laboratory's report only - never a search record, a CDR, an upload or an FIR
         ref = doc.get("ref") or {}
         fir = re.search(r"(\d{1,5}\s*/\s*\d{2,4})", str(ref.get("fir") or ref.get("labs_of") or doc.get("title") or ""))
         received = re.search(r"case received ([\d\-: ]+)", doc.get("summary") or "")
