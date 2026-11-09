@@ -892,18 +892,21 @@ dialog.boarddlg::backdrop { background: rgba(5,8,15,.75); }
 
 /* ---- 2026-11: Sherlock's chat full screen, graph controls, and one screen at a time on phones, tablets and
  * the Galaxy Fold ------------------------------------------------------------------------------------------
- *  every device      the chat opens full screen; on a wide screen its text keeps a readable column
- *  >1024px           the side panel folds away (‹ on the graph's left edge) to give the graph the whole width
- *  ≤1024px           a bar at the bottom: Graph · Search · Case · Activity, each the whole screen; a person's
- *                    details rise as a sheet from the bottom; zoom buttons on the graph */
+ *  >1024px           the chat is the side panel by the bubble; the left panel folds away (‹ on the graph's
+ *                    left edge) to give the graph the whole width
+ *  ≤1024px           the chat opens full screen (its text in a readable column); a bar at the bottom:
+ *                    Graph · Search · Case · Activity, each the whole screen; a person's details rise as a
+ *                    sheet from the bottom; zoom buttons on the graph */
 :root { --navh: 58px; }
 
-.sherlock { inset: 0; right: 0; bottom: 0; width: 100%; height: 100%; height: 100dvh; border: 0; border-radius: 0; z-index: 90; }
-header.shhead { padding-top: max(12px, env(safe-area-inset-top, 0px)); padding-inline: max(14px, calc((100% - 960px) / 2)); }
-.sherlock .shlog { padding-inline: max(14px, calc((100% - 920px) / 2)); }
-.sherlock .shquick { padding-inline: max(12px, calc((100% - 920px) / 2)); }
-.sherlock .shform { padding-inline: max(12px, calc((100% - 920px) / 2)); padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px)); }
-body.chatopen .fab { display: none; }
+@media (max-width: 1024px) {
+  .sherlock { inset: 0; right: 0; bottom: 0; width: 100%; height: 100%; height: 100dvh; border: 0; border-radius: 0; z-index: 90; }
+  header.shhead { padding-top: max(12px, env(safe-area-inset-top, 0px)); padding-inline: max(14px, calc((100% - 960px) / 2)); }
+  .sherlock .shlog { padding-inline: max(14px, calc((100% - 920px) / 2)); }
+  .sherlock .shquick { padding-inline: max(12px, calc((100% - 920px) / 2)); }
+  .sherlock .shform { padding-inline: max(12px, calc((100% - 920px) / 2)); padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px)); }
+  body.chatopen .fab { display: none; }
+}
 
 /* zoom buttons and the search's progress, on the graph */
 .zoombox { display: none; position: absolute; right: 12px; bottom: 96px; z-index: 11; flex-direction: column; border-radius: 14px;
